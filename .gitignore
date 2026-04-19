@@ -1,0 +1,8 @@
+/target
+.worktrees/
+.env
+requests.http
+moneykeeper.db
+moneykeeper.tar.gz
+.idea/
+.vscode/
