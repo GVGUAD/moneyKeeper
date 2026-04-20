@@ -182,14 +182,15 @@ fn default_limit() -> i64 {
 pub struct ConnectMonobankRequest {
     pub account_id: uuid::Uuid,
     pub token: String,
-    pub monobank_account_id: String,
+    pub external_account_id: String,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct MonobankConnectionResponse {
     pub id: uuid::Uuid,
     pub account_id: uuid::Uuid,
-    pub monobank_account_id: String,
+    pub provider: String,
+    pub external_account_id: String,
     pub sync_status: String,
     pub last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,

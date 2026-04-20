@@ -14,14 +14,15 @@ use crate::api::{
     middleware::AuthUser,
     state::AppState,
 };
+use crate::domain::bank_connection::BankConnection;
 use crate::domain::error::DomainError;
-use crate::domain::monobank::MonobankConnection;
 
-fn to_response(conn: MonobankConnection) -> MonobankConnectionResponse {
+fn to_response(conn: BankConnection) -> MonobankConnectionResponse {
     MonobankConnectionResponse {
         id: conn.id,
         account_id: conn.account_id,
-        monobank_account_id: conn.monobank_account_id,
+        provider: conn.provider.as_str().to_string(),
+        external_account_id: conn.external_account_id,
         sync_status: conn.sync_status.as_str().to_string(),
         last_synced_at: conn.last_synced_at,
         created_at: conn.created_at,
@@ -68,7 +69,7 @@ pub async fn connect(
             req.account_id,
             user_id,
             req.token,
-            req.monobank_account_id,
+            req.external_account_id,
             account_created_at,
         )
         .await?;

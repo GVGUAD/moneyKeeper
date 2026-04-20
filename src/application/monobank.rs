@@ -3,15 +3,15 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::domain::error::DomainError;
-use crate::domain::monobank::{
-    MonoAccount, MonoStatementItem, MonobankApiClient, MonobankConnection,
-    MonobankConnectionRepository, SyncStatus,
+use crate::domain::bank_connection::{
+    BankConnection, BankConnectionRepository, BankProvider, SyncStatus,
 };
+use crate::domain::error::DomainError;
+use crate::domain::monobank::{MonoAccount, MonoStatementItem, MonobankApiClient};
 use crate::domain::transaction::{Transaction, TransactionKind, TransactionRepository};
 
 pub struct MonobankService {
-    connection_repo: Arc<dyn MonobankConnectionRepository>,
+    connection_repo: Arc<dyn BankConnectionRepository>,
     transaction_repo: Arc<dyn TransactionRepository>,
     monobank_client: Arc<dyn MonobankApiClient>,
     public_url: String,
@@ -19,7 +19,7 @@ pub struct MonobankService {
 
 impl MonobankService {
     pub fn new(
-        connection_repo: Arc<dyn MonobankConnectionRepository>,
+        connection_repo: Arc<dyn BankConnectionRepository>,
         transaction_repo: Arc<dyn TransactionRepository>,
         monobank_client: Arc<dyn MonobankApiClient>,
         public_url: String,
@@ -43,14 +43,20 @@ impl MonobankService {
         token: String,
         monobank_account_id: String,
         account_created_at: DateTime<Utc>,
-    ) -> anyhow::Result<MonobankConnection> {
-        let conn = MonobankConnection::new(account_id, user_id, token, monobank_account_id);
+    ) -> anyhow::Result<BankConnection> {
+        let conn = BankConnection::new(
+            account_id,
+            user_id,
+            BankProvider::Monobank,
+            token,
+            monobank_account_id,
+        );
         self.connection_repo.create(&conn).await?;
         self.spawn_sync(conn.clone(), account_created_at);
         Ok(conn)
     }
 
-    pub async fn list_connections(&self, user_id: Uuid) -> anyhow::Result<Vec<MonobankConnection>> {
+    pub async fn list_connections(&self, user_id: Uuid) -> anyhow::Result<Vec<BankConnection>> {
         self.connection_repo.list_by_user(user_id).await
     }
 
@@ -58,7 +64,7 @@ impl MonobankService {
         self.connection_repo
             .find_by_id(id, user_id)
             .await?
-            .ok_or_else(|| DomainError::NotFound(format!("monobank connection {id}")))?;
+            .ok_or_else(|| DomainError::NotFound(format!("bank connection {id}")))?;
         self.connection_repo.delete(id, user_id).await
     }
 
@@ -69,7 +75,7 @@ impl MonobankService {
     ) -> anyhow::Result<usize> {
         let maybe_conn = self
             .connection_repo
-            .find_by_monobank_account_id(monobank_account_id)
+            .find_by_external_account_id(&BankProvider::Monobank, monobank_account_id)
             .await?;
 
         match maybe_conn {
@@ -91,7 +97,7 @@ impl MonobankService {
         let connections = match self.connection_repo.list_incomplete().await {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("failed to list incomplete monobank connections: {e}");
+                tracing::error!("failed to list incomplete bank connections: {e}");
                 return;
             }
         };
@@ -110,7 +116,7 @@ impl MonobankService {
         }
     }
 
-    pub fn spawn_sync(&self, conn: MonobankConnection, from: DateTime<Utc>) {
+    pub fn spawn_sync(&self, conn: BankConnection, from: DateTime<Utc>) {
         let connection_repo = Arc::clone(&self.connection_repo);
         let transaction_repo = Arc::clone(&self.transaction_repo);
         let monobank_client = Arc::clone(&self.monobank_client);
@@ -131,7 +137,7 @@ impl MonobankService {
 
     async fn insert_statement_item(
         &self,
-        conn: &MonobankConnection,
+        conn: &BankConnection,
         item: &MonoStatementItem,
     ) -> anyhow::Result<bool> {
         let tx = build_transaction(conn.account_id, conn.user_id, item);
@@ -165,10 +171,10 @@ fn build_transaction(
 }
 
 async fn run_sync(
-    connection_repo: Arc<dyn MonobankConnectionRepository>,
+    connection_repo: Arc<dyn BankConnectionRepository>,
     transaction_repo: Arc<dyn TransactionRepository>,
     monobank_client: Arc<dyn MonobankApiClient>,
-    conn: MonobankConnection,
+    conn: BankConnection,
     history_from: DateTime<Utc>,
     public_url: String,
 ) {
@@ -192,7 +198,7 @@ async fn run_sync(
         let to = (cursor + chrono::Duration::days(31)).min(now);
 
         let items = match monobank_client
-            .get_statement(&conn.token, &conn.monobank_account_id, cursor, to)
+            .get_statement(&conn.token, &conn.external_account_id, cursor, to)
             .await
         {
             Ok(items) => items,
@@ -237,13 +243,14 @@ async fn run_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::monobank::MonoAccount;
     use crate::domain::transaction::{TransactionDetails, TransactionListParams};
     use std::sync::Mutex;
 
     // --- Mock implementations ---
 
     struct MockConnectionRepo {
-        connections: Mutex<Vec<MonobankConnection>>,
+        connections: Mutex<Vec<BankConnection>>,
     }
 
     impl MockConnectionRepo {
@@ -253,7 +260,7 @@ mod tests {
             }
         }
 
-        fn with(connections: Vec<MonobankConnection>) -> Self {
+        fn with(connections: Vec<BankConnection>) -> Self {
             Self {
                 connections: Mutex::new(connections),
             }
@@ -261,8 +268,8 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl MonobankConnectionRepository for MockConnectionRepo {
-        async fn create(&self, conn: &MonobankConnection) -> anyhow::Result<()> {
+    impl BankConnectionRepository for MockConnectionRepo {
+        async fn create(&self, conn: &BankConnection) -> anyhow::Result<()> {
             self.connections.lock().unwrap().push(conn.clone());
             Ok(())
         }
@@ -271,7 +278,7 @@ mod tests {
             &self,
             id: Uuid,
             user_id: Uuid,
-        ) -> anyhow::Result<Option<MonobankConnection>> {
+        ) -> anyhow::Result<Option<BankConnection>> {
             Ok(self
                 .connections
                 .lock()
@@ -281,20 +288,21 @@ mod tests {
                 .cloned())
         }
 
-        async fn find_by_monobank_account_id(
+        async fn find_by_external_account_id(
             &self,
-            monobank_account_id: &str,
-        ) -> anyhow::Result<Option<MonobankConnection>> {
+            provider: &BankProvider,
+            external_account_id: &str,
+        ) -> anyhow::Result<Option<BankConnection>> {
             Ok(self
                 .connections
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|c| c.monobank_account_id == monobank_account_id)
+                .find(|c| &c.provider == provider && c.external_account_id == external_account_id)
                 .cloned())
         }
 
-        async fn list_by_user(&self, user_id: Uuid) -> anyhow::Result<Vec<MonobankConnection>> {
+        async fn list_by_user(&self, user_id: Uuid) -> anyhow::Result<Vec<BankConnection>> {
             Ok(self
                 .connections
                 .lock()
@@ -305,7 +313,7 @@ mod tests {
                 .collect())
         }
 
-        async fn list_incomplete(&self) -> anyhow::Result<Vec<MonobankConnection>> {
+        async fn list_incomplete(&self) -> anyhow::Result<Vec<BankConnection>> {
             Ok(self
                 .connections
                 .lock()
@@ -438,7 +446,7 @@ mod tests {
     }
 
     fn make_service(
-        conn_repo: Arc<dyn MonobankConnectionRepository>,
+        conn_repo: Arc<dyn BankConnectionRepository>,
         tx_repo: Arc<dyn TransactionRepository>,
     ) -> MonobankService {
         MonobankService::new(
@@ -467,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_saves_connection_as_pending() {
-        let conn_repo: Arc<dyn MonobankConnectionRepository> = Arc::new(MockConnectionRepo::new());
+        let conn_repo: Arc<dyn BankConnectionRepository> = Arc::new(MockConnectionRepo::new());
         let tx_repo: Arc<dyn TransactionRepository> = Arc::new(MockTransactionRepo::new());
         let svc = make_service(Arc::clone(&conn_repo), Arc::clone(&tx_repo));
 
@@ -488,6 +496,7 @@ mod tests {
         assert_eq!(conn.account_id, account_id);
         assert_eq!(conn.user_id, user_id);
         assert_eq!(conn.sync_status, SyncStatus::Pending);
+        assert_eq!(conn.provider, BankProvider::Monobank);
 
         let stored = conn_repo
             .find_by_id(conn.id, user_id)
@@ -502,14 +511,15 @@ mod tests {
         let account_id = Uuid::new_v4();
         let user_id = Uuid::new_v4();
 
-        let existing_conn = MonobankConnection::new(
+        let existing_conn = BankConnection::new(
             account_id,
             user_id,
+            BankProvider::Monobank,
             "tok".to_string(),
             "mono-acc-456".to_string(),
         );
 
-        let conn_repo: Arc<dyn MonobankConnectionRepository> =
+        let conn_repo: Arc<dyn BankConnectionRepository> =
             Arc::new(MockConnectionRepo::with(vec![existing_conn]));
         let tx_repo: Arc<dyn TransactionRepository> = Arc::new(MockTransactionRepo::new());
         let svc = make_service(Arc::clone(&conn_repo), Arc::clone(&tx_repo));
@@ -546,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_webhook_unknown_account_returns_zero() {
-        let conn_repo: Arc<dyn MonobankConnectionRepository> = Arc::new(MockConnectionRepo::new());
+        let conn_repo: Arc<dyn BankConnectionRepository> = Arc::new(MockConnectionRepo::new());
         let tx_repo: Arc<dyn TransactionRepository> = Arc::new(MockTransactionRepo::new());
         let svc = make_service(Arc::clone(&conn_repo), Arc::clone(&tx_repo));
 

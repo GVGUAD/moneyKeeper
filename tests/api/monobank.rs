@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{common, helpers};
 
 /// Helper: creates a monobank connection for the given account.
-/// Returns `(connection_id_str, monobank_account_id)`.
+/// Returns `connection_id_str`.
 async fn connect_mono(
     server: &axum_test::TestServer,
     token: &str,
@@ -18,7 +18,7 @@ async fn connect_mono(
         .json(&serde_json::json!({
             "account_id": account_id,
             "token": "fake-mono-token",
-            "monobank_account_id": mono_account_id
+            "external_account_id": mono_account_id
         }))
         .await;
     let body: Value = res.json();
@@ -38,7 +38,7 @@ async fn connect_returns_201_with_pending_status() {
         .json(&serde_json::json!({
             "account_id": account_id,
             "token": "fake-mono-token",
-            "monobank_account_id": "mono-card-1"
+            "external_account_id": "mono-card-1"
         }))
         .await;
 

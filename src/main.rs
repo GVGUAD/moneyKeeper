@@ -11,7 +11,7 @@ use moneykeeper::infrastructure::account_repository::SqliteAccountRepository;
 use moneykeeper::infrastructure::category_repository::SqliteCategoryRepository;
 use moneykeeper::infrastructure::db::create_pool;
 use moneykeeper::infrastructure::monobank_client::ReqwestMonobankClient;
-use moneykeeper::infrastructure::monobank_repository::SqliteMonobankRepository;
+use moneykeeper::infrastructure::monobank_repository::PgBankConnectionRepository;
 use moneykeeper::infrastructure::transaction_repository::SqliteTransactionRepository;
 
 #[tokio::main]
@@ -37,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let pool = create_pool(&database_url).await?;
 
     let monobank_service = Arc::new(MonobankService::new(
-        Arc::new(SqliteMonobankRepository::new(pool.clone())),
+        Arc::new(PgBankConnectionRepository::new(pool.clone())),
         Arc::new(SqliteTransactionRepository::new(pool.clone())),
         Arc::new(ReqwestMonobankClient::new()),
         public_url,

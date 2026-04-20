@@ -2,6 +2,7 @@
 // No dependencies on application or infrastructure layers.
 
 pub mod account;
+pub mod bank_connection;
 pub mod category;
 pub mod error;
 pub mod monobank;

@@ -15,7 +15,7 @@ use moneykeeper::application::transactions::TransactionService;
 use moneykeeper::domain::monobank::MonobankApiClient;
 use moneykeeper::infrastructure::account_repository::SqliteAccountRepository;
 use moneykeeper::infrastructure::category_repository::SqliteCategoryRepository;
-use moneykeeper::infrastructure::monobank_repository::SqliteMonobankRepository;
+use moneykeeper::infrastructure::monobank_repository::PgBankConnectionRepository;
 use moneykeeper::infrastructure::transaction_repository::SqliteTransactionRepository;
 
 /// kid used in test JWTs and the test JWKS.
@@ -108,7 +108,7 @@ pub async fn make_app_with_client(
             SqliteCategoryRepository::new(pool.clone()),
         ))),
         monobank: Arc::new(MonobankService::new(
-            Arc::new(SqliteMonobankRepository::new(pool.clone())),
+            Arc::new(PgBankConnectionRepository::new(pool.clone())),
             tx_repo,
             monobank_client,
             "http://localhost:3000".to_string(),

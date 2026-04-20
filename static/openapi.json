@@ -1072,14 +1072,14 @@
         "required": [
           "account_id",
           "token",
-          "monobank_account_id"
+          "external_account_id"
         ],
         "properties": {
           "account_id": {
             "type": "string",
             "format": "uuid"
           },
-          "monobank_account_id": {
+          "external_account_id": {
             "type": "string"
           },
           "token": {
@@ -1217,7 +1217,8 @@
         "required": [
           "id",
           "account_id",
-          "monobank_account_id",
+          "provider",
+          "external_account_id",
           "sync_status",
           "created_at"
         ],
@@ -1230,6 +1231,9 @@
             "type": "string",
             "format": "date-time"
           },
+          "external_account_id": {
+            "type": "string"
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -1241,7 +1245,7 @@
             ],
             "format": "date-time"
           },
-          "monobank_account_id": {
+          "provider": {
             "type": "string"
           },
           "sync_status": {
