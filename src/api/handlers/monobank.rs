@@ -17,6 +17,7 @@ use crate::api::{
 };
 use crate::domain::bank_connection::BankConnection;
 use crate::domain::error::DomainError;
+use crate::domain::secret::SecretString;
 
 fn to_response(conn: BankConnection) -> MonobankConnectionResponse {
     MonobankConnectionResponse {
@@ -40,7 +41,8 @@ pub async fn get_client_info(
         .get("x-token")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| DomainError::InvalidInput("missing X-Token header".to_string()))?;
-    let accounts = state.monobank.get_monobank_accounts(token).await?;
+    let token = SecretString::new(token);
+    let accounts = state.monobank.get_monobank_accounts(&token).await?;
     Ok(Json(
         accounts
             .into_iter()

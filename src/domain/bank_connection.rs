@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::domain::secret::SecretString;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BankProvider {
     Monobank,
@@ -58,7 +60,7 @@ pub struct BankConnection {
     pub account_id: Uuid,
     pub user_id: Uuid,
     pub provider: BankProvider,
-    pub token: String,
+    pub token: SecretString,
     pub external_account_id: String,
     pub sync_status: SyncStatus,
     pub last_synced_at: Option<DateTime<Utc>>,
@@ -70,7 +72,7 @@ impl BankConnection {
         account_id: Uuid,
         user_id: Uuid,
         provider: BankProvider,
-        token: String,
+        token: impl Into<SecretString>,
         external_account_id: String,
     ) -> Self {
         Self {
@@ -78,7 +80,7 @@ impl BankConnection {
             account_id,
             user_id,
             provider,
-            token,
+            token: token.into(),
             external_account_id,
             sync_status: SyncStatus::Pending,
             last_synced_at: None,
@@ -105,4 +107,7 @@ pub trait BankConnectionRepository: Send + Sync {
         last_synced_at: Option<DateTime<Utc>>,
     ) -> anyhow::Result<()>;
     async fn delete(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<()>;
+    /// True if any bank connection exists for the given account id. Used to detect
+    /// externally-managed accounts (where balance is owned by the provider, not by us).
+    async fn exists_for_account(&self, account_id: Uuid) -> anyhow::Result<bool>;
 }

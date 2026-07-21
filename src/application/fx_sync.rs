@@ -34,6 +34,14 @@ impl FxSyncUseCase {
         }
         Ok(total)
     }
+
+    pub async fn backfill_missing(&self, from: NaiveDate, to: NaiveDate) -> anyhow::Result<usize> {
+        let mut total = 0;
+        for date in self.repo.missing_dates(from, to).await? {
+            total += self.sync_date(date).await?;
+        }
+        Ok(total)
+    }
 }
 
 #[cfg(test)]
@@ -114,5 +122,21 @@ mod tests {
         usecase.backfill(from, to).await.unwrap();
 
         assert_eq!(source.calls.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn missing_backfill_uses_repository_gap_list() {
+        let source = Arc::new(FakeSource::default());
+        let repo = Arc::new(FakeRepo::default());
+        let usecase = FxSyncUseCase::new(source.clone(), repo);
+        let from = NaiveDate::from_ymd_opt(2026, 5, 8).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
+
+        usecase.backfill_missing(from, to).await.unwrap();
+
+        assert_eq!(
+            *source.calls.lock().unwrap(),
+            vec![from, from + Duration::days(1), to]
+        );
     }
 }

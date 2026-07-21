@@ -71,7 +71,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/me/email-connections/gmail/oauth/callback",
-            post(email_connections::oauth_callback),
+            post(email_connections::oauth_callback_post),
         )
         .route("/me/email-connections", get(email_connections::list))
         .route(
@@ -111,6 +111,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api-doc/openapi.json", get(openapi_json))
         .route("/swagger-ui", get(swagger_ui))
         .route("/health", get(|| async { (StatusCode::OK, "ok") }))
+        .route(
+            "/oauth/gmail/callback",
+            get(email_connections::oauth_callback_get),
+        )
         .merge(protected)
         .route("/monobank/webhook", post(monobank::webhook))
         .with_state(state)

@@ -21,5 +21,5 @@ pub struct AppState {
     pub subscriptions: Arc<SubscriptionService>,
     pub matcher: Arc<MatchChargesUseCase>,
     pub fx: Arc<dyn crate::domain::fx_rate::FxRateRepository>,
-    pub gmail_oauth: Arc<crate::infrastructure::email::oauth::OAuthConfig>,
+    pub gmail_oauth: Arc<crate::infrastructure::email::oauth::GmailOAuthService>,
 }

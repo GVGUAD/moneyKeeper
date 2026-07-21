@@ -2,11 +2,12 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use regex::Regex;
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
+use super::{is_explicit_non_recurring, normalized_mailbox};
 use crate::domain::email::RawEmail;
 use crate::domain::receipt_parser::{ParsedReceipt, ReceiptParser};
 use crate::domain::subscription::{BillingPeriod, SubscriptionProvider};
-use crate::domain::subscription_charge::ReceiptKind;
 
 pub struct NetflixParser;
 
@@ -24,8 +25,7 @@ impl Default for NetflixParser {
 
 impl ReceiptParser for NetflixParser {
     fn matches_sender(&self, from: &str) -> bool {
-        from.to_ascii_lowercase()
-            .contains("info@account.netflix.com")
+        normalized_mailbox(from) == "info@account.netflix.com"
     }
 
     fn parse(&self, email: &RawEmail) -> anyhow::Result<Option<ParsedReceipt>> {
@@ -33,24 +33,27 @@ impl ReceiptParser for NetflixParser {
             Some(b) => b,
             None => return Ok(None),
         };
-        let plan_re = Regex::new(r"(?i)Plan:\s*(.+)").unwrap();
-        let total_re = Regex::new(r"(?i)Total:\s*\$?([0-9]+(?:\.[0-9]{2})?)\s*([A-Z]{3})").unwrap();
-        let date_re = Regex::new(r"(?i)Date:\s*([A-Za-z]+ [0-9]{1,2}, [0-9]{4})").unwrap();
-
-        let plan = plan_re
+        let plan = plan_regex()
             .captures(body)
             .and_then(|c| c.get(1).map(|m| m.as_str().trim().to_string()))
-            .ok_or_else(|| anyhow::anyhow!("plan not found in Netflix receipt"))?;
-        let total = total_re
-            .captures(body)
-            .ok_or_else(|| anyhow::anyhow!("total not found in Netflix receipt"))?;
-        let amount = Decimal::from_str(total.get(1).unwrap().as_str())?;
-        let currency = total.get(2).unwrap().as_str().to_string();
-        let date_str = date_re
+            .filter(|value| !value.is_empty());
+        let Some(plan) = plan else { return Ok(None) };
+        let Some(total) = total_regex().captures(body) else {
+            return Ok(None);
+        };
+        let amount = Decimal::from_str(&total.get(1).unwrap().as_str().replace(',', "."))?;
+        if amount <= Decimal::ZERO {
+            return Ok(None);
+        }
+        let currency = total.get(2).unwrap().as_str().to_ascii_uppercase();
+        let date_str = date_regex()
             .captures(body)
             .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-            .ok_or_else(|| anyhow::anyhow!("date not found in Netflix receipt"))?;
+            .ok_or_else(|| anyhow::anyhow!("invalid Netflix recurring receipt date"))?;
         let charged_at = parse_us_date(&date_str)?;
+        if is_explicit_non_recurring(&email.subject, body) {
+            return Ok(None);
+        }
 
         let merchant_key = format!(
             "netflix.com:{}",
@@ -65,9 +68,29 @@ impl ReceiptParser for NetflixParser {
             currency,
             charged_at,
             billing_period_hint: Some(BillingPeriod::Monthly),
-            kind: ReceiptKind::Renewal,
         }))
     }
+}
+
+fn plan_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"(?im)^Plan:\s*(.+)$").expect("valid Netflix plan regex"))
+}
+
+fn total_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?i)Total:\s*(?:\$|€|£)?\s*([0-9]+(?:[.,][0-9]{2})?)\s*([A-Z]{3})")
+            .expect("valid Netflix total regex")
+    })
+}
+
+fn date_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r"(?i)Date:\s*([A-Za-z]+ [0-9]{1,2}, [0-9]{4})")
+            .expect("valid Netflix date regex")
+    })
 }
 
 fn parse_us_date(s: &str) -> anyhow::Result<DateTime<Utc>> {
@@ -83,9 +106,11 @@ mod tests {
     fn fixture_email() -> RawEmail {
         let body = std::fs::read_to_string("tests/fixtures/receipts/netflix/renewal.txt").unwrap();
         RawEmail {
-            message_id: "<netflix-renewal-1>".to_string(),
+            provider_message_id: "gmail-netflix-1".to_string(),
+            rfc_message_id: Some("<netflix-renewal-1>".to_string()),
             from: "Netflix <info@account.netflix.com>".to_string(),
             subject: "Your Netflix payment".to_string(),
+            authentication_results: vec![],
             received_at: Utc::now(),
             body_text: Some(body),
             body_html: None,
@@ -109,8 +134,26 @@ mod tests {
         assert_eq!(r.merchant_key, "netflix.com:netflix_premium");
         assert_eq!(r.amount.to_string(), "15.99");
         assert_eq!(r.currency, "USD");
-        assert_eq!(r.kind, ReceiptKind::Renewal);
         assert_eq!(r.billing_period_hint, Some(BillingPeriod::Monthly));
+    }
+
+    #[test]
+    fn recurring_footer_does_not_turn_receipt_into_cancellation() {
+        let receipt = NetflixParser::new()
+            .parse(&fixture_email())
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.amount.to_string(), "15.99");
+    }
+
+    #[test]
+    fn ignores_explicit_cancellation_fixture() {
+        let mut email = fixture_email();
+        email.subject = "Your Netflix subscription cancellation".to_string();
+        email.body_text = Some(
+            std::fs::read_to_string("tests/fixtures/receipts/netflix/cancellation.txt").unwrap(),
+        );
+        assert!(NetflixParser::new().parse(&email).unwrap().is_none());
     }
 
     #[test]
@@ -119,5 +162,20 @@ mod tests {
         let mut e = fixture_email();
         e.body_text = None;
         assert!(p.parse(&e).unwrap().is_none());
+    }
+
+    #[test]
+    fn ignores_non_recurring_message_from_netflix() {
+        let p = NetflixParser::new();
+        let mut email = fixture_email();
+        email.subject = "New films this week".into();
+        email.body_text = Some("Stream something new tonight".into());
+        assert!(p.parse(&email).unwrap().is_none());
+    }
+
+    #[test]
+    fn sender_match_is_not_substring_based() {
+        let p = NetflixParser::new();
+        assert!(!p.matches_sender("info@account.netflix.com.evil.test"));
     }
 }

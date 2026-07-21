@@ -140,18 +140,16 @@ pub trait TransactionRepository: Send + Sync {
     /// Insert a transaction using INSERT OR IGNORE (for external syncs).
     /// Returns true if the row was actually inserted (false = already existed).
     async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<bool>;
-    /// Returns expense transactions for `user_id` whose `transacted_at` falls in
-    /// `[from, to]` and whose `amount` is within `[min_amount, max_amount]`,
-    /// excluding those already linked to a `subscription_charge`. Used by the
-    /// subscription matcher.
-    async fn list_match_candidates(
+    /// Returns unlinked expense transactions in the inclusive time window,
+    /// across all currencies, excluding candidates the user previously
+    /// rejected for this charge. Amount/FX tolerance is applied in the
+    /// application layer because each candidate may use a different currency.
+    async fn list_unlinked_expense_candidates(
         &self,
+        charge_id: Uuid,
         user_id: Uuid,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
-        min_amount: Decimal,
-        max_amount: Decimal,
-        currency: &str,
     ) -> anyhow::Result<Vec<Transaction>>;
 }
 

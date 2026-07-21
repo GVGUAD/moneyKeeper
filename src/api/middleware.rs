@@ -22,7 +22,7 @@ pub async fn auth_middleware(
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-    .ok_or(DomainError::Unauthorized)?;
+        .ok_or(DomainError::Unauthorized)?;
 
     let claims =
         verify_token(header, &state.supabase_jwks).map_err(|_| DomainError::Unauthorized)?;

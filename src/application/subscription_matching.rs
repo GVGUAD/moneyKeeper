@@ -1,128 +1,169 @@
 use std::sync::Arc;
+use std::{cmp::Ordering, collections::HashMap};
 
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use uuid::Uuid;
 
 use crate::domain::account::AccountRepository;
 use crate::domain::fx_rate::FxRateRepository;
-use crate::domain::subscription::{SubscriptionRepository, SubscriptionStatus};
+use crate::domain::subscription::SubscriptionRepository;
 use crate::domain::subscription_charge::{
-    ChargeMatchStatus, SubscriptionCharge, SubscriptionChargeRepository,
+    ChargeLinkOutcome, ChargeMatchSource, ReceiptKind, SubscriptionCharge,
+    SubscriptionChargeRepository,
 };
-use crate::domain::transaction::{Transaction, TransactionRepository};
+use crate::domain::transaction::TransactionRepository;
 
 const TIME_WINDOW_DAYS: i64 = 3;
 const UNMATCHED_AFTER_DAYS: i64 = 7;
 
 pub struct MatchChargesUseCase {
-    pub charges: Arc<dyn SubscriptionChargeRepository>,
-    pub subscriptions: Arc<dyn SubscriptionRepository>,
-    pub transactions: Arc<dyn TransactionRepository>,
+    charges: Arc<dyn SubscriptionChargeRepository>,
     #[allow(dead_code)]
-    pub accounts: Arc<dyn AccountRepository>,
+    subscriptions: Arc<dyn SubscriptionRepository>,
+    transactions: Arc<dyn TransactionRepository>,
     #[allow(dead_code)]
-    pub fx: Arc<dyn FxRateRepository>,
+    accounts: Arc<dyn AccountRepository>,
+    fx: Arc<dyn FxRateRepository>,
 }
 
 impl MatchChargesUseCase {
+    pub fn new(
+        charges: Arc<dyn SubscriptionChargeRepository>,
+        subscriptions: Arc<dyn SubscriptionRepository>,
+        transactions: Arc<dyn TransactionRepository>,
+        accounts: Arc<dyn AccountRepository>,
+        fx: Arc<dyn FxRateRepository>,
+    ) -> Self {
+        Self {
+            charges,
+            subscriptions,
+            transactions,
+            accounts,
+            fx,
+        }
+    }
+
     pub async fn run_for_user(&self, user_id: Uuid) -> anyhow::Result<()> {
         let pending = self.charges.list_pending_for_user(user_id).await?;
+        let mut rate_cache: HashMap<(chrono::NaiveDate, String, String), Option<Decimal>> =
+            HashMap::new();
         for charge in pending {
-            self.try_match_one(&charge).await?;
+            self.try_match_one(&charge, &mut rate_cache).await?;
         }
         let threshold = Utc::now() - Duration::days(UNMATCHED_AFTER_DAYS);
         self.charges
-            .mark_pending_older_than_unmatched(threshold)
+            .mark_pending_older_than_unmatched(user_id, threshold)
             .await?;
         Ok(())
     }
 
-    async fn try_match_one(&self, charge: &SubscriptionCharge) -> anyhow::Result<()> {
+    async fn try_match_one(
+        &self,
+        charge: &SubscriptionCharge,
+        rate_cache: &mut HashMap<(chrono::NaiveDate, String, String), Option<Decimal>>,
+    ) -> anyhow::Result<()> {
+        if matches!(&charge.kind, ReceiptKind::Refund) || charge.amount <= Decimal::ZERO {
+            return Ok(());
+        }
+
         let from = charge.charged_at - Duration::days(TIME_WINDOW_DAYS);
         let to = charge.charged_at + Duration::days(TIME_WINDOW_DAYS);
-
-        let bounds = amount_bounds(charge.amount);
         let candidates = self
             .transactions
-            .list_match_candidates(
-                charge.user_id,
-                from,
-                to,
-                bounds.0,
-                bounds.1,
-                &charge.currency,
-            )
+            .list_unlinked_expense_candidates(charge.id, charge.user_id, from, to)
             .await?;
 
-        let Some(best) = pick_best(charge, &candidates) else {
+        let expected_source_amount = charge.amount.abs();
+        let mut scored = Vec::new();
+        for candidate in &candidates {
+            let source = charge.currency.to_uppercase();
+            let destination = candidate.currency.to_uppercase();
+            let rate_date = charge.charged_at.date_naive();
+            let cache_key = (rate_date, source, destination);
+            let rate = if let Some(rate) = rate_cache.get(&cache_key) {
+                *rate
+            } else {
+                let rate = self
+                    .fx
+                    .rate_as_of(rate_date, &charge.currency, &candidate.currency)
+                    .await?;
+                rate_cache.insert(cache_key, rate);
+                rate
+            };
+            let Some(rate) = rate else {
+                continue;
+            };
+            let expected = expected_source_amount * rate;
+            if expected <= Decimal::ZERO {
+                continue;
+            }
+            if let Some(score) = candidate_score(
+                expected,
+                candidate.amount,
+                charge.charged_at,
+                candidate.transacted_at,
+            ) {
+                scored.push((candidate, score));
+            }
+        }
+
+        scored.sort_by(|(a_tx, a_score), (b_tx, b_score)| {
+            a_score
+                .partial_cmp(b_score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a_tx.id.cmp(&b_tx.id))
+        });
+
+        let Some((best, best_score)) = scored.first() else {
             return Ok(());
         };
+        if !has_confident_margin(*best_score, scored.get(1).map(|(_, score)| *score)) {
+            return Ok(());
+        }
 
-        self.charges
-            .update_match(charge.id, Some(best.id), ChargeMatchStatus::Matched)
+        let outcome = self
+            .charges
+            .link_transaction(
+                charge.id,
+                charge.user_id,
+                best.id,
+                ChargeMatchSource::Automatic,
+            )
             .await?;
-
-        if let Some(sub) = self
-            .subscriptions
-            .find_by_id(charge.subscription_id, charge.user_id)
-            .await?
-        {
-            let next_expected = sub.billing_period.next_after(charge.charged_at);
-            self.subscriptions
-                .update_after_charge(
-                    sub.id,
-                    charge.charged_at,
-                    next_expected,
-                    SubscriptionStatus::Active,
-                )
-                .await?;
-
-            if let Some(cat) = sub.category_id
-                && best.category_id.is_none()
-            {
-                let mut updated = best.clone();
-                updated.category_id = Some(cat);
-                self.transactions
-                    .update(
-                        &updated,
-                        &crate::domain::transaction::TransactionDetails::None,
-                    )
-                    .await?;
-            }
+        match outcome {
+            ChargeLinkOutcome::Linked
+            | ChargeLinkOutcome::ChargeNotFound
+            | ChargeLinkOutcome::ChargeNotPending
+            | ChargeLinkOutcome::ChargeAlreadyLinked
+            | ChargeLinkOutcome::TransactionNotFound
+            | ChargeLinkOutcome::TransactionNotExpense
+            | ChargeLinkOutcome::TransactionAlreadyLinked => {}
         }
         Ok(())
     }
 }
 
-fn amount_bounds(amount: Decimal) -> (Decimal, Decimal) {
-    let tol = amount * Decimal::new(5, 2); // 0.05
-    (amount - tol, amount + tol)
+fn candidate_score(
+    expected: Decimal,
+    actual: Decimal,
+    charged_at: chrono::DateTime<Utc>,
+    transacted_at: chrono::DateTime<Utc>,
+) -> Option<Decimal> {
+    if expected <= Decimal::ZERO {
+        return None;
+    }
+    let amount_error = (actual.abs() - expected).abs() / expected;
+    if amount_error > Decimal::new(5, 2) {
+        return None;
+    }
+    let seconds = (transacted_at - charged_at).num_seconds().unsigned_abs();
+    let time_error = Decimal::from(seconds) / Decimal::from(86_400_u64);
+    Some(amount_error + time_error)
 }
 
-fn pick_best<'a>(
-    charge: &SubscriptionCharge,
-    candidates: &'a [Transaction],
-) -> Option<&'a Transaction> {
-    candidates.iter().min_by(|a, b| {
-        let sa = score(charge, a);
-        let sb = score(charge, b);
-        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
-    })
-}
-
-fn score(charge: &SubscriptionCharge, tx: &Transaction) -> f64 {
-    let amount_delta_pct = if charge.amount.is_zero() {
-        0.0
-    } else {
-        ((charge.amount - tx.amount) / charge.amount)
-            .abs()
-            .to_f64()
-            .unwrap_or(1.0)
-    };
-    let time_delta_h = (charge.charged_at - tx.transacted_at).num_hours().abs() as f64;
-    amount_delta_pct + time_delta_h / 24.0
+fn has_confident_margin(best: Decimal, second: Option<Decimal>) -> bool {
+    second.is_none_or(|second| second - best >= Decimal::new(10, 2))
 }
 
 #[cfg(test)]
@@ -132,8 +173,8 @@ mod tests {
     use crate::domain::subscription::{
         BillingPeriod, Subscription, SubscriptionProvider, SubscriptionStatus,
     };
-    use crate::domain::subscription_charge::ReceiptKind;
-    use crate::domain::transaction::{TransactionDetails, TransactionKind};
+    use crate::domain::subscription_charge::{ChargeMatchStatus, ChargeSource, ReceiptKind};
+    use crate::domain::transaction::{Transaction, TransactionDetails, TransactionKind};
     use crate::infrastructure::account_repository::SqliteAccountRepository;
     use crate::infrastructure::fx_rate_repository::PgFxRateRepository;
     use crate::infrastructure::subscription_charge_repository::PgSubscriptionChargeRepository;
@@ -185,6 +226,7 @@ mod tests {
             last_charged_at: None,
             next_expected_at: None,
             category_id: None,
+            overrides: Default::default(),
             created_at: Utc::now(),
         }
     }
@@ -196,6 +238,7 @@ mod tests {
         uc.subscriptions.upsert_by_merchant_key(&s).await.unwrap();
 
         let charge_time = Utc::now();
+        let source_key = format!("gmail:test:{user_id}:msg-1");
         let charge = SubscriptionCharge {
             id: Uuid::new_v4(),
             subscription_id: s.id,
@@ -203,10 +246,17 @@ mod tests {
             amount: dec!(15.99),
             currency: "USD".into(),
             charged_at: charge_time,
-            email_message_id: "msg-1".into(),
+            email_message_id: source_key.clone(),
+            rfc_message_id: Some("<msg-1@example.test>".into()),
+            source: ChargeSource::Gmail,
+            source_key,
+            source_connection_id: None,
+            provider_message_id: Some("msg-1".into()),
             kind: ReceiptKind::Renewal,
             transaction_id: None,
             match_status: ChargeMatchStatus::Pending,
+            match_started_at: Utc::now(),
+            match_source: None,
             created_at: Utc::now(),
         };
         uc.charges.create_idempotent(&charge).await.unwrap();
@@ -244,6 +294,7 @@ mod tests {
         let s = sub(user_id);
         uc.subscriptions.upsert_by_merchant_key(&s).await.unwrap();
 
+        let source_key = format!("gmail:test:{user_id}:msg-2");
         let charge = SubscriptionCharge {
             id: Uuid::new_v4(),
             subscription_id: s.id,
@@ -251,10 +302,17 @@ mod tests {
             amount: dec!(15.99),
             currency: "USD".into(),
             charged_at: Utc::now(),
-            email_message_id: "msg-2".into(),
+            email_message_id: source_key.clone(),
+            rfc_message_id: Some("<msg-2@example.test>".into()),
+            source: ChargeSource::Gmail,
+            source_key,
+            source_connection_id: None,
+            provider_message_id: Some("msg-2".into()),
             kind: ReceiptKind::Renewal,
             transaction_id: None,
             match_status: ChargeMatchStatus::Pending,
+            match_started_at: Utc::now(),
+            match_source: None,
             created_at: Utc::now(),
         };
         uc.charges.create_idempotent(&charge).await.unwrap();
@@ -282,5 +340,27 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(still_pending.match_status, ChargeMatchStatus::Pending);
+    }
+
+    #[test]
+    fn matching_boundaries_are_inclusive() {
+        let charged_at = Utc::now();
+        assert_eq!(
+            candidate_score(
+                dec!(100),
+                dec!(105),
+                charged_at,
+                charged_at + Duration::days(3)
+            ),
+            Some(dec!(3.05))
+        );
+        assert!(candidate_score(dec!(100), dec!(105.0001), charged_at, charged_at).is_none());
+    }
+
+    #[test]
+    fn confidence_margin_accepts_exact_point_one_only() {
+        assert!(!has_confident_margin(dec!(0), Some(dec!(0.0999))));
+        assert!(has_confident_margin(dec!(0), Some(dec!(0.10))));
+        assert!(has_confident_margin(dec!(0), None));
     }
 }

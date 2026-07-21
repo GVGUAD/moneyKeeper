@@ -11,7 +11,15 @@ async fn create_tx(
     kind: &str,
     amount: &str,
 ) -> Uuid {
-    create_tx_at(server, token, account_id, kind, amount, "2024-01-01T00:00:00Z").await
+    create_tx_at(
+        server,
+        token,
+        account_id,
+        kind,
+        amount,
+        "2024-01-01T00:00:00Z",
+    )
+    .await
 }
 
 async fn create_tx_at(
@@ -334,10 +342,33 @@ async fn list_account_transactions_filter_by_date_range() {
     let (_uid, token) = helpers::create_test_user();
     let account_id = helpers::create_account_for(&server, &token).await;
 
-    create_tx_at(&server, &token, account_id, "Income", "1", "2024-01-01T00:00:00Z").await;
-    let mid =
-        create_tx_at(&server, &token, account_id, "Income", "2", "2024-06-01T00:00:00Z").await;
-    create_tx_at(&server, &token, account_id, "Income", "3", "2024-12-01T00:00:00Z").await;
+    create_tx_at(
+        &server,
+        &token,
+        account_id,
+        "Income",
+        "1",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let mid = create_tx_at(
+        &server,
+        &token,
+        account_id,
+        "Income",
+        "2",
+        "2024-06-01T00:00:00Z",
+    )
+    .await;
+    create_tx_at(
+        &server,
+        &token,
+        account_id,
+        "Income",
+        "3",
+        "2024-12-01T00:00:00Z",
+    )
+    .await;
 
     // 2024-04-01 .. 2024-08-01 (only the middle tx)
     let from: i64 = 1711929600;
@@ -463,7 +494,15 @@ async fn list_all_transactions_filter_by_date_range() {
     let acc2 = helpers::create_account_for(&server, &token).await;
 
     create_tx_at(&server, &token, acc1, "Income", "1", "2024-01-01T00:00:00Z").await;
-    let mid = create_tx_at(&server, &token, acc2, "Expense", "2", "2024-06-01T00:00:00Z").await;
+    let mid = create_tx_at(
+        &server,
+        &token,
+        acc2,
+        "Expense",
+        "2",
+        "2024-06-01T00:00:00Z",
+    )
+    .await;
     create_tx_at(&server, &token, acc1, "Income", "3", "2024-12-01T00:00:00Z").await;
 
     let from: i64 = 1711929600;
@@ -708,4 +747,63 @@ async fn delete_transaction_not_found_returns_404() {
         .await;
 
     assert_eq!(res.status_code(), StatusCode::NOT_FOUND);
+}
+
+async fn connect_mono_for_account(
+    server: &axum_test::TestServer,
+    token: &str,
+    account_id: Uuid,
+    mono_account_id: &str,
+) {
+    server
+        .post("/monobank/connect")
+        .add_header(helpers::auth(token).0, helpers::auth(token).1)
+        .json(&serde_json::json!({
+            "account_id": account_id,
+            "token": "fake-mono-token",
+            "external_account_id": mono_account_id
+        }))
+        .await;
+}
+
+#[tokio::test]
+async fn create_transaction_rejected_on_bank_linked_account_returns_409() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+    connect_mono_for_account(&server, &token, account_id, "mono-reject-1").await;
+
+    let res = server
+        .post(&format!("/accounts/{account_id}/transactions"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "amount": "10",
+            "currency": "USD",
+            "kind": "Expense",
+            "transacted_at": "2024-01-01T00:00:00Z"
+        }))
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn delete_transaction_rejected_on_bank_linked_account_returns_409() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    // First insert a normal manual transaction (before linking the connection),
+    // then link the account to Monobank. Deletion attempts must then fail.
+    let tx_id = create_tx(&server, &token, account_id, "Income", "10").await;
+    connect_mono_for_account(&server, &token, account_id, "mono-reject-2").await;
+
+    let res = server
+        .delete(&format!("/transactions/{tx_id}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::CONFLICT);
 }

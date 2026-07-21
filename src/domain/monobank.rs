@@ -16,6 +16,13 @@ pub struct MonoAccount {
     pub iban: Option<String>,
 }
 
+impl MonoAccount {
+    /// Account balance in kopecks → Decimal (UAH).
+    pub fn balance_decimal(&self) -> Decimal {
+        Decimal::new(self.balance, 2)
+    }
+}
+
 /// A single transaction from Monobank statement.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MonoStatementItem {
@@ -36,6 +43,11 @@ impl MonoStatementItem {
     /// Convert amount in kopecks (1/100 UAH) to Decimal.
     pub fn amount_decimal(&self) -> Decimal {
         Decimal::new(self.amount.abs(), 2)
+    }
+
+    /// Running account balance after this transaction, converted from kopecks to Decimal.
+    pub fn balance_decimal(&self) -> Decimal {
+        Decimal::new(self.balance, 2)
     }
 
     /// true = income, false = expense

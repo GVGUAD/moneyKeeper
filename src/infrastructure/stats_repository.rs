@@ -278,8 +278,13 @@ impl StatsRepository for PgStatsRepository {
             WHEN t.kind IN ('Expense','Buy','Transfer')      THEN -t.amount
             ELSE 0
         END";
-        let conv =
-            conversion_case(signed_amount, "t.currency", "$2", "r.to_uah", "r.base_to_uah");
+        let conv = conversion_case(
+            signed_amount,
+            "t.currency",
+            "$2",
+            "r.to_uah",
+            "r.base_to_uah",
+        );
 
         // Query 1: pre_total — sum of all signed deltas before range.from
         let pre_sql = format!(
@@ -414,8 +419,7 @@ impl StatsRepository for PgStatsRepository {
         user_id: Uuid,
         base_currency: &str,
     ) -> anyhow::Result<(Vec<TickerTradeLeg>, Vec<MissingRate>)> {
-        let conv =
-            conversion_case("t.amount", "t.currency", "$2", "r.to_uah", "r.base_to_uah");
+        let conv = conversion_case("t.amount", "t.currency", "$2", "r.to_uah", "r.base_to_uah");
 
         let sql = format!(
             r#"
@@ -548,18 +552,15 @@ impl StatsRepository for PgStatsRepository {
             to: month_end,
             base_currency: base_currency.to_string(),
         };
-        let (cashflow_pts, mut cf_missing) = self
-            .cashflow(&month_range, Granularity::Month)
-            .await?;
+        let (cashflow_pts, mut cf_missing) =
+            self.cashflow(&month_range, Granularity::Month).await?;
         missing_rates.append(&mut cf_missing);
 
         let month_income: Decimal = cashflow_pts.iter().map(|p| p.income).sum();
         let month_expense: Decimal = cashflow_pts.iter().map(|p| p.expense).sum();
 
         // Top categories (Expense, this month)
-        let (mut cat_items, mut cat_missing) = self
-            .categories(&month_range, "Expense")
-            .await?;
+        let (mut cat_items, mut cat_missing) = self.categories(&month_range, "Expense").await?;
         missing_rates.append(&mut cat_missing);
 
         cat_items.truncate(top_n as usize);

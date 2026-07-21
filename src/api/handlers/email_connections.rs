@@ -1,19 +1,22 @@
+use std::sync::Arc;
+
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, Query, State, rejection::JsonRejection},
     http::StatusCode,
 };
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::{
-    dto::{EmailConnectionResponse, GmailOAuthCallbackRequest},
+    dto::{EmailConnectionResponse, GmailOAuthCallbackRequest, GmailOAuthStartResponse},
     error::AppError,
     middleware::AuthUser,
     state::AppState,
 };
-use crate::application::subscriptions::ConnectGmailParams;
 use crate::domain::email_connection::EmailConnection;
-use crate::domain::subscription_error::SubscriptionError;
+use crate::infrastructure::email::oauth::{GmailProviderError, OAuthFlowError};
 
 fn to_response(c: EmailConnection) -> EmailConnectionResponse {
     EmailConnectionResponse {
@@ -29,77 +32,111 @@ fn to_response(c: EmailConnection) -> EmailConnectionResponse {
 pub async fn oauth_start(
     State(state): State<AppState>,
     Extension(AuthUser(user_id)): Extension<AuthUser>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let oauth_state = format!("{user_id}:{}", Uuid::new_v4());
-    let url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?\
-         client_id={}&redirect_uri={}&response_type=code&\
-         scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly%20\
-         https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email&\
-         access_type=offline&prompt=consent&state={}",
-        urlencoding::encode(&state.gmail_oauth.client_id),
-        urlencoding::encode(&state.gmail_oauth.redirect_uri),
-        urlencoding::encode(&oauth_state),
-    );
-    Ok(Json(
-        serde_json::json!({ "authorize_url": url, "state": oauth_state }),
-    ))
+) -> Result<Json<GmailOAuthStartResponse>, AppError> {
+    let start = state.gmail_oauth.start(user_id).await?;
+    Ok(Json(GmailOAuthStartResponse {
+        authorize_url: start.authorize_url,
+        state: start.state,
+    }))
 }
 
-pub async fn oauth_callback(
+/// Authenticated compatibility callback for clients that receive Google's GET
+/// redirect in their own frontend and forward `{code,state}` to the API.
+pub async fn oauth_callback_post(
     State(state): State<AppState>,
     Extension(AuthUser(user_id)): Extension<AuthUser>,
-    Json(req): Json<GmailOAuthCallbackRequest>,
+    request: Result<Json<GmailOAuthCallbackRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<EmailConnectionResponse>), AppError> {
-    let http = reqwest::Client::new();
-    let token_resp: serde_json::Value = http
-        .post("https://oauth2.googleapis.com/token")
-        .form(&[
-            ("client_id", state.gmail_oauth.client_id.as_str()),
-            ("client_secret", state.gmail_oauth.client_secret.as_str()),
-            ("code", req.code.as_str()),
-            ("grant_type", "authorization_code"),
-            ("redirect_uri", state.gmail_oauth.redirect_uri.as_str()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
+    let Json(req) = request.map_err(|_| {
+        crate::domain::error::DomainError::InvalidInput("invalid OAuth callback body".into())
+    })?;
+    let connection = state
+        .gmail_oauth
+        .complete(&req.code, &req.state, Some(user_id))
         .await?;
-    let access_token = token_resp["access_token"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let refresh_token = token_resp["refresh_token"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let expires_in = token_resp["expires_in"].as_i64().unwrap_or(3600);
-    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(expires_in - 60);
+    Ok((StatusCode::CREATED, Json(to_response(connection))))
+}
 
-    let profile: serde_json::Value = http
-        .get("https://www.googleapis.com/oauth2/v2/userinfo")
-        .bearer_auth(&access_token)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let email_address = profile["email"].as_str().unwrap_or("unknown").to_string();
+#[derive(Debug, Deserialize)]
+pub struct GmailOAuthCallbackQuery {
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
+}
 
-    let conn = state
-        .subscriptions
-        .connect_gmail(
-            user_id,
-            ConnectGmailParams {
-                email_address,
-                access_token,
-                refresh_token,
-                expires_at,
-            },
+/// Public browser redirect. The high-entropy, one-time, hashed state is the
+/// callback authority; no bearer token is expected on Google's redirect.
+pub async fn oauth_callback_get(
+    State(state): State<AppState>,
+    Query(query): Query<GmailOAuthCallbackQuery>,
+) -> Response {
+    if query.error.is_some() {
+        let Some(oauth_state) = query.state.as_deref() else {
+            return callback_failure(&state, "incomplete_callback", StatusCode::BAD_REQUEST);
+        };
+        return match state.gmail_oauth.consume_denied_state(oauth_state).await {
+            Ok(()) => callback_failure(&state, "provider_denied", StatusCode::BAD_REQUEST),
+            Err(error) => {
+                tracing::warn!(error = %error, "Gmail OAuth denial state validation failed");
+                callback_failure(&state, "invalid_state", callback_error_status(&error))
+            }
+        };
+    }
+    let (Some(code), Some(oauth_state)) = (query.code.as_deref(), query.state.as_deref()) else {
+        return callback_failure(&state, "incomplete_callback", StatusCode::BAD_REQUEST);
+    };
+    match state.gmail_oauth.complete(code, oauth_state, None).await {
+        Ok(connection) => {
+            if let Some(target) = state.gmail_oauth.success_redirect(connection.id) {
+                Redirect::to(&target).into_response()
+            } else {
+                (
+                    StatusCode::OK,
+                    Html("Gmail connection completed. You may close this window."),
+                )
+                    .into_response()
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "Gmail OAuth callback failed");
+            let status = callback_error_status(&error);
+            callback_failure(&state, "callback_failed", status)
+        }
+    }
+}
+
+fn callback_error_status(error: &anyhow::Error) -> StatusCode {
+    if let Some(provider) = error.downcast_ref::<GmailProviderError>() {
+        return match provider {
+            GmailProviderError::Transient => StatusCode::SERVICE_UNAVAILABLE,
+            GmailProviderError::InvalidCredentials | GmailProviderError::Rejected => {
+                StatusCode::BAD_GATEWAY
+            }
+        };
+    }
+    if let Some(flow) = error.downcast_ref::<OAuthFlowError>() {
+        return match flow {
+            OAuthFlowError::InvalidState | OAuthFlowError::IncompleteRequest => {
+                StatusCode::BAD_REQUEST
+            }
+            OAuthFlowError::MissingRefreshToken | OAuthFlowError::InvalidProviderCredentials => {
+                StatusCode::BAD_GATEWAY
+            }
+        };
+    }
+    StatusCode::INTERNAL_SERVER_ERROR
+}
+
+fn callback_failure(state: &AppState, code: &str, status: StatusCode) -> Response {
+    if let Some(target) = state.gmail_oauth.failure_redirect(code) {
+        Redirect::to(&target).into_response()
+    } else {
+        (
+            status,
+            Html("Gmail connection failed. Return to the application and try again."),
         )
-        .await?;
-    Ok((StatusCode::CREATED, Json(to_response(conn))))
+            .into_response()
+    }
 }
 
 pub async fn list(
@@ -115,19 +152,24 @@ pub async fn resync(
     Extension(AuthUser(user_id)): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    if state
+    let job = state
         .subscriptions
-        .connections
-        .find_by_id(id, user_id)
-        .await?
-        .is_none()
-    {
-        return Err(SubscriptionError::ConnectionNotFound.into());
-    }
-    let new_ids = state.subscriptions.sync_connection(id).await?;
-    if !new_ids.is_empty() {
-        state.matcher.run_for_user(user_id).await?;
-    }
+        .claim_connection_for_user(id, user_id)
+        .await?;
+    let subscriptions = Arc::clone(&state.subscriptions);
+    let matcher = Arc::clone(&state.matcher);
+    tokio::spawn(async move {
+        match subscriptions.run_claimed_connection(job).await {
+            Ok(_) => {
+                if let Err(error) = matcher.run_for_user(user_id).await {
+                    tracing::warn!(%user_id, ?error, "manual email resync matching failed");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%user_id, connection_id = %id, ?error, "manual email resync failed");
+            }
+        }
+    });
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -136,6 +178,6 @@ pub async fn delete(
     Extension(AuthUser(user_id)): Extension<AuthUser>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    state.subscriptions.delete_connection(id, user_id).await?;
+    state.gmail_oauth.disconnect(id, user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

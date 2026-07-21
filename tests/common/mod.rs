@@ -2,8 +2,8 @@
 // Shared test utilities and container setup
 
 use sqlx::PgPool;
-use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 
 /// PostgreSQL container for testing
@@ -16,6 +16,7 @@ impl TestPostgres {
     /// Start a PostgreSQL container and return connection pool
     pub async fn new() -> Self {
         let container = Postgres::default()
+            .with_tag("16-alpine")
             .start()
             .await
             .expect("Failed to start PostgreSQL container");

@@ -156,6 +156,47 @@ impl AccountRepository for SqliteAccountRepository {
         }
         Ok(())
     }
+
+    async fn set_balance(
+        &self,
+        account_id: Uuid,
+        user_id: Uuid,
+        balance: Decimal,
+    ) -> anyhow::Result<()> {
+        let result = sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2 AND user_id = $3")
+            .bind(balance)
+            .bind(account_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("account {} not found for user {}", account_id, user_id);
+        }
+        Ok(())
+    }
+
+    async fn sync_balance_from_external(
+        &self,
+        account_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE accounts \
+             SET balance = sub.external_balance \
+             FROM ( \
+                 SELECT external_balance FROM transactions \
+                 WHERE account_id = $1 AND external_balance IS NOT NULL \
+                 ORDER BY transacted_at DESC \
+                 LIMIT 1 \
+             ) sub \
+             WHERE accounts.id = $1 AND accounts.user_id = $2",
+        )
+        .bind(account_id)
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 impl SqliteAccountRepository {
@@ -406,9 +447,144 @@ mod tests {
             "USD".to_string(),
         );
         repo.create(&account, &AccountDetails::None).await.unwrap();
-        repo.adjust_balance(account.id, user_id, Decimal::new(100, 0)).await.unwrap();
-        repo.adjust_balance(account.id, user_id, Decimal::new(-30, 0)).await.unwrap();
+        repo.adjust_balance(account.id, user_id, Decimal::new(100, 0))
+            .await
+            .unwrap();
+        repo.adjust_balance(account.id, user_id, Decimal::new(-30, 0))
+            .await
+            .unwrap();
         let (found, _) = repo.find_by_id(account.id, user_id).await.unwrap().unwrap();
         assert_eq!(found.balance, Decimal::new(70, 0));
+    }
+
+    #[tokio::test]
+    async fn set_balance_overwrites_absolute_value() {
+        let pool = test_db::fresh_pool().await;
+        let repo = SqliteAccountRepository::new(pool);
+        let user_id = Uuid::new_v4();
+        let account = Account::new(
+            user_id,
+            "Cash".to_string(),
+            AccountType::Cash,
+            "USD".to_string(),
+        );
+        repo.create(&account, &AccountDetails::None).await.unwrap();
+        repo.adjust_balance(account.id, user_id, Decimal::new(999, 0))
+            .await
+            .unwrap();
+        repo.set_balance(account.id, user_id, Decimal::new(12345, 2))
+            .await
+            .unwrap();
+        let (found, _) = repo.find_by_id(account.id, user_id).await.unwrap().unwrap();
+        assert_eq!(found.balance, Decimal::new(12345, 2));
+    }
+
+    #[tokio::test]
+    async fn sync_balance_from_external_picks_latest_by_transacted_at() {
+        use crate::domain::transaction::{
+            Transaction, TransactionDetails, TransactionKind, TransactionRepository,
+        };
+        use crate::infrastructure::transaction_repository::SqliteTransactionRepository;
+        use chrono::TimeZone;
+
+        let pool = test_db::fresh_pool().await;
+        let acc_repo = SqliteAccountRepository::new(pool.clone());
+        let tx_repo = SqliteTransactionRepository::new(pool.clone());
+        let user_id = Uuid::new_v4();
+        let account = Account::new(
+            user_id,
+            "Bank".to_string(),
+            AccountType::Bank,
+            "UAH".to_string(),
+        );
+        acc_repo
+            .create(&account, &AccountDetails::None)
+            .await
+            .unwrap();
+
+        let older = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let newer = chrono::Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap();
+
+        let mut older_tx = Transaction::new(
+            account.id,
+            user_id,
+            Decimal::new(50, 0),
+            "UAH".to_string(),
+            TransactionKind::Expense,
+            None,
+            None,
+            older,
+        );
+        older_tx.external_balance = Some(Decimal::new(99_999, 2));
+        tx_repo
+            .create(&older_tx, &TransactionDetails::None)
+            .await
+            .unwrap();
+
+        let mut newer_tx = Transaction::new(
+            account.id,
+            user_id,
+            Decimal::new(30, 0),
+            "UAH".to_string(),
+            TransactionKind::Expense,
+            None,
+            None,
+            newer,
+        );
+        newer_tx.external_balance = Some(Decimal::new(12_345, 2));
+        tx_repo
+            .create(&newer_tx, &TransactionDetails::None)
+            .await
+            .unwrap();
+
+        // A transaction with no external_balance must be ignored even if newest.
+        let manual = Transaction::new(
+            account.id,
+            user_id,
+            Decimal::new(10, 0),
+            "UAH".to_string(),
+            TransactionKind::Expense,
+            None,
+            None,
+            chrono::Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap(),
+        );
+        tx_repo
+            .create(&manual, &TransactionDetails::None)
+            .await
+            .unwrap();
+
+        acc_repo
+            .sync_balance_from_external(account.id, user_id)
+            .await
+            .unwrap();
+
+        let (found, _) = acc_repo
+            .find_by_id(account.id, user_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.balance, Decimal::new(12_345, 2));
+    }
+
+    #[tokio::test]
+    async fn sync_balance_from_external_is_noop_with_no_external_rows() {
+        let pool = test_db::fresh_pool().await;
+        let repo = SqliteAccountRepository::new(pool);
+        let user_id = Uuid::new_v4();
+        let account = Account::new(
+            user_id,
+            "Cash".to_string(),
+            AccountType::Cash,
+            "USD".to_string(),
+        );
+        repo.create(&account, &AccountDetails::None).await.unwrap();
+        repo.adjust_balance(account.id, user_id, Decimal::new(42, 0))
+            .await
+            .unwrap();
+        repo.sync_balance_from_external(account.id, user_id)
+            .await
+            .unwrap();
+        let (found, _) = repo.find_by_id(account.id, user_id).await.unwrap().unwrap();
+        assert_eq!(found.balance, Decimal::new(42, 0));
     }
 }

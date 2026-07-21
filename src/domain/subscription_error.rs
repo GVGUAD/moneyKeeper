@@ -17,4 +17,6 @@ pub enum SubscriptionError {
     SubscriptionNotFound,
     #[error("subscription charge not found")]
     ChargeNotFound,
+    #[error("email connection sync is already in progress")]
+    SyncInProgress,
 }

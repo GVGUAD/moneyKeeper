@@ -178,6 +178,20 @@ pub trait AccountRepository: Send + Sync {
         user_id: Uuid,
         delta: Decimal,
     ) -> anyhow::Result<()>;
+    /// Overwrite the account's balance with the given absolute value.
+    async fn set_balance(
+        &self,
+        account_id: Uuid,
+        user_id: Uuid,
+        balance: Decimal,
+    ) -> anyhow::Result<()>;
+    /// Set the account's balance to the `external_balance` of the most-recent (by
+    /// `transacted_at`) transaction on this account that has one. No-op if none exist.
+    async fn sync_balance_from_external(
+        &self,
+        account_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<()>;
 }
 
 #[cfg(test)]

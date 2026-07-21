@@ -10,6 +10,7 @@ use crate::domain::bank_connection::{
 };
 use crate::domain::error::DomainError;
 use crate::domain::monobank::{MonoAccount, MonoStatementItem, MonobankApiClient};
+use crate::domain::secret::SecretString;
 use crate::domain::transaction::{Transaction, TransactionKind, TransactionRepository};
 
 pub struct MonobankService {
@@ -18,7 +19,7 @@ pub struct MonobankService {
     account_repo: Arc<dyn AccountRepository>,
     monobank_client: Arc<dyn MonobankApiClient>,
     public_url: String,
-    pub matcher: Option<Arc<MatchChargesUseCase>>,
+    matcher: Option<Arc<MatchChargesUseCase>>,
 }
 
 impl MonobankService {
@@ -40,23 +41,27 @@ impl MonobankService {
         }
     }
 
-    pub async fn get_monobank_accounts(&self, token: &str) -> anyhow::Result<Vec<MonoAccount>> {
-        self.monobank_client.get_accounts(token).await
+    pub async fn get_monobank_accounts(
+        &self,
+        token: &SecretString,
+    ) -> anyhow::Result<Vec<MonoAccount>> {
+        self.monobank_client.get_accounts(token.expose()).await
     }
 
     pub async fn connect(
         &self,
         account_id: Uuid,
         user_id: Uuid,
-        token: String,
+        token: impl Into<SecretString>,
         monobank_account_id: String,
         account_created_at: DateTime<Utc>,
     ) -> anyhow::Result<BankConnection> {
+        let token = token.into();
         // Best-effort initial balance from Monobank's client-info. If Monobank is
         // unreachable or doesn't recognise this account, we still create the
         // connection; the first webhook/sync will set the balance via
         // sync_balance_from_external.
-        match self.monobank_client.get_accounts(&token).await {
+        match self.monobank_client.get_accounts(token.expose()).await {
             Ok(accounts) => {
                 if let Some(mono) = accounts.iter().find(|a| a.id == monobank_account_id) {
                     self.account_repo
@@ -118,6 +123,14 @@ impl MonobankService {
             }
             Some(conn) => {
                 self.insert_statement_item(&conn, item).await?;
+                if let Some(matcher) = self.matcher.clone() {
+                    let user_id = conn.user_id;
+                    tokio::spawn(async move {
+                        if let Err(error) = matcher.run_for_user(user_id).await {
+                            tracing::warn!(%user_id, ?error, "webhook subscription matching failed");
+                        }
+                    });
+                }
                 Ok(1)
             }
         }
@@ -226,10 +239,21 @@ impl MonobankService {
     ) -> anyhow::Result<bool> {
         let tx = build_transaction(conn.account_id, conn.user_id, item);
         let inserted = self.transaction_repo.create_idempotent(&tx).await?;
-        if inserted {
-            self.account_repo
+        if inserted
+            && let Err(error) = self
+                .account_repo
                 .sync_balance_from_external(tx.account_id, tx.user_id)
-                .await?;
+                .await
+        {
+            // The transaction is already durable and must still trigger
+            // subscription matching. Balance reconciliation is independently
+            // retryable from the stored external balance watermark.
+            tracing::warn!(
+                account_id = %tx.account_id,
+                user_id = %tx.user_id,
+                ?error,
+                "webhook transaction inserted but balance reconciliation failed"
+            );
         }
         Ok(inserted)
     }
@@ -554,14 +578,12 @@ mod tests {
             }
         }
 
-        async fn list_match_candidates(
+        async fn list_unlinked_expense_candidates(
             &self,
+            _charge_id: Uuid,
             _user_id: Uuid,
             _from: chrono::DateTime<chrono::Utc>,
             _to: chrono::DateTime<chrono::Utc>,
-            _min_amount: rust_decimal::Decimal,
-            _max_amount: rust_decimal::Decimal,
-            _currency: &str,
         ) -> anyhow::Result<Vec<Transaction>> {
             Ok(vec![])
         }

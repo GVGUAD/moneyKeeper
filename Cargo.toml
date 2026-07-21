@@ -26,6 +26,10 @@ scraper = "0.20"
 regex = "1"
 base64 = "0.22"
 urlencoding = "2"
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+zeroize = "1"
 
 [dev-dependencies]
 axum-test = "17"
