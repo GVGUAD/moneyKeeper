@@ -201,16 +201,14 @@ mod tests {
         async fn create_idempotent(&self, _tx: &Transaction) -> anyhow::Result<bool> {
             unimplemented!()
         }
-        async fn list_match_candidates(
+        async fn list_unlinked_expense_candidates(
             &self,
+            _charge_id: Uuid,
             _user_id: Uuid,
             _from: chrono::DateTime<chrono::Utc>,
             _to: chrono::DateTime<chrono::Utc>,
-            _min_amount: rust_decimal::Decimal,
-            _max_amount: rust_decimal::Decimal,
-            _currency: &str,
         ) -> anyhow::Result<Vec<Transaction>> {
-            unimplemented!()
+            Ok(vec![])
         }
     }
 

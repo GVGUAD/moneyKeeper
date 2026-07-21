@@ -556,10 +556,53 @@
         "security": [{ "bearer_auth": [] }]
       }
     },
+    "/oauth/gmail/callback": {
+      "get": {
+        "tags": ["email-connections"],
+        "summary": "Complete Gmail OAuth from Google's browser redirect",
+        "description": "Public callback secured by a short-lived, one-time OAuth state. Redirects to the configured application URL when present; otherwise returns a resource-free status page.",
+        "operationId": "gmail_oauth_browser_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OAuth completed; safe backend status page returned because no success URL is configured",
+            "content": { "text/html": { "schema": { "type": "string" } } }
+          },
+          "303": { "description": "redirect to the configured success or failure URL" },
+          "400": {
+            "description": "provider denial, missing callback values, expired state, or replayed state"
+          },
+          "502": { "description": "provider rejected the token or profile request" },
+          "503": { "description": "provider is temporarily unavailable" },
+          "500": { "description": "unexpected callback persistence failure" }
+        }
+      }
+    },
     "/me/email-connections/gmail/oauth/callback": {
       "post": {
         "tags": ["email-connections"],
-        "summary": "Complete Gmail OAuth flow",
+        "summary": "Complete Gmail OAuth flow (deprecated compatibility endpoint)",
+        "description": "Uses the same one-time state validation as the public browser callback.",
+        "deprecated": true,
         "operationId": "gmail_oauth_callback",
         "requestBody": {
           "content": {
@@ -578,7 +621,10 @@
               }
             }
           },
-          "401": { "description": "unauthorized" }
+          "400": { "description": "invalid, expired, or replayed state" },
+          "401": { "description": "unauthorized" },
+          "502": { "description": "provider rejected the token, profile, or credentials" },
+          "503": { "description": "provider is temporarily unavailable" }
         },
         "security": [{ "bearer_auth": [] }]
       }
@@ -620,6 +666,7 @@
         ],
         "responses": {
           "204": { "description": "connection deleted" },
+          "400": { "description": "malformed connection id" },
           "401": { "description": "unauthorized" },
           "404": { "description": "connection not found" }
         },
@@ -641,8 +688,10 @@
         ],
         "responses": {
           "202": { "description": "sync accepted" },
+          "400": { "description": "malformed connection id" },
           "401": { "description": "unauthorized" },
-          "404": { "description": "connection not found" }
+          "404": { "description": "connection not found" },
+          "409": { "description": "connection sync is already leased" }
         },
         "security": [{ "bearer_auth": [] }]
       }
@@ -673,6 +722,7 @@
               }
             }
           },
+          "400": { "description": "invalid status filter" },
           "401": { "description": "unauthorized" }
         },
         "security": [{ "bearer_auth": [] }]
@@ -681,7 +731,8 @@
     "/subscriptions/forecast": {
       "get": {
         "tags": ["subscriptions"],
-        "summary": "30-day spend forecast in user's base currency",
+        "summary": "Upcoming charges and normalized subscription costs",
+        "description": "Actual charges due in the returned 30-day window. Weekly occurrences repeat; monthly and yearly charges are included in full only when due.",
         "operationId": "subscription_forecast",
         "responses": {
           "200": {
@@ -719,6 +770,7 @@
               }
             }
           },
+          "400": { "description": "malformed subscription id" },
           "401": { "description": "unauthorized" },
           "404": { "description": "subscription not found" }
         },
@@ -753,14 +805,16 @@
               }
             }
           },
+          "400": { "description": "malformed subscription id or request body, invalid override value, invalid status, or malformed category id" },
           "401": { "description": "unauthorized" },
-          "404": { "description": "subscription not found" }
+          "404": { "description": "subscription or category not found, including a resource owned by another user" }
         },
         "security": [{ "bearer_auth": [] }]
       },
       "delete": {
         "tags": ["subscriptions"],
-        "summary": "Delete a subscription and its charges",
+        "summary": "Permanently suppress a subscription",
+        "description": "Atomically creates a provider/merchant tombstone and hard-deletes the subscription aggregate and its charges. Future receipt replay cannot recreate it.",
         "operationId": "delete_subscription",
         "parameters": [
           {
@@ -772,6 +826,7 @@
         ],
         "responses": {
           "204": { "description": "subscription deleted" },
+          "400": { "description": "malformed subscription id" },
           "401": { "description": "unauthorized" },
           "404": { "description": "subscription not found" }
         },
@@ -803,6 +858,7 @@
               }
             }
           },
+          "400": { "description": "malformed subscription id" },
           "401": { "description": "unauthorized" },
           "404": { "description": "subscription not found" }
         },
@@ -832,8 +888,10 @@
         },
         "responses": {
           "204": { "description": "charge linked" },
+          "400": { "description": "malformed charge id or request body, malformed transaction id, or transaction is not an expense" },
           "401": { "description": "unauthorized" },
-          "404": { "description": "charge or transaction not found" }
+          "404": { "description": "charge or transaction not found, including a resource owned by another user" },
+          "409": { "description": "charge or transaction is already linked" }
         },
         "security": [{ "bearer_auth": [] }]
       }
@@ -852,9 +910,11 @@
           }
         ],
         "responses": {
-          "204": { "description": "charge unlinked" },
+          "204": { "description": "charge unlinked and the rejected charge/transaction pair recorded" },
+          "400": { "description": "malformed charge id" },
           "401": { "description": "unauthorized" },
-          "404": { "description": "charge not found" }
+          "404": { "description": "charge not found, including a charge owned by another user" },
+          "409": { "description": "charge is not currently linked" }
         },
         "security": [{ "bearer_auth": [] }]
       }
@@ -1906,7 +1966,10 @@
           "id": { "type": "string", "format": "uuid" },
           "email_address": { "type": "string" },
           "provider": { "type": "string", "example": "gmail" },
-          "status": { "type": "string", "enum": ["Pending", "Connected", "Failed"] },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "connected", "failed", "reconnect_required"]
+          },
           "last_synced_at": { "type": ["string", "null"], "format": "date-time" },
           "created_at": { "type": "string", "format": "date-time" }
         }
@@ -1921,10 +1984,13 @@
       },
       "SubscriptionResponse": {
         "type": "object",
-        "required": ["id", "provider", "product_name", "amount", "currency", "billing_period", "status", "started_at", "created_at"],
+        "required": ["id", "provider", "product_name", "amount", "currency", "billing_period", "status", "started_at", "overrides", "created_at"],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
-          "provider": { "type": "string", "example": "GooglePlay" },
+          "provider": {
+            "type": "string",
+            "enum": ["google_play", "apple_app_store", "netflix", "other"]
+          },
           "product_name": { "type": "string" },
           "amount": { "type": "string", "description": "Decimal amount" },
           "currency": { "type": "string", "example": "USD" },
@@ -1934,17 +2000,57 @@
           "last_charged_at": { "type": ["string", "null"], "format": "date-time" },
           "next_expected_at": { "type": ["string", "null"], "format": "date-time" },
           "category_id": { "type": ["string", "null"], "format": "uuid" },
+          "overrides": { "$ref": "#/components/schemas/SubscriptionOverrides" },
+          "charges": {
+            "type": "array",
+            "description": "The 20 most recent charges; present on the detail endpoint and omitted from list/update responses.",
+            "maxItems": 20,
+            "items": { "$ref": "#/components/schemas/SubscriptionChargeResponse" }
+          },
           "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "SubscriptionOverrides": {
+        "type": "object",
+        "required": ["product_name", "billing_period", "status"],
+        "properties": {
+          "product_name": { "type": ["string", "null"] },
+          "billing_period": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "enum": ["weekly", "monthly", "yearly"] }
+            ]
+          },
+          "status": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "enum": ["active", "inactive"] }
+            ]
+          }
         }
       },
       "UpdateSubscriptionRequest": {
         "type": "object",
+        "description": "An omitted field is unchanged. Product-name and billing-period nulls clear their overrides; status null is invalid and `auto` clears the status override.",
         "properties": {
-          "product_name": { "type": ["string", "null"] },
-          "billing_period": { "type": ["string", "null"], "enum": ["weekly", "monthly", "yearly"] },
-          "status": { "type": ["string", "null"], "enum": ["active", "inactive"] },
+          "product_name": {
+            "type": ["string", "null"],
+            "description": "A string sets the override; null clears it; omission leaves it unchanged."
+          },
+          "billing_period": {
+            "description": "A value sets the override; null clears it; omission leaves it unchanged.",
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "enum": ["weekly", "monthly", "yearly"] }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "inactive", "auto"],
+            "description": "active/inactive set a manual override; auto clears it; null is invalid; omission leaves it unchanged."
+          },
           "category_id": {
-            "description": "Pass null to clear, omit to leave unchanged",
+            "description": "A UUID sets a category owned by the current user; null clears it; omission leaves it unchanged.",
             "oneOf": [
               { "type": "null" },
               { "type": "string", "format": "uuid" }
@@ -1975,15 +2081,51 @@
       },
       "ForecastResponse": {
         "type": "object",
-        "required": ["base_currency", "base_total", "by_currency"],
+        "required": ["window_start", "window_end", "base_currency", "base_total", "by_currency", "monthly_equivalent_total", "yearly_equivalent_total", "normalized_by_currency", "fx_quotes", "complete", "warnings"],
         "properties": {
+          "window_start": { "type": "string", "format": "date-time" },
+          "window_end": { "type": "string", "format": "date-time" },
           "base_currency": { "type": "string", "example": "UAH" },
-          "base_total": { "type": "string", "description": "Total 30-day spend in base currency" },
+          "base_total": { "type": "string", "description": "Actual charges due in the window, converted to base currency when FX is available." },
           "by_currency": {
             "type": "object",
-            "description": "30-day spend broken down by original currency",
+            "description": "Actual charges due in the window, broken down by original currency.",
             "additionalProperties": { "type": "string" }
-          }
+          },
+          "monthly_equivalent_total": { "type": "string" },
+          "yearly_equivalent_total": { "type": "string" },
+          "normalized_by_currency": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/components/schemas/ForecastNormalizedCurrency" }
+          },
+          "fx_quotes": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ForecastFxQuote" }
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "False when at least one needed FX quote was unavailable."
+          },
+          "warnings": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "ForecastNormalizedCurrency": {
+        "type": "object",
+        "required": ["monthly", "yearly"],
+        "properties": {
+          "monthly": { "type": "string" },
+          "yearly": { "type": "string" }
+        }
+      },
+      "ForecastFxQuote": {
+        "type": "object",
+        "required": ["from_currency", "to_currency", "rate", "requested_date", "rate_date"],
+        "properties": {
+          "from_currency": { "type": "string" },
+          "to_currency": { "type": "string" },
+          "rate": { "type": "string" },
+          "requested_date": { "type": "string", "format": "date" },
+          "rate_date": { "type": "string", "format": "date" }
         }
       }
     },

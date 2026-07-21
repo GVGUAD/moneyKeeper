@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
@@ -190,7 +190,7 @@ fn default_limit() -> i64 {
 #[derive(Debug, serde::Deserialize)]
 pub struct ConnectMonobankRequest {
     pub account_id: Uuid,
-    pub token: String,
+    pub token: crate::domain::secret::SecretString,
     pub external_account_id: String,
 }
 
@@ -252,6 +252,12 @@ pub struct EmailConnectionResponse {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct GmailOAuthStartResponse {
+    pub authorize_url: String,
+    pub state: String,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct GmailOAuthCallbackRequest {
     pub code: String,
@@ -271,7 +277,17 @@ pub struct SubscriptionResponse {
     pub last_charged_at: Option<DateTime<Utc>>,
     pub next_expected_at: Option<DateTime<Utc>>,
     pub category_id: Option<Uuid>,
+    pub overrides: SubscriptionOverridesResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charges: Option<Vec<SubscriptionChargeResponse>>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SubscriptionOverridesResponse {
+    pub product_name: Option<String>,
+    pub billing_period: Option<String>,
+    pub status: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -281,9 +297,12 @@ pub struct SubscriptionListQuery {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct UpdateSubscriptionRequest {
-    pub product_name: Option<String>,
-    pub billing_period: Option<String>,
-    pub status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub product_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub billing_period: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub status: Option<Option<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     pub category_id: Option<Option<Uuid>>,
 }
@@ -307,9 +326,33 @@ pub struct LinkChargeRequest {
 
 #[derive(Debug, serde::Serialize)]
 pub struct ForecastResponse {
+    pub window_start: DateTime<Utc>,
+    pub window_end: DateTime<Utc>,
     pub base_currency: String,
     pub base_total: Decimal,
     pub by_currency: std::collections::HashMap<String, Decimal>,
+    pub monthly_equivalent_total: Decimal,
+    pub yearly_equivalent_total: Decimal,
+    pub normalized_by_currency:
+        std::collections::HashMap<String, ForecastNormalizedCurrencyResponse>,
+    pub fx_quotes: Vec<ForecastFxQuoteResponse>,
+    pub complete: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ForecastNormalizedCurrencyResponse {
+    pub monthly: Decimal,
+    pub yearly: Decimal,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ForecastFxQuoteResponse {
+    pub from_currency: String,
+    pub to_currency: String,
+    pub rate: Decimal,
+    pub requested_date: NaiveDate,
+    pub rate_date: NaiveDate,
 }
 
 /// Webhook payload from Monobank

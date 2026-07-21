@@ -22,4 +22,7 @@ mod user_settings;
 #[path = "api/subscriptions.rs"]
 mod subscriptions;
 
+#[path = "api/oauth_security.rs"]
+mod oauth_security;
+
 mod common;

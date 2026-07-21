@@ -12,10 +12,7 @@ pub struct UserSettingsService {
 }
 
 impl UserSettingsService {
-    pub fn new(
-        repo: Arc<dyn UserSettingsRepository>,
-        fx_repo: Arc<dyn FxRateRepository>,
-    ) -> Self {
+    pub fn new(repo: Arc<dyn UserSettingsRepository>, fx_repo: Arc<dyn FxRateRepository>) -> Self {
         Self { repo, fx_repo }
     }
 
@@ -41,10 +38,9 @@ impl UserSettingsService {
         if normalized != "UAH" {
             let known = self.fx_repo.known_currencies().await?;
             if !known.iter().any(|c| c == &normalized) {
-                return Err(DomainError::InvalidInput(format!(
-                    "unknown currency: {normalized}"
-                ))
-                .into());
+                return Err(
+                    DomainError::InvalidInput(format!("unknown currency: {normalized}")).into(),
+                );
             }
         }
         let mut s = self.get_or_default(user_id).await?;

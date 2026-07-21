@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sqlx::{Connection, Executor, PgConnection, PgPool};
-use testcontainers::ContainerAsync;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
@@ -18,6 +18,7 @@ async fn shared_container() -> &'static SharedContainer {
     CONTAINER
         .get_or_init(|| async {
             let container = Postgres::default()
+                .with_tag("16-alpine")
                 .start()
                 .await
                 .expect("failed to start postgres testcontainer");

@@ -28,6 +28,14 @@ impl CategoryService {
         self.repo.list_by_user(user_id).await
     }
 
+    pub async fn require_owned(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<()> {
+        self.repo
+            .find_by_id(id, user_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound(format!("category {id}")))?;
+        Ok(())
+    }
+
     pub async fn update(
         &self,
         id: Uuid,

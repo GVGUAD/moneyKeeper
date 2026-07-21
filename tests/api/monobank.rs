@@ -93,6 +93,127 @@ async fn delete_connection_returns_204() {
     assert_eq!(body.as_array().unwrap().len(), 0);
 }
 
+/// Fetch the balance field of a single account via GET /accounts/:id.
+async fn fetch_balance(
+    server: &axum_test::TestServer,
+    token: &str,
+    account_id: uuid::Uuid,
+) -> String {
+    let res = server
+        .get(&format!("/accounts/{account_id}"))
+        .add_header(helpers::auth(token).0, helpers::auth(token).1)
+        .await;
+    let body: Value = res.json();
+    body["balance"].as_str().unwrap().to_string()
+}
+
+fn statement_item(id: &str, time: i64, amount: i64, balance: i64) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "time": time,
+        "description": "Test",
+        "mcc": 5411,
+        "amount": amount,
+        "operationAmount": amount,
+        "currencyCode": 980,
+        "balance": balance,
+        "hold": false
+    })
+}
+
+#[tokio::test]
+async fn webhook_sets_account_balance_from_monobank_balance_field() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    connect_mono(&server, &token, account_id, "mono-bal-1").await;
+
+    // Monobank says: this expense of 5.00 leaves the account at 1234.56 UAH.
+    let res = server
+        .post("/monobank/webhook")
+        .json(&serde_json::json!({
+            "type": "StatementItem",
+            "data": {
+                "account": "mono-bal-1",
+                "statementItem": statement_item("stmt-bal-1", 1_700_000_000, -500, 123_456)
+            }
+        }))
+        .await;
+    assert_eq!(res.status_code(), StatusCode::OK);
+
+    let balance = fetch_balance(&server, &token, account_id).await;
+    // 123_456 kopecks → 1234.56 UAH, NOT 0 - 5.00 = -5.00 from the delta path.
+    assert_eq!(balance, "1234.56");
+}
+
+#[tokio::test]
+async fn webhook_out_of_order_keeps_latest_balance_by_transacted_at() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    connect_mono(&server, &token, account_id, "mono-bal-ooo").await;
+
+    // Newer transaction (time = 2000) arrives first → balance = 100.00.
+    let r1 = server
+        .post("/monobank/webhook")
+        .json(&serde_json::json!({
+            "type": "StatementItem",
+            "data": {
+                "account": "mono-bal-ooo",
+                "statementItem": statement_item("stmt-newer", 2_000, -100, 10_000)
+            }
+        }))
+        .await;
+    assert_eq!(r1.status_code(), StatusCode::OK);
+    assert_eq!(fetch_balance(&server, &token, account_id).await, "100.00");
+
+    // Older transaction (time = 1000) arrives second → balance must STAY 100.00,
+    // not regress to 999.99 which was the snapshot at that earlier point in time.
+    let r2 = server
+        .post("/monobank/webhook")
+        .json(&serde_json::json!({
+            "type": "StatementItem",
+            "data": {
+                "account": "mono-bal-ooo",
+                "statementItem": statement_item("stmt-older", 1_000, -50, 99_999)
+            }
+        }))
+        .await;
+    assert_eq!(r2.status_code(), StatusCode::OK);
+    assert_eq!(fetch_balance(&server, &token, account_id).await, "100.00");
+}
+
+#[tokio::test]
+async fn connect_initializes_balance_from_mono_account() {
+    let postgres = common::TestPostgres::new().await;
+    let mock_accounts = vec![moneykeeper::domain::monobank::MonoAccount {
+        id: "mono-init-1".into(),
+        currency_code: 980,
+        balance: 50_000, // 500.00 UAH
+        credit_limit: 0,
+        account_type: "black".into(),
+        iban: None,
+    }];
+    let client = Arc::new(helpers::MockMonobankClient {
+        accounts: mock_accounts,
+        statement_items: vec![],
+    });
+    let server = helpers::make_app_with_client(postgres.pool, client).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    // sanity: starts at zero
+    assert_eq!(fetch_balance(&server, &token, account_id).await, "0");
+
+    connect_mono(&server, &token, account_id, "mono-init-1").await;
+
+    assert_eq!(fetch_balance(&server, &token, account_id).await, "500.00");
+}
+
 #[tokio::test]
 async fn webhook_inserts_expense_transaction() {
     let postgres = common::TestPostgres::new().await;

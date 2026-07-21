@@ -10,7 +10,7 @@ use moneykeeper::domain::subscription::{
     BillingPeriod, Subscription, SubscriptionProvider, SubscriptionStatus,
 };
 use moneykeeper::domain::subscription_charge::{
-    ChargeMatchStatus, ReceiptKind, SubscriptionCharge,
+    ChargeMatchSource, ChargeMatchStatus, ChargeSource, ReceiptKind, SubscriptionCharge,
 };
 
 /// Insert a subscription + one pending charge directly via the service repos.
@@ -30,15 +30,16 @@ async fn seed_subscription_and_charge(ctx: &helpers::TestContext, user_id: Uuid)
         last_charged_at: None,
         next_expected_at: None,
         category_id: None,
+        overrides: Default::default(),
         created_at: Utc::now(),
     };
     let inserted_sub = ctx
-        .subscriptions
-        .subscriptions
+        .subscription_repo
         .upsert_by_merchant_key(&sub)
         .await
         .expect("upsert subscription");
 
+    let source_key = format!("other:test:{}", Uuid::new_v4());
     let charge = SubscriptionCharge {
         id: Uuid::new_v4(),
         subscription_id: inserted_sub.id,
@@ -46,15 +47,21 @@ async fn seed_subscription_and_charge(ctx: &helpers::TestContext, user_id: Uuid)
         amount: dec!(15.99),
         currency: "USD".into(),
         charged_at: Utc::now(),
-        email_message_id: format!("msg-{}", Uuid::new_v4()),
+        email_message_id: source_key.clone(),
+        rfc_message_id: None,
+        source: ChargeSource::Other,
+        source_key,
+        source_connection_id: None,
+        provider_message_id: None,
         kind: ReceiptKind::Renewal,
         transaction_id: None,
         match_status: ChargeMatchStatus::Pending,
+        match_started_at: Utc::now(),
+        match_source: None,
         created_at: Utc::now(),
     };
     let (charge_id, _) = ctx
-        .subscriptions
-        .charges
+        .charge_repo
         .create_idempotent(&charge)
         .await
         .expect("create charge");
@@ -109,7 +116,7 @@ async fn get_subscription_returns_correct_data() {
     let ctx = helpers::make_app_ctx(postgres.pool).await;
     let (user_id, token) = helpers::create_test_user();
 
-    let (sub_id, _) = seed_subscription_and_charge(&ctx, user_id).await;
+    let (sub_id, charge_id) = seed_subscription_and_charge(&ctx, user_id).await;
 
     let res = ctx
         .server
@@ -123,6 +130,10 @@ async fn get_subscription_returns_correct_data() {
     assert_eq!(body["currency"], "USD");
     assert_eq!(body["amount"], "15.99");
     assert_eq!(body["billing_period"], "monthly");
+    assert_eq!(body["overrides"]["product_name"], Value::Null);
+    let charges = body["charges"].as_array().expect("detail charges");
+    assert_eq!(charges.len(), 1);
+    assert_eq!(charges[0]["id"], charge_id.to_string());
 }
 
 #[tokio::test]
@@ -166,6 +177,7 @@ async fn list_charges_returns_pending_charge() {
 #[tokio::test]
 async fn forecast_returns_non_zero_for_active_subscription() {
     let postgres = common::TestPostgres::new().await;
+    let pool = postgres.pool.clone();
 
     // Seed a USD→UAH rate for today so the forecast can convert USD→UAH
     // (default base_currency is UAH).
@@ -180,7 +192,13 @@ async fn forecast_returns_non_zero_for_active_subscription() {
     let ctx = helpers::make_app_ctx(postgres.pool).await;
     let (user_id, token) = helpers::create_test_user();
 
-    seed_subscription_and_charge(&ctx, user_id).await;
+    let (sub_id, _) = seed_subscription_and_charge(&ctx, user_id).await;
+    sqlx::query("UPDATE subscriptions SET next_expected_at = $1 WHERE id = $2")
+        .bind((Utc::now() + chrono::Duration::days(1)).timestamp())
+        .bind(sub_id)
+        .execute(&pool)
+        .await
+        .expect("schedule forecast occurrence");
 
     let res = ctx
         .server
@@ -199,6 +217,16 @@ async fn forecast_returns_non_zero_for_active_subscription() {
         .parse()
         .expect("base_total should be a decimal string");
     assert!(base_total > 0.0, "base_total should be positive");
+    assert!(body["window_start"].is_string());
+    assert!(body["window_end"].is_string());
+    assert!(body["monthly_equivalent_total"].is_string());
+    assert!(body["yearly_equivalent_total"].is_string());
+    assert!(body["normalized_by_currency"]["USD"]["monthly"].is_string());
+    assert_eq!(body["complete"], true);
+    assert_eq!(
+        body["fx_quotes"][0]["rate_date"],
+        Utc::now().date_naive().to_string()
+    );
 }
 
 #[tokio::test]
@@ -247,6 +275,7 @@ async fn matcher_links_charge_to_matching_expense() {
 #[tokio::test]
 async fn manual_link_and_unlink_charge() {
     let postgres = common::TestPostgres::new().await;
+    let pool = postgres.pool.clone();
     let ctx = helpers::make_app_ctx(postgres.pool).await;
     let (user_id, token) = helpers::create_test_user();
     let account_id = helpers::create_account_for(&ctx.server, &token).await;
@@ -315,11 +344,28 @@ async fn manual_link_and_unlink_charge() {
         .expect("charge not found");
     assert_eq!(charge2["match_status"], "Pending");
     assert!(charge2["transaction_id"].is_null());
+
+    let rejected_pairs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM subscription_charge_match_rejections WHERE charge_id = $1",
+    )
+    .bind(charge_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count rejected pairs");
+    assert_eq!(rejected_pairs, 1);
+
+    let already_unlinked = ctx
+        .server
+        .post(&format!("/subscription-charges/{charge_id}/unlink"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+    assert_eq!(already_unlinked.status_code(), StatusCode::CONFLICT);
 }
 
 #[tokio::test]
 async fn delete_subscription_returns_204_and_removes_from_list() {
     let postgres = common::TestPostgres::new().await;
+    let pool = postgres.pool.clone();
     let ctx = helpers::make_app_ctx(postgres.pool).await;
     let (user_id, token) = helpers::create_test_user();
 
@@ -340,6 +386,15 @@ async fn delete_subscription_returns_204_and_removes_from_list() {
     assert_eq!(list_res.status_code(), StatusCode::OK);
     let body: Value = list_res.json();
     assert_eq!(body.as_array().unwrap().len(), 0);
+
+    let tombstones: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM subscription_tombstones WHERE user_id = $1 AND provider = 'netflix'",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .expect("count tombstones");
+    assert_eq!(tombstones, 1);
 }
 
 #[tokio::test]
@@ -352,7 +407,7 @@ async fn subscriptions_require_auth() {
 }
 
 #[tokio::test]
-async fn patch_subscription_updates_product_name() {
+async fn patch_subscription_sets_and_clears_durable_overrides() {
     let postgres = common::TestPostgres::new().await;
     let ctx = helpers::make_app_ctx(postgres.pool).await;
     let (user_id, token) = helpers::create_test_user();
@@ -363,9 +418,182 @@ async fn patch_subscription_updates_product_name() {
         .server
         .patch(&format!("/subscriptions/{sub_id}"))
         .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
-        .json(&serde_json::json!({ "product_name": "Netflix Standard" }))
+        .json(&serde_json::json!({
+            "product_name": "Netflix Standard",
+            "billing_period": "yearly",
+            "status": "inactive"
+        }))
         .await;
     assert_eq!(patch_res.status_code(), StatusCode::OK);
     let body: Value = patch_res.json();
     assert_eq!(body["product_name"], "Netflix Standard");
+    assert_eq!(body["billing_period"], "yearly");
+    assert_eq!(body["status"], "inactive");
+    assert_eq!(body["overrides"]["product_name"], "Netflix Standard");
+    assert_eq!(body["overrides"]["billing_period"], "yearly");
+    assert_eq!(body["overrides"]["status"], "inactive");
+
+    let clear_res = ctx
+        .server
+        .patch(&format!("/subscriptions/{sub_id}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "product_name": null,
+            "billing_period": null,
+            "status": "auto"
+        }))
+        .await;
+    assert_eq!(clear_res.status_code(), StatusCode::OK);
+    let cleared: Value = clear_res.json();
+    assert_eq!(cleared["product_name"], "Netflix Premium");
+    assert_eq!(cleared["billing_period"], "monthly");
+    assert_eq!(cleared["status"], "active");
+    assert_eq!(cleared["overrides"]["product_name"], Value::Null);
+    assert_eq!(cleared["overrides"]["billing_period"], Value::Null);
+    assert_eq!(cleared["overrides"]["status"], Value::Null);
+}
+
+#[tokio::test]
+async fn patch_subscription_validates_values_and_category_ownership() {
+    let postgres = common::TestPostgres::new().await;
+    let ctx = helpers::make_app_ctx(postgres.pool).await;
+    let (user_id, token) = helpers::create_test_user();
+    let (_other_user_id, other_token) = helpers::create_test_user();
+    let (sub_id, _) = seed_subscription_and_charge(&ctx, user_id).await;
+    let other_category = helpers::create_category_for(&ctx.server, &other_token).await;
+
+    for payload in [
+        serde_json::json!({ "billing_period": "daily" }),
+        serde_json::json!({ "status": "paused" }),
+        serde_json::json!({ "status": null }),
+        serde_json::json!({ "product_name": "   " }),
+        serde_json::json!({ "category_id": "not-a-uuid" }),
+    ] {
+        let response = ctx
+            .server
+            .patch(&format!("/subscriptions/{sub_id}"))
+            .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+            .json(&payload)
+            .await;
+        assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    let response = ctx
+        .server
+        .patch(&format!("/subscriptions/{sub_id}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({ "category_id": other_category }))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::NOT_FOUND);
+
+    let (_, malformed_charge) = seed_subscription_and_charge(&ctx, user_id).await;
+    let response = ctx
+        .server
+        .post(&format!("/subscription-charges/{malformed_charge}/link"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({ "transaction_id": "not-a-uuid" }))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn one_transaction_cannot_be_linked_to_two_charges() {
+    let postgres = common::TestPostgres::new().await;
+    let ctx = helpers::make_app_ctx(postgres.pool).await;
+    let (user_id, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&ctx.server, &token).await;
+    let (_, first_charge) = seed_subscription_and_charge(&ctx, user_id).await;
+    let (_, second_charge) = seed_subscription_and_charge(&ctx, user_id).await;
+
+    let tx_res = ctx
+        .server
+        .post(&format!("/accounts/{account_id}/transactions"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "amount": "15.99",
+            "currency": "USD",
+            "kind": "Expense",
+            "transacted_at": Utc::now().to_rfc3339()
+        }))
+        .await;
+    assert_eq!(tx_res.status_code(), StatusCode::CREATED);
+    let tx_id = tx_res.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    let first = ctx
+        .server
+        .post(&format!("/subscription-charges/{first_charge}/link"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({ "transaction_id": tx_id }))
+        .await;
+    assert_eq!(first.status_code(), StatusCode::NO_CONTENT);
+
+    let second = ctx
+        .server
+        .post(&format!("/subscription-charges/{second_charge}/link"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({ "transaction_id": tx_id }))
+        .await;
+    assert_eq!(second.status_code(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn monobank_webhook_triggers_cross_currency_subscription_matching() {
+    let postgres = common::TestPostgres::new().await;
+    let pool = postgres.pool.clone();
+    helpers::seed_fx_rate(&pool, Utc::now().date_naive(), "USD", dec!(40)).await;
+    let ctx = helpers::make_app_ctx(postgres.pool).await;
+    let (user_id, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&ctx.server, &token).await;
+    let (_sub_id, charge_id) = seed_subscription_and_charge(&ctx, user_id).await;
+
+    let connect = ctx
+        .server
+        .post("/monobank/connect")
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "account_id": account_id,
+            "token": "fake-mono-token",
+            "external_account_id": "mono-subscription-match"
+        }))
+        .await;
+    assert_eq!(connect.status_code(), StatusCode::CREATED);
+
+    let webhook = ctx
+        .server
+        .post("/monobank/webhook")
+        .json(&serde_json::json!({
+            "type": "StatementItem",
+            "data": {
+                "account": "mono-subscription-match",
+                "statementItem": {
+                    "id": "subscription-fx-webhook-1",
+                    "time": Utc::now().timestamp(),
+                    "description": "NETFLIX.COM",
+                    "mcc": 4899,
+                    "amount": -63960,
+                    "operationAmount": -63960,
+                    "currencyCode": 980,
+                    "balance": 100000,
+                    "hold": false
+                }
+            }
+        }))
+        .await;
+    assert_eq!(webhook.status_code(), StatusCode::OK);
+
+    for _ in 0..100 {
+        let charge = ctx
+            .charge_repo
+            .find_by_id(charge_id, user_id)
+            .await
+            .expect("load charge")
+            .expect("charge exists");
+        if charge.match_status == ChargeMatchStatus::Matched {
+            assert_eq!(charge.match_source, Some(ChargeMatchSource::Automatic));
+            assert!(charge.transaction_id.is_some());
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("webhook transaction was not matched to the pending subscription charge");
 }

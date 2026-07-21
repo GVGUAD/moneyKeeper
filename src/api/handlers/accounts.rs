@@ -169,4 +169,3 @@ pub async fn delete_account(
     state.accounts.delete(id, user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-

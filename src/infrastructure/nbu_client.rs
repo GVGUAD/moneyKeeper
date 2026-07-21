@@ -21,7 +21,11 @@ impl Default for NbuFxRateSource {
 impl NbuFxRateSource {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("valid NBU HTTP client configuration"),
             base_url: NBU_URL.to_string(),
         }
     }
@@ -49,7 +53,14 @@ impl FxRateSource for NbuFxRateSource {
     async fn fetch_rates_for(&self, date: NaiveDate) -> anyhow::Result<Vec<FxRate>> {
         let date_param = date.format("%Y%m%d").to_string();
         let url = format!("{}?date={}&json", self.base_url, date_param);
-        let rows: Vec<NbuRow> = self.http.get(url).send().await?.json().await?;
+        let rows: Vec<NbuRow> = self
+            .http
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
         Ok(parse_rows(date, rows))
     }
 }
@@ -62,8 +73,14 @@ mod tests {
     fn parses_nbu_rows_to_fx_rates() {
         let date = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
         let rows = vec![
-            NbuRow { cc: "USD".to_string(), rate: Decimal::new(405, 1) },
-            NbuRow { cc: "EUR".to_string(), rate: Decimal::new(432, 1) },
+            NbuRow {
+                cc: "USD".to_string(),
+                rate: Decimal::new(405, 1),
+            },
+            NbuRow {
+                cc: "EUR".to_string(),
+                rate: Decimal::new(432, 1),
+            },
         ];
 
         let rates = parse_rows(date, rows);

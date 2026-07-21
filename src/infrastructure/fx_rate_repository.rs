@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 
-use crate::domain::fx_rate::{FxRate, FxRateRepository};
+use crate::domain::fx_rate::{FxQuote, FxRate, FxRateRepository};
 
 pub struct PgFxRateRepository {
     pool: PgPool,
@@ -66,6 +66,65 @@ impl FxRateRepository for PgFxRateRepository {
         }
     }
 
+    async fn quote_as_of(
+        &self,
+        date: NaiveDate,
+        from: &str,
+        to: &str,
+    ) -> anyhow::Result<Option<FxQuote>> {
+        let from = from.to_ascii_uppercase();
+        let to = to.to_ascii_uppercase();
+        if from == to {
+            return Ok(Some(FxQuote {
+                requested_date: date,
+                rate_date: date,
+                from_currency: from,
+                to_currency: to,
+                rate: Decimal::ONE,
+            }));
+        }
+        let from_quote = if from == "UAH" {
+            Some((date, Decimal::ONE))
+        } else {
+            sqlx::query_as::<_, (NaiveDate, Decimal)>(
+                "SELECT rate_date, rate FROM fx_rates \
+                 WHERE from_currency=$1 AND to_currency='UAH' AND rate_date <= $2 \
+                 ORDER BY rate_date DESC LIMIT 1",
+            )
+            .bind(&from)
+            .bind(date)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let to_quote = if to == "UAH" {
+            Some((date, Decimal::ONE))
+        } else {
+            sqlx::query_as::<_, (NaiveDate, Decimal)>(
+                "SELECT rate_date, rate FROM fx_rates \
+                 WHERE from_currency=$1 AND to_currency='UAH' AND rate_date <= $2 \
+                 ORDER BY rate_date DESC LIMIT 1",
+            )
+            .bind(&to)
+            .bind(date)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let (Some((from_date, from_rate)), Some((to_date, to_rate))) = (from_quote, to_quote)
+        else {
+            return Ok(None);
+        };
+        if to_rate.is_zero() {
+            return Ok(None);
+        }
+        Ok(Some(FxQuote {
+            requested_date: date,
+            rate_date: from_date.min(to_date),
+            from_currency: from,
+            to_currency: to,
+            rate: from_rate / to_rate,
+        }))
+    }
+
     async fn upsert_many(&self, rates: &[FxRate]) -> anyhow::Result<()> {
         if rates.is_empty() {
             return Ok(());
@@ -97,6 +156,26 @@ impl FxRateRepository for PgFxRateRepository {
         Ok(sqlx::query_scalar!("SELECT MAX(rate_date) FROM fx_rates")
             .fetch_one(&self.pool)
             .await?)
+    }
+
+    async fn missing_dates(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> anyhow::Result<Vec<NaiveDate>> {
+        if from > to {
+            return Ok(Vec::new());
+        }
+        Ok(sqlx::query_scalar::<_, NaiveDate>(
+            "SELECT day::date \
+             FROM generate_series($1::date,$2::date,interval '1 day') AS day \
+             WHERE NOT EXISTS (SELECT 1 FROM fx_rates WHERE rate_date=day::date) \
+             ORDER BY day",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn known_currencies(&self) -> anyhow::Result<Vec<String>> {

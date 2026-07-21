@@ -295,31 +295,34 @@ impl TransactionRepository for SqliteTransactionRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    async fn list_match_candidates(
+    async fn list_unlinked_expense_candidates(
         &self,
+        charge_id: Uuid,
         user_id: Uuid,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
-        min_amount: Decimal,
-        max_amount: Decimal,
-        currency: &str,
     ) -> anyhow::Result<Vec<Transaction>> {
         let rows = sqlx::query_as::<_, TxRow>(
             "SELECT t.* FROM transactions t \
-             LEFT JOIN subscription_charges sc ON sc.transaction_id = t.id \
-             WHERE t.user_id = $1 \
+             WHERE t.user_id = $2 \
                AND t.kind = 'Expense' \
-               AND t.transacted_at BETWEEN $2 AND $3 \
-               AND t.amount BETWEEN $4 AND $5 \
-               AND t.currency = $6 \
-               AND sc.id IS NULL",
+               AND t.transacted_at BETWEEN $3 AND $4 \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM subscription_charges linked \
+                   WHERE linked.transaction_id = t.id \
+               ) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM subscription_charge_match_rejections rejected \
+                   WHERE rejected.charge_id = $1 \
+                     AND rejected.transaction_id = t.id \
+                     AND rejected.user_id = $2 \
+               ) \
+             ORDER BY t.transacted_at, t.id",
         )
+        .bind(charge_id)
         .bind(user_id)
         .bind(from)
         .bind(to)
-        .bind(min_amount)
-        .bind(max_amount)
-        .bind(currency)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(row_to_tx).collect()

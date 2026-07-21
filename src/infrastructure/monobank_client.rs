@@ -64,8 +64,8 @@ impl MonobankApiClient for ReqwestMonobankClient {
         if !status.is_success() {
             anyhow::bail!("monobank client-info non-2xx: {status}");
         }
-        let info: ClientInfo = serde_json::from_str(&body)
-            .context("monobank client-info parse failed")?;
+        let info: ClientInfo =
+            serde_json::from_str(&body).context("monobank client-info parse failed")?;
         Ok(info.accounts)
     }
 

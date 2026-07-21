@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Months, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -55,15 +55,16 @@ impl BillingPeriod {
             other => Err(anyhow::anyhow!("unknown billing period: {other}")),
         }
     }
-    pub fn cycle_days(&self) -> i64 {
-        match self {
-            Self::Weekly => 7,
-            Self::Monthly => 30,
-            Self::Yearly => 365,
-        }
-    }
     pub fn next_after(&self, from: DateTime<Utc>) -> DateTime<Utc> {
-        from + chrono::Duration::days(self.cycle_days())
+        match self {
+            Self::Weekly => from + chrono::Duration::weeks(1),
+            Self::Monthly => from
+                .checked_add_months(Months::new(1))
+                .expect("monthly subscription date remains representable"),
+            Self::Yearly => from
+                .checked_add_months(Months::new(12))
+                .expect("yearly subscription date remains representable"),
+        }
     }
 }
 
@@ -105,7 +106,15 @@ pub struct Subscription {
     pub last_charged_at: Option<DateTime<Utc>>,
     pub next_expected_at: Option<DateTime<Utc>>,
     pub category_id: Option<Uuid>,
+    pub overrides: SubscriptionOverrides,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SubscriptionOverrides {
+    pub product_name: Option<String>,
+    pub billing_period: Option<BillingPeriod>,
+    pub status: Option<SubscriptionStatus>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -113,9 +122,24 @@ pub struct SubscriptionListFilter {
     pub status: Option<SubscriptionStatus>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubscriptionUpsertResult {
+    pub subscription: Subscription,
+    /// True only when this call inserted the aggregate. This is determined
+    /// while holding the same merchant lock as the upsert, so receipt kind can
+    /// be selected without a check-then-insert race.
+    pub inserted: bool,
+}
+
 #[async_trait::async_trait]
 pub trait SubscriptionRepository: Send + Sync {
     async fn upsert_by_merchant_key(&self, sub: &Subscription) -> anyhow::Result<Subscription>;
+    /// Atomically upserts receipt-derived state unless the user previously
+    /// deleted this provider/merchant. `None` means a tombstone suppressed it.
+    async fn upsert_receipt_if_not_tombstoned(
+        &self,
+        sub: &Subscription,
+    ) -> anyhow::Result<Option<SubscriptionUpsertResult>>;
     async fn find_by_id(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Subscription>>;
     async fn list_by_user(
         &self,
@@ -133,12 +157,16 @@ pub trait SubscriptionRepository: Send + Sync {
         &self,
         id: Uuid,
         user_id: Uuid,
-        product_name: Option<String>,
+        product_name: Option<Option<String>>,
         category_id: Option<Option<Uuid>>,
-        billing_period: Option<BillingPeriod>,
-        status: Option<SubscriptionStatus>,
+        billing_period: Option<Option<BillingPeriod>>,
+        status: Option<Option<SubscriptionStatus>>,
     ) -> anyhow::Result<()>;
     async fn list_lapsed(&self, before: DateTime<Utc>) -> anyhow::Result<Vec<Subscription>>;
+    /// Atomically updates only automatic lifecycle state that is still due at
+    /// statement execution time. Manual status/period overrides and newer
+    /// receipts cannot be overwritten by a stale detector read.
+    async fn mark_lapsed(&self, before: DateTime<Utc>) -> anyhow::Result<u64>;
     async fn delete(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<()>;
 }
 
@@ -159,16 +187,20 @@ mod tests {
     }
 
     #[test]
-    fn billing_period_cycle_days() {
-        assert_eq!(BillingPeriod::Weekly.cycle_days(), 7);
-        assert_eq!(BillingPeriod::Monthly.cycle_days(), 30);
-        assert_eq!(BillingPeriod::Yearly.cycle_days(), 365);
+    fn billing_period_next_after_uses_calendar_months_with_month_end_clamping() {
+        let january_31 = "2024-01-31T10:15:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(
+            BillingPeriod::Monthly.next_after(january_31),
+            "2024-02-29T10:15:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 
     #[test]
-    fn billing_period_next_after_is_one_cycle_later() {
-        let from = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
-        let next = BillingPeriod::Monthly.next_after(from);
-        assert_eq!((next - from).num_days(), 30);
+    fn yearly_recurrence_clamps_leap_day() {
+        let leap_day = "2024-02-29T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(
+            BillingPeriod::Yearly.next_after(leap_day),
+            "2025-02-28T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 }

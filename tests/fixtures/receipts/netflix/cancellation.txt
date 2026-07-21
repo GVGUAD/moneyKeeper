@@ -1,0 +1,6 @@
+Your Netflix membership has been cancelled.
+
+Plan: Netflix Premium
+Total: $15.99 USD
+Date: May 18, 2026
+Status: Cancelled

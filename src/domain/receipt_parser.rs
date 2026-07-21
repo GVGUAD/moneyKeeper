@@ -3,8 +3,10 @@ use rust_decimal::Decimal;
 
 use crate::domain::email::RawEmail;
 use crate::domain::subscription::{BillingPeriod, SubscriptionProvider};
-use crate::domain::subscription_charge::ReceiptKind;
 
+/// A positively identified recurring charge. Non-recurring purchases,
+/// refunds, cancellations, and promotional messages are represented by
+/// `Ok(None)` from the parser and never enter the subscription aggregate.
 #[derive(Debug, Clone)]
 pub struct ParsedReceipt {
     pub provider: SubscriptionProvider,
@@ -14,7 +16,6 @@ pub struct ParsedReceipt {
     pub currency: String,
     pub charged_at: DateTime<Utc>,
     pub billing_period_hint: Option<BillingPeriod>,
-    pub kind: ReceiptKind,
 }
 
 pub trait ReceiptParser: Send + Sync {

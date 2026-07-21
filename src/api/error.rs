@@ -5,6 +5,7 @@ use serde_json::json;
 
 use crate::domain::error::DomainError;
 use crate::domain::subscription_error::SubscriptionError;
+use crate::infrastructure::email::oauth::{GmailProviderError, OAuthFlowError};
 
 pub struct AppError(anyhow::Error);
 
@@ -25,10 +26,31 @@ impl IntoResponse for AppError {
                 SubscriptionError::ConnectionNotFound
                 | SubscriptionError::SubscriptionNotFound
                 | SubscriptionError::ChargeNotFound => (StatusCode::NOT_FOUND, s.to_string()),
-                SubscriptionError::DuplicateCharge(_) => (StatusCode::CONFLICT, s.to_string()),
+                SubscriptionError::DuplicateCharge(_) | SubscriptionError::SyncInProgress => {
+                    (StatusCode::CONFLICT, s.to_string())
+                }
                 _ => (StatusCode::INTERNAL_SERVER_ERROR, s.to_string()),
             };
             return (status, Json(json!({"error": msg}))).into_response();
+        }
+        if let Some(oauth) = err.downcast_ref::<OAuthFlowError>() {
+            let status = match oauth {
+                OAuthFlowError::InvalidState | OAuthFlowError::IncompleteRequest => {
+                    StatusCode::BAD_REQUEST
+                }
+                OAuthFlowError::MissingRefreshToken
+                | OAuthFlowError::InvalidProviderCredentials => StatusCode::BAD_GATEWAY,
+            };
+            return (status, Json(json!({"error": oauth.to_string()}))).into_response();
+        }
+        if let Some(provider) = err.downcast_ref::<GmailProviderError>() {
+            let status = match provider {
+                GmailProviderError::Transient => StatusCode::SERVICE_UNAVAILABLE,
+                GmailProviderError::InvalidCredentials | GmailProviderError::Rejected => {
+                    StatusCode::BAD_GATEWAY
+                }
+            };
+            return (status, Json(json!({"error": provider.to_string()}))).into_response();
         }
         tracing::error!("internal error: {err:?}");
         (
@@ -42,5 +64,26 @@ impl IntoResponse for AppError {
 impl<E: Into<anyhow::Error>> From<E> for AppError {
     fn from(e: E) -> Self {
         Self(e.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gmail_provider_errors_have_retry_aware_statuses() {
+        assert_eq!(
+            AppError::from(GmailProviderError::Rejected)
+                .into_response()
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            AppError::from(GmailProviderError::Transient)
+                .into_response()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

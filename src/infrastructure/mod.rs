@@ -1,8 +1,10 @@
 pub mod account_repository;
-pub mod email;
 pub mod category_repository;
+pub mod credential_crypto;
 pub mod db;
+pub mod email;
 pub mod email_connection_repository;
+pub mod email_sync_repository;
 pub mod fx_rate_repository;
 pub mod monobank_client;
 pub mod monobank_repository;
