@@ -43,6 +43,10 @@ pub fn router(state: AppState) -> Router {
             get(transactions::get_transaction).delete(transactions::delete_transaction),
         )
         .route(
+            "/transactions/{id}/subscription",
+            post(subscriptions::mark_transaction),
+        )
+        .route(
             "/categories",
             post(categories::create_category).get(categories::list_categories),
         )

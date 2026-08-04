@@ -149,6 +149,13 @@ pub struct SubscriptionCharge {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionSubscriptionLink {
+    pub transaction_id: Uuid,
+    pub subscription_id: Uuid,
+    pub charge_id: Uuid,
+}
+
 #[async_trait::async_trait]
 pub trait SubscriptionChargeRepository: Send + Sync {
     async fn create_idempotent(&self, charge: &SubscriptionCharge) -> anyhow::Result<(Uuid, bool)>;
@@ -165,6 +172,11 @@ pub trait SubscriptionChargeRepository: Send + Sync {
         subscription_id: Uuid,
         user_id: Uuid,
     ) -> anyhow::Result<Vec<SubscriptionCharge>>;
+    async fn find_transaction_links(
+        &self,
+        user_id: Uuid,
+        transaction_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<TransactionSubscriptionLink>>;
     /// Atomically reserves `transaction_id`, links the charge, propagates a
     /// same-user subscription category, and leaves receipt-derived lifecycle
     /// state unchanged. The database unique index is the final concurrency guard.

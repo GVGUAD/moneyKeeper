@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::api::dto::{
@@ -12,8 +13,9 @@ use crate::api::error::AppError;
 use crate::api::middleware::AuthUser;
 use crate::api::state::AppState;
 use crate::domain::error::DomainError;
+use crate::domain::subscription_charge::TransactionSubscriptionLink;
 use crate::domain::transaction::{
-    TradeDetails, TransactionDetails, TransactionKind, TransactionListParams,
+    TradeDetails, Transaction, TransactionDetails, TransactionKind, TransactionListParams,
 };
 
 type DateRange = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
@@ -68,6 +70,41 @@ fn tx_details_to_dto(details: &TransactionDetails) -> Option<TransactionDetailsD
     }
 }
 
+fn to_response(
+    tx: Transaction,
+    details: &TransactionDetails,
+    link: Option<TransactionSubscriptionLink>,
+) -> TransactionResponse {
+    TransactionResponse {
+        id: tx.id,
+        account_id: tx.account_id,
+        amount: tx.amount,
+        currency: tx.currency,
+        kind: tx.kind.as_str().to_string(),
+        category_id: tx.category_id,
+        note: tx.note,
+        transacted_at: tx.transacted_at,
+        created_at: tx.created_at,
+        details: tx_details_to_dto(details),
+        subscription_id: link.map(|value| value.subscription_id),
+        subscription_charge_id: link.map(|value| value.charge_id),
+    }
+}
+
+async fn links_by_transaction(
+    state: &AppState,
+    user_id: Uuid,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, TransactionSubscriptionLink>, AppError> {
+    Ok(state
+        .subscriptions
+        .find_transaction_links(user_id, ids)
+        .await?
+        .into_iter()
+        .map(|link| (link.transaction_id, link))
+        .collect())
+}
+
 pub async fn create_transaction(
     State(state): State<AppState>,
     Extension(AuthUser(user_id)): Extension<AuthUser>,
@@ -92,21 +129,7 @@ pub async fn create_transaction(
             details.clone(),
         )
         .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(TransactionResponse {
-            id: tx.id,
-            account_id: tx.account_id,
-            amount: tx.amount,
-            currency: tx.currency,
-            kind: tx.kind.as_str().to_string(),
-            category_id: tx.category_id,
-            note: tx.note,
-            transacted_at: tx.transacted_at,
-            created_at: tx.created_at,
-            details: tx_details_to_dto(&details),
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(to_response(tx, &details, None))))
 }
 
 pub async fn list_transactions(
@@ -133,20 +156,14 @@ pub async fn list_transactions(
     };
     let txs = state.transactions.list(params.clone()).await?;
     let total = state.transactions.count(params).await?;
+    let transaction_ids = txs.iter().map(|(tx, _)| tx.id).collect::<Vec<_>>();
+    let links = links_by_transaction(&state, user_id, &transaction_ids).await?;
     Ok(Json(TransactionListResponse {
         items: txs
             .into_iter()
-            .map(|(tx, d)| TransactionResponse {
-                id: tx.id,
-                account_id: tx.account_id,
-                amount: tx.amount,
-                currency: tx.currency,
-                kind: tx.kind.as_str().to_string(),
-                category_id: tx.category_id,
-                note: tx.note,
-                transacted_at: tx.transacted_at,
-                created_at: tx.created_at,
-                details: tx_details_to_dto(&d),
+            .map(|(tx, details)| {
+                let link = links.get(&tx.id).copied();
+                to_response(tx, &details, link)
             })
             .collect(),
         pagination: PaginationInfo {
@@ -163,18 +180,10 @@ pub async fn get_transaction(
     Path(id): Path<Uuid>,
 ) -> Result<Json<TransactionResponse>, AppError> {
     let (tx, d) = state.transactions.get(id, user_id).await?;
-    Ok(Json(TransactionResponse {
-        id: tx.id,
-        account_id: tx.account_id,
-        amount: tx.amount,
-        currency: tx.currency,
-        kind: tx.kind.as_str().to_string(),
-        category_id: tx.category_id,
-        note: tx.note,
-        transacted_at: tx.transacted_at,
-        created_at: tx.created_at,
-        details: tx_details_to_dto(&d),
-    }))
+    let link = links_by_transaction(&state, user_id, &[id])
+        .await?
+        .remove(&id);
+    Ok(Json(to_response(tx, &d, link)))
 }
 
 pub async fn delete_transaction(
@@ -204,20 +213,14 @@ pub async fn list_all_transactions(
     };
     let txs = state.transactions.list(params.clone()).await?;
     let total = state.transactions.count(params).await?;
+    let transaction_ids = txs.iter().map(|(tx, _)| tx.id).collect::<Vec<_>>();
+    let links = links_by_transaction(&state, user_id, &transaction_ids).await?;
     Ok(Json(TransactionListResponse {
         items: txs
             .into_iter()
-            .map(|(tx, d)| TransactionResponse {
-                id: tx.id,
-                account_id: tx.account_id,
-                amount: tx.amount,
-                currency: tx.currency,
-                kind: tx.kind.as_str().to_string(),
-                category_id: tx.category_id,
-                note: tx.note,
-                transacted_at: tx.transacted_at,
-                created_at: tx.created_at,
-                details: tx_details_to_dto(&d),
+            .map(|(tx, details)| {
+                let link = links.get(&tx.id).copied();
+                to_response(tx, &details, link)
             })
             .collect(),
         pagination: PaginationInfo {

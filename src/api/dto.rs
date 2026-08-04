@@ -131,6 +131,8 @@ pub struct TransactionResponse {
     pub transacted_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub details: Option<TransactionDetailsDto>,
+    pub subscription_id: Option<Uuid>,
+    pub subscription_charge_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -322,6 +324,25 @@ pub struct SubscriptionChargeResponse {
 #[derive(Debug, serde::Deserialize)]
 pub struct LinkChargeRequest {
     pub transaction_id: Uuid,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum MarkTransactionSubscriptionRequest {
+    Create {
+        product_name: String,
+        billing_period: String,
+    },
+    Attach {
+        subscription_id: Uuid,
+    },
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct MarkTransactionSubscriptionResponse {
+    pub subscription: SubscriptionResponse,
+    pub charge: SubscriptionChargeResponse,
+    pub subscription_created: bool,
 }
 
 #[derive(Debug, serde::Serialize)]
