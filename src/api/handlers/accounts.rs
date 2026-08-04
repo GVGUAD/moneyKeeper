@@ -5,7 +5,7 @@ use chrono::NaiveDate;
 use uuid::Uuid;
 
 use crate::api::dto::{
-    AccountDetailsDto, AccountResponse, BalanceResponse, CreateAccountRequest, UpdateAccountRequest,
+    AccountDetailsDto, AccountResponse, CreateAccountRequest, UpdateAccountRequest,
 };
 use crate::api::error::AppError;
 use crate::api::middleware::AuthUser;
@@ -94,6 +94,7 @@ fn account_to_response(a: Account, d: AccountDetails) -> AccountResponse {
         name: a.name,
         account_type: a.account_type.as_str().to_string(),
         currency: a.currency,
+        balance: a.balance,
         details: details_to_dto(&d),
         created_at: a.created_at,
         updated_at: a.updated_at,
@@ -169,16 +170,3 @@ pub async fn delete_account(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn get_balance(
-    State(state): State<AppState>,
-    Extension(AuthUser(user_id)): Extension<AuthUser>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<BalanceResponse>, AppError> {
-    let (a, _) = state.accounts.get(id, user_id).await?;
-    let balance = state.accounts.get_balance(id, user_id).await?;
-    Ok(Json(BalanceResponse {
-        account_id: id,
-        balance,
-        currency: a.currency,
-    }))
-}

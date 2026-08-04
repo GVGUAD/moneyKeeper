@@ -2,9 +2,6 @@ use std::sync::Arc;
 
 use axum_test::TestServer;
 use sqlx::PgPool;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
 use uuid::Uuid;
 
 use moneykeeper::api::state::AppState;
@@ -82,34 +79,27 @@ pub fn test_jwt(user_id: Uuid) -> String {
     .unwrap()
 }
 
-pub async fn spawn_postgres() -> (ContainerAsync<Postgres>, PgPool) {
-    let container = Postgres::default().start().await.unwrap();
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
-    let url = format!("postgres://postgres:postgres@127.0.0.1:{}/postgres", port);
-    let pool = PgPool::connect(&url).await.unwrap();
-    sqlx::migrate!("src/infrastructure/migrations")
-        .run(&pool)
-        .await
-        .unwrap();
-    (container, pool)
-}
-
 pub async fn make_app_with_client(
     pool: PgPool,
     monobank_client: Arc<dyn MonobankApiClient>,
 ) -> TestServer {
-    let tx_repo = Arc::new(SqliteTransactionRepository::new(pool.clone()));
+    let tx_repo: Arc<dyn moneykeeper::domain::transaction::TransactionRepository> =
+        Arc::new(SqliteTransactionRepository::new(pool.clone()));
+    let account_repo: Arc<dyn moneykeeper::domain::account::AccountRepository> =
+        Arc::new(SqliteAccountRepository::new(pool.clone()));
     let state = AppState {
-        accounts: Arc::new(AccountService::new(Arc::new(SqliteAccountRepository::new(
-            pool.clone(),
-        )))),
-        transactions: Arc::new(TransactionService::new(tx_repo.clone())),
+        accounts: Arc::new(AccountService::new(Arc::clone(&account_repo))),
+        transactions: Arc::new(TransactionService::new(
+            Arc::clone(&tx_repo),
+            Arc::clone(&account_repo),
+        )),
         categories: Arc::new(CategoryService::new(Arc::new(
             SqliteCategoryRepository::new(pool.clone()),
         ))),
         monobank: Arc::new(MonobankService::new(
             Arc::new(PgBankConnectionRepository::new(pool.clone())),
             tx_repo,
+            Arc::clone(&account_repo),
             monobank_client,
             "http://localhost:3000".to_string(),
         )),

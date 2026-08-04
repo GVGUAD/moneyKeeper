@@ -31,7 +31,6 @@ pub fn router(state: AppState) -> Router {
                 .put(accounts::update_account)
                 .delete(accounts::delete_account),
         )
-        .route("/accounts/{id}/balance", get(accounts::get_balance))
         .route(
             "/accounts/{id}/transactions",
             post(transactions::create_transaction).get(transactions::list_transactions),

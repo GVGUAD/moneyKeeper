@@ -150,6 +150,7 @@ mod tests {
     use super::*;
     use crate::domain::account::{Account, AccountDetails, AccountRepository, AccountType};
     use crate::infrastructure::account_repository::SqliteAccountRepository;
+    use crate::infrastructure::test_db;
     use sqlx::PgPool;
 
     async fn make_account(pool: &PgPool) -> (Uuid, Uuid) {
@@ -168,8 +169,9 @@ mod tests {
         (user_id, account_id)
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn create_and_find_by_id(pool: PgPool) {
+    #[tokio::test]
+    async fn create_and_find_by_id() {
+        let pool = test_db::fresh_pool().await;
         let (user_id, account_id) = make_account(&pool).await;
         let repo = PgBankConnectionRepository::new(pool);
         let conn = BankConnection::new(
@@ -187,8 +189,9 @@ mod tests {
         assert_eq!(found.provider, BankProvider::Monobank);
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn list_incomplete_returns_pending_and_syncing(pool: PgPool) {
+    #[tokio::test]
+    async fn list_incomplete_returns_pending_and_syncing() {
+        let pool = test_db::fresh_pool().await;
         let (user_id, account_id) = make_account(&pool).await;
         let repo = PgBankConnectionRepository::new(pool);
 
@@ -231,8 +234,9 @@ mod tests {
         assert!(statuses.contains(&&SyncStatus::Syncing));
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn update_status_changes_sync_status(pool: PgPool) {
+    #[tokio::test]
+    async fn update_status_changes_sync_status() {
+        let pool = test_db::fresh_pool().await;
         let (user_id, account_id) = make_account(&pool).await;
         let repo = PgBankConnectionRepository::new(pool);
         let conn = BankConnection::new(

@@ -1,0 +1,28 @@
+# fly.toml app configuration file generated for moneykeeper on 2026-04-22T12:39:08+03:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'moneykeeper'
+primary_region = 'fra'
+
+[build]
+
+[env]
+  SUPABASE_URL = "https://zjegaedvwlyhepmwyckx.supabase.co"
+  PUBLIC_URL   = "https://moneykeeper.fly.dev"
+  BIND_ADDR    = "0.0.0.0:8080"
+  RUST_LOG     = "info"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '256mb'
+  cpus = 1
+  memory_mb = 256

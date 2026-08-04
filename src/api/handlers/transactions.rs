@@ -1,10 +1,12 @@
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::api::dto::{
-    CreateTransactionRequest, TransactionDetailsDto, TransactionResponse, TxListQuery,
+    CreateTransactionRequest, PaginationInfo, TransactionDetailsDto, TransactionListResponse,
+    TransactionResponse, TxListQuery,
 };
 use crate::api::error::AppError;
 use crate::api::middleware::AuthUser;
@@ -13,6 +15,25 @@ use crate::domain::error::DomainError;
 use crate::domain::transaction::{
     TradeDetails, TransactionDetails, TransactionKind, TransactionListParams,
 };
+
+type DateRange = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
+/// Parse optional `from`/`to` Unix-seconds query parameters into a validated date range.
+/// Returns `(from, to)` after rejecting out-of-range values and inverted ranges.
+fn parse_date_range(from: Option<i64>, to: Option<i64>) -> Result<DateRange, DomainError> {
+    let parse = |s: i64, field: &str| {
+        DateTime::<Utc>::from_timestamp(s, 0)
+            .ok_or_else(|| DomainError::InvalidInput(format!("{field} is out of range")))
+    };
+    let from_dt = from.map(|s| parse(s, "from")).transpose()?;
+    let to_dt = to.map(|s| parse(s, "to")).transpose()?;
+    if let (Some(f), Some(t)) = (from_dt, to_dt)
+        && f > t
+    {
+        return Err(DomainError::InvalidInput("from must be <= to".to_string()));
+    }
+    Ok((from_dt, to_dt))
+}
 
 fn dto_to_tx_details(dto: Option<TransactionDetailsDto>, tx_id: Uuid) -> TransactionDetails {
     match dto {
@@ -93,25 +114,28 @@ pub async fn list_transactions(
     Extension(AuthUser(user_id)): Extension<AuthUser>,
     Path(account_id): Path<Uuid>,
     Query(q): Query<TxListQuery>,
-) -> Result<Json<Vec<TransactionResponse>>, AppError> {
+) -> Result<Json<TransactionListResponse>, AppError> {
     let kind = q
         .kind
         .map(|k| TransactionKind::from_str(&k))
         .transpose()
         .map_err(|_| DomainError::InvalidInput("unknown kind".to_string()))?;
+    let (from, to) = parse_date_range(q.from, q.to)?;
     let params = TransactionListParams {
         account_id: Some(account_id),
         user_id,
         kind,
         category_id: q.category_id,
-        from: None,
-        to: None,
+        from,
+        to,
         limit: q.limit,
         offset: q.offset,
     };
-    let txs = state.transactions.list(params).await?;
-    Ok(Json(
-        txs.into_iter()
+    let txs = state.transactions.list(params.clone()).await?;
+    let total = state.transactions.count(params).await?;
+    Ok(Json(TransactionListResponse {
+        items: txs
+            .into_iter()
             .map(|(tx, d)| TransactionResponse {
                 id: tx.id,
                 account_id: tx.account_id,
@@ -125,7 +149,12 @@ pub async fn list_transactions(
                 details: tx_details_to_dto(&d),
             })
             .collect(),
-    ))
+        pagination: PaginationInfo {
+            total,
+            limit: q.limit,
+            offset: q.offset,
+        },
+    }))
 }
 
 pub async fn get_transaction(
@@ -161,20 +190,23 @@ pub async fn list_all_transactions(
     State(state): State<AppState>,
     Extension(AuthUser(user_id)): Extension<AuthUser>,
     Query(q): Query<TxListQuery>,
-) -> Result<Json<Vec<TransactionResponse>>, AppError> {
+) -> Result<Json<TransactionListResponse>, AppError> {
+    let (from, to) = parse_date_range(q.from, q.to)?;
     let params = TransactionListParams {
         account_id: None,
         user_id,
         kind: None,
         category_id: None,
-        from: None,
-        to: None,
+        from,
+        to,
         limit: q.limit,
         offset: q.offset,
     };
-    let txs = state.transactions.list(params).await?;
-    Ok(Json(
-        txs.into_iter()
+    let txs = state.transactions.list(params.clone()).await?;
+    let total = state.transactions.count(params).await?;
+    Ok(Json(TransactionListResponse {
+        items: txs
+            .into_iter()
             .map(|(tx, d)| TransactionResponse {
                 id: tx.id,
                 account_id: tx.account_id,
@@ -188,5 +220,10 @@ pub async fn list_all_transactions(
                 details: tx_details_to_dto(&d),
             })
             .collect(),
-    ))
+        pagination: PaginationInfo {
+            total,
+            limit: q.limit,
+            offset: q.offset,
+        },
+    }))
 }
