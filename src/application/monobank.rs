@@ -121,6 +121,17 @@ impl MonobankService {
     }
 
     pub fn spawn_sync(&self, conn: BankConnection, from: DateTime<Utc>) {
+        let now = Utc::now();
+        self.spawn_sync_window(conn, from, now, Some(now));
+    }
+
+    pub fn spawn_sync_window(
+        &self,
+        conn: BankConnection,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        watermark_on_success: Option<DateTime<Utc>>,
+    ) {
         let connection_repo = Arc::clone(&self.connection_repo);
         let transaction_repo = Arc::clone(&self.transaction_repo);
         let account_repo = Arc::clone(&self.account_repo);
@@ -135,10 +146,49 @@ impl MonobankService {
                 monobank_client,
                 conn,
                 from,
+                to,
+                watermark_on_success,
                 public_url,
             )
             .await;
         });
+    }
+
+    pub async fn resync_window(
+        &self,
+        user_id: Uuid,
+        connection_id: Uuid,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> anyhow::Result<BankConnection> {
+        let conn = self
+            .connection_repo
+            .find_by_id(connection_id, user_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound(format!("bank connection {connection_id}")))?;
+
+        if matches!(conn.sync_status, SyncStatus::Syncing) {
+            return Err(DomainError::Conflict(format!(
+                "sync already in progress for connection {connection_id}"
+            ))
+            .into());
+        }
+
+        let to = to.min(Utc::now());
+        if from > to {
+            return Err(DomainError::InvalidInput("`from` must be <= `to`".into()).into());
+        }
+
+        self.connection_repo
+            .update_status(conn.id, SyncStatus::Syncing, conn.last_synced_at)
+            .await?;
+
+        let mut updated = conn.clone();
+        updated.sync_status = SyncStatus::Syncing;
+
+        self.spawn_sync_window(updated.clone(), from, to, conn.last_synced_at);
+
+        Ok(updated)
     }
 
     async fn insert_statement_item(
@@ -186,6 +236,7 @@ fn build_transaction(
     tx
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_sync(
     connection_repo: Arc<dyn BankConnectionRepository>,
     transaction_repo: Arc<dyn TransactionRepository>,
@@ -193,10 +244,12 @@ async fn run_sync(
     monobank_client: Arc<dyn MonobankApiClient>,
     conn: BankConnection,
     history_from: DateTime<Utc>,
+    history_to: DateTime<Utc>,
+    watermark_on_success: Option<DateTime<Utc>>,
     _public_url: String,
 ) {
     if let Err(e) = connection_repo
-        .update_status(conn.id, SyncStatus::Syncing, None)
+        .update_status(conn.id, SyncStatus::Syncing, conn.last_synced_at)
         .await
     {
         tracing::error!(conn_id = %conn.id, "failed to set sync status to Syncing: {e}");
@@ -208,11 +261,10 @@ async fn run_sync(
     //     tracing::warn!(conn_id = %conn.id, "failed to set monobank webhook: {e}");
     // }
 
-    let now = Utc::now();
     let mut cursor = history_from;
 
-    while cursor < now {
-        let to = (cursor + chrono::Duration::days(31)).min(now);
+    while cursor < history_to {
+        let to = (cursor + chrono::Duration::days(31)).min(history_to);
 
         let items = match monobank_client
             .get_statement(&conn.token, &conn.external_account_id, cursor, to)
@@ -222,7 +274,7 @@ async fn run_sync(
             Err(e) => {
                 tracing::error!(conn_id = %conn.id, "failed to fetch monobank statement: {e}");
                 if let Err(e2) = connection_repo
-                    .update_status(conn.id, SyncStatus::Failed, None)
+                    .update_status(conn.id, SyncStatus::Failed, conn.last_synced_at)
                     .await
                 {
                     tracing::error!(conn_id = %conn.id, "failed to set sync status to Failed: {e2}");
@@ -265,13 +317,13 @@ async fn run_sync(
         }
 
         cursor = to;
-        if cursor < now {
+        if cursor < history_to {
             tokio::time::sleep(tokio::time::Duration::from_secs(61)).await;
         }
     }
     tracing::info!(conn_id = %conn.id, "monobank sync completed");
     if let Err(e) = connection_repo
-        .update_status(conn.id, SyncStatus::Completed, Some(Utc::now()))
+        .update_status(conn.id, SyncStatus::Completed, watermark_on_success)
         .await
     {
         tracing::error!(conn_id = %conn.id, "failed to set sync status to Completed: {e}");
@@ -510,7 +562,17 @@ mod tests {
         }
     }
 
-    struct MockMonobankClient;
+    struct MockMonobankClient {
+        calls: Mutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
+    }
+
+    impl MockMonobankClient {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(vec![]),
+            }
+        }
+    }
 
     #[async_trait::async_trait]
     impl MonobankApiClient for MockMonobankClient {
@@ -522,9 +584,10 @@ mod tests {
             &self,
             _token: &str,
             _account_id: &str,
-            _from: DateTime<Utc>,
-            _to: DateTime<Utc>,
+            from: DateTime<Utc>,
+            to: DateTime<Utc>,
         ) -> anyhow::Result<Vec<MonoStatementItem>> {
+            self.calls.lock().unwrap().push((from, to));
             Ok(vec![])
         }
 
@@ -541,7 +604,21 @@ mod tests {
             conn_repo,
             tx_repo,
             Arc::new(MockAccountRepo),
-            Arc::new(MockMonobankClient),
+            Arc::new(MockMonobankClient::new()),
+            "https://example.com".to_string(),
+        )
+    }
+
+    fn make_service_with_client(
+        conn_repo: Arc<dyn BankConnectionRepository>,
+        tx_repo: Arc<dyn TransactionRepository>,
+        monobank_client: Arc<dyn MonobankApiClient>,
+    ) -> MonobankService {
+        MonobankService::new(
+            conn_repo,
+            tx_repo,
+            Arc::new(MockAccountRepo),
+            monobank_client,
             "https://example.com".to_string(),
         )
     }
@@ -657,5 +734,97 @@ mod tests {
             .expect("handle_webhook should return Ok even for unknown account");
 
         assert_eq!(result, 0);
+    }
+
+    fn make_failed_conn(user_id: Uuid, last_synced_at: DateTime<Utc>) -> BankConnection {
+        let mut c = BankConnection::new(
+            Uuid::new_v4(),
+            user_id,
+            BankProvider::Monobank,
+            "tok".to_string(),
+            "mono-acc-resync".to_string(),
+        );
+        c.sync_status = SyncStatus::Failed;
+        c.last_synced_at = Some(last_synced_at);
+        c
+    }
+
+    #[tokio::test]
+    async fn resync_window_preserves_last_synced_at_and_fetches_requested_window() {
+        let user_id = Uuid::new_v4();
+        let watermark = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let conn = make_failed_conn(user_id, watermark);
+        let conn_id = conn.id;
+
+        let conn_repo: Arc<dyn BankConnectionRepository> =
+            Arc::new(MockConnectionRepo::with(vec![conn]));
+        let tx_repo: Arc<dyn TransactionRepository> = Arc::new(MockTransactionRepo::new());
+        let mono_client = Arc::new(MockMonobankClient::new());
+        let svc = make_service_with_client(
+            Arc::clone(&conn_repo),
+            tx_repo,
+            mono_client.clone() as Arc<dyn MonobankApiClient>,
+        );
+
+        let from = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let to = DateTime::<Utc>::from_timestamp(1_700_500_000, 0).unwrap();
+
+        let returned = svc
+            .resync_window(user_id, conn_id, from, to)
+            .await
+            .expect("resync_window should succeed");
+        assert_eq!(returned.sync_status, SyncStatus::Syncing);
+
+        // Drain the spawned background task. With start_paused = true and a
+        // window < 31 days the run loop completes in a single iteration
+        // without hitting the inter-page sleep.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+            let stored = conn_repo.find_by_id(conn_id, user_id).await.unwrap().unwrap();
+            if matches!(stored.sync_status, SyncStatus::Completed) {
+                break;
+            }
+        }
+
+        let stored = conn_repo
+            .find_by_id(conn_id, user_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.sync_status, SyncStatus::Completed);
+        assert_eq!(stored.last_synced_at, Some(watermark));
+
+        let calls = mono_client.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], (from, to));
+    }
+
+    #[tokio::test]
+    async fn resync_window_conflict_when_already_syncing() {
+        let user_id = Uuid::new_v4();
+        let mut conn = BankConnection::new(
+            Uuid::new_v4(),
+            user_id,
+            BankProvider::Monobank,
+            "tok".to_string(),
+            "mono-acc-syncing".to_string(),
+        );
+        conn.sync_status = SyncStatus::Syncing;
+        let conn_id = conn.id;
+
+        let conn_repo: Arc<dyn BankConnectionRepository> =
+            Arc::new(MockConnectionRepo::with(vec![conn]));
+        let tx_repo: Arc<dyn TransactionRepository> = Arc::new(MockTransactionRepo::new());
+        let svc = make_service(Arc::clone(&conn_repo), Arc::clone(&tx_repo));
+
+        let from = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let to = DateTime::<Utc>::from_timestamp(1_700_500_000, 0).unwrap();
+
+        let err = svc
+            .resync_window(user_id, conn_id, from, to)
+            .await
+            .expect_err("expected conflict");
+        let domain = err.downcast_ref::<DomainError>().expect("DomainError");
+        assert!(matches!(domain, DomainError::Conflict(_)));
     }
 }

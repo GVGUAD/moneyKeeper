@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO fx_rates (rate_date, from_currency, to_currency, rate)\n         VALUES ($1, $2, 'UAH', $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Date",
+        "Text",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b63e3be638cb8a26aa1ab6d71c9f6f6bcb1bec9c0e12a53c9f324fdb6df86b87"
+}

@@ -205,6 +205,21 @@ pub struct MonobankConnectionResponse {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ResyncQuery {
+    pub from: i64,
+    pub to: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ResyncJobResponse {
+    pub connection_id: Uuid,
+    pub sync_status: String,
+    pub from: i64,
+    pub to: i64,
+    pub enqueued_at: DateTime<Utc>,
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct MonoAccountResponse {
     pub id: String,
@@ -212,6 +227,17 @@ pub struct MonoAccountResponse {
     pub balance: i64,
     pub account_type: String,
     pub iban: Option<String>,
+}
+
+// User Settings
+#[derive(Serialize)]
+pub struct UserSettingsResponse {
+    pub base_currency: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateUserSettingsRequest {
+    pub base_currency: String,
 }
 
 /// Webhook payload from Monobank

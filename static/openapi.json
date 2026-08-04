@@ -690,6 +690,80 @@
         ]
       }
     },
+    "/monobank/connections/{id}/resync": {
+      "post": {
+        "tags": [
+          "monobank"
+        ],
+        "summary": "POST /monobank/connections/:id/resync",
+        "description": "Enqueue a re-sync of the given connection over a closed time window [from, to]. Returns 202 immediately; clients poll GET /monobank/connections to watch sync_status. last_synced_at is preserved across the operation.",
+        "operationId": "resync_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Window start (unix seconds, >= 0)",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Window end (unix seconds, >= from). Clamped to now if in the future.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "resync enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResyncJobResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid window"
+          },
+          "401": {
+            "description": "unauthorized"
+          },
+          "404": {
+            "description": "connection not found"
+          },
+          "409": {
+            "description": "sync already in progress"
+          },
+          "429": {
+            "description": "rate limited by upstream"
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/monobank/webhook": {
       "post": {
         "tags": [
@@ -1265,6 +1339,37 @@
           },
           "type": {
             "type": "string"
+          }
+        }
+      },
+      "ResyncJobResponse": {
+        "type": "object",
+        "required": [
+          "connection_id",
+          "sync_status",
+          "from",
+          "to",
+          "enqueued_at"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sync_status": {
+            "type": "string"
+          },
+          "from": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enqueued_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

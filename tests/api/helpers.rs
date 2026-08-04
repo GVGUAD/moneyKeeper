@@ -9,11 +9,14 @@ use moneykeeper::application::accounts::AccountService;
 use moneykeeper::application::categories::CategoryService;
 use moneykeeper::application::monobank::MonobankService;
 use moneykeeper::application::transactions::TransactionService;
+use moneykeeper::application::user_settings::UserSettingsService;
 use moneykeeper::domain::monobank::MonobankApiClient;
 use moneykeeper::infrastructure::account_repository::SqliteAccountRepository;
 use moneykeeper::infrastructure::category_repository::SqliteCategoryRepository;
+use moneykeeper::infrastructure::fx_rate_repository::PgFxRateRepository;
 use moneykeeper::infrastructure::monobank_repository::PgBankConnectionRepository;
 use moneykeeper::infrastructure::transaction_repository::SqliteTransactionRepository;
+use moneykeeper::infrastructure::user_settings_repository::PgUserSettingsRepository;
 
 /// kid used in test JWTs and the test JWKS.
 const TEST_KID: &str = "test-key-1";
@@ -87,6 +90,10 @@ pub async fn make_app_with_client(
         Arc::new(SqliteTransactionRepository::new(pool.clone()));
     let account_repo: Arc<dyn moneykeeper::domain::account::AccountRepository> =
         Arc::new(SqliteAccountRepository::new(pool.clone()));
+    let fx_repo: Arc<dyn moneykeeper::domain::fx_rate::FxRateRepository> =
+        Arc::new(PgFxRateRepository::new(pool.clone()));
+    let user_settings_repo: Arc<dyn moneykeeper::domain::user_settings::UserSettingsRepository> =
+        Arc::new(PgUserSettingsRepository::new(pool.clone()));
     let state = AppState {
         accounts: Arc::new(AccountService::new(Arc::clone(&account_repo))),
         transactions: Arc::new(TransactionService::new(
@@ -102,6 +109,10 @@ pub async fn make_app_with_client(
             Arc::clone(&account_repo),
             monobank_client,
             "http://localhost:3000".to_string(),
+        )),
+        user_settings: Arc::new(UserSettingsService::new(
+            Arc::clone(&user_settings_repo),
+            Arc::clone(&fx_repo),
         )),
         supabase_jwks: Arc::new(test_jwks()),
     };
@@ -196,4 +207,22 @@ pub async fn create_category_for(server: &TestServer, token: &str) -> Uuid {
 
     let body: serde_json::Value = res.json();
     Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+}
+
+pub async fn seed_fx_rate(
+    pool: &sqlx::PgPool,
+    date: chrono::NaiveDate,
+    from: &str,
+    rate: rust_decimal::Decimal,
+) {
+    sqlx::query!(
+        "INSERT INTO fx_rates (rate_date, from_currency, to_currency, rate)
+         VALUES ($1, $2, 'UAH', $3)",
+        date,
+        from,
+        rate,
+    )
+    .execute(pool)
+    .await
+    .expect("seed fx rate");
 }

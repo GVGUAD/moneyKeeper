@@ -17,6 +17,8 @@ RUN mkdir -p src && \
 # Build the real binary
 COPY static ./static
 COPY src ./src
+COPY .sqlx ./.sqlx
+ENV SQLX_OFFLINE=true
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # ─── Runtime Stage ───────────────────────────────────────────────────────────

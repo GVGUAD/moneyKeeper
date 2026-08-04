@@ -7,12 +7,15 @@ use moneykeeper::application::accounts::AccountService;
 use moneykeeper::application::categories::CategoryService;
 use moneykeeper::application::monobank::MonobankService;
 use moneykeeper::application::transactions::TransactionService;
+use moneykeeper::application::user_settings::UserSettingsService;
 use moneykeeper::infrastructure::account_repository::SqliteAccountRepository;
 use moneykeeper::infrastructure::category_repository::SqliteCategoryRepository;
 use moneykeeper::infrastructure::db::create_pool;
+use moneykeeper::infrastructure::fx_rate_repository::PgFxRateRepository;
 use moneykeeper::infrastructure::monobank_client::ReqwestMonobankClient;
 use moneykeeper::infrastructure::monobank_repository::PgBankConnectionRepository;
 use moneykeeper::infrastructure::transaction_repository::SqliteTransactionRepository;
+use moneykeeper::infrastructure::user_settings_repository::PgUserSettingsRepository;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,6 +44,15 @@ async fn main() -> anyhow::Result<()> {
     let transaction_repo: Arc<dyn moneykeeper::domain::transaction::TransactionRepository> =
         Arc::new(SqliteTransactionRepository::new(pool.clone()));
 
+    let fx_repo: Arc<dyn moneykeeper::domain::fx_rate::FxRateRepository> =
+        Arc::new(PgFxRateRepository::new(pool.clone()));
+    let user_settings_repo: Arc<dyn moneykeeper::domain::user_settings::UserSettingsRepository> =
+        Arc::new(PgUserSettingsRepository::new(pool.clone()));
+    let user_settings_service = Arc::new(UserSettingsService::new(
+        Arc::clone(&user_settings_repo),
+        Arc::clone(&fx_repo),
+    ));
+
     let monobank_service = Arc::new(MonobankService::new(
         Arc::new(PgBankConnectionRepository::new(pool.clone())),
         Arc::clone(&transaction_repo),
@@ -59,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
             SqliteCategoryRepository::new(pool.clone()),
         ))),
         monobank: monobank_service.clone(),
+        user_settings: Arc::clone(&user_settings_service),
         supabase_jwks: Arc::new(jwks),
     };
 

@@ -1,14 +1,15 @@
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::api::{
     dto::{
         ConnectMonobankRequest, MonoAccountResponse, MonobankConnectionResponse,
-        MonobankWebhookPayload,
+        MonobankWebhookPayload, ResyncJobResponse, ResyncQuery,
     },
     error::AppError,
     middleware::AuthUser,
@@ -94,6 +95,38 @@ pub async fn delete_connection(
 ) -> Result<StatusCode, AppError> {
     state.monobank.delete_connection(id, user_id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /monobank/connections/:id/resync?from=...&to=...
+pub async fn resync_connection(
+    State(state): State<AppState>,
+    Extension(AuthUser(user_id)): Extension<AuthUser>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ResyncQuery>,
+) -> Result<(StatusCode, Json<ResyncJobResponse>), AppError> {
+    if q.from < 0 || q.to < 0 {
+        return Err(DomainError::InvalidInput("`from` and `to` must be >= 0".into()).into());
+    }
+    if q.to < q.from {
+        return Err(DomainError::InvalidInput("`to` must be >= `from`".into()).into());
+    }
+    let from = DateTime::<Utc>::from_timestamp(q.from, 0)
+        .ok_or_else(|| DomainError::InvalidInput("invalid `from`".into()))?;
+    let to = DateTime::<Utc>::from_timestamp(q.to, 0)
+        .ok_or_else(|| DomainError::InvalidInput("invalid `to`".into()))?;
+
+    let conn = state.monobank.resync_window(user_id, id, from, to).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ResyncJobResponse {
+            connection_id: conn.id,
+            sync_status: conn.sync_status.as_str().to_string(),
+            from: q.from,
+            to: q.to,
+            enqueued_at: Utc::now(),
+        }),
+    ))
 }
 
 /// POST /monobank/webhook  (public — no auth)
