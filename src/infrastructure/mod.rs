@@ -4,3 +4,6 @@ pub mod db;
 pub mod monobank_client;
 pub mod monobank_repository;
 pub mod transaction_repository;
+
+#[cfg(test)]
+pub mod test_db;

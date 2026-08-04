@@ -36,20 +36,25 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = create_pool(&database_url).await?;
 
+    let account_repo: Arc<dyn moneykeeper::domain::account::AccountRepository> =
+        Arc::new(SqliteAccountRepository::new(pool.clone()));
+    let transaction_repo: Arc<dyn moneykeeper::domain::transaction::TransactionRepository> =
+        Arc::new(SqliteTransactionRepository::new(pool.clone()));
+
     let monobank_service = Arc::new(MonobankService::new(
         Arc::new(PgBankConnectionRepository::new(pool.clone())),
-        Arc::new(SqliteTransactionRepository::new(pool.clone())),
+        Arc::clone(&transaction_repo),
+        Arc::clone(&account_repo),
         Arc::new(ReqwestMonobankClient::new()),
         public_url,
     ));
 
     let state = AppState {
-        accounts: Arc::new(AccountService::new(Arc::new(SqliteAccountRepository::new(
-            pool.clone(),
-        )))),
-        transactions: Arc::new(TransactionService::new(Arc::new(
-            SqliteTransactionRepository::new(pool.clone()),
-        ))),
+        accounts: Arc::new(AccountService::new(Arc::clone(&account_repo))),
+        transactions: Arc::new(TransactionService::new(
+            Arc::clone(&transaction_repo),
+            Arc::clone(&account_repo),
+        )),
         categories: Arc::new(CategoryService::new(Arc::new(
             SqliteCategoryRepository::new(pool.clone()),
         ))),

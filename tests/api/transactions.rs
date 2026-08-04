@@ -11,6 +11,17 @@ async fn create_tx(
     kind: &str,
     amount: &str,
 ) -> Uuid {
+    create_tx_at(server, token, account_id, kind, amount, "2024-01-01T00:00:00Z").await
+}
+
+async fn create_tx_at(
+    server: &axum_test::TestServer,
+    token: &str,
+    account_id: Uuid,
+    kind: &str,
+    amount: &str,
+    transacted_at: &str,
+) -> Uuid {
     let res = server
         .post(&format!("/accounts/{account_id}/transactions"))
         .add_header(helpers::auth(token).0, helpers::auth(token).1)
@@ -18,6 +29,28 @@ async fn create_tx(
             "amount": amount,
             "currency": "USD",
             "kind": kind,
+            "transacted_at": transacted_at
+        }))
+        .await;
+    Uuid::parse_str(res.json::<Value>()["id"].as_str().unwrap()).unwrap()
+}
+
+async fn create_tx_with_category(
+    server: &axum_test::TestServer,
+    token: &str,
+    account_id: Uuid,
+    kind: &str,
+    amount: &str,
+    category_id: Uuid,
+) -> Uuid {
+    let res = server
+        .post(&format!("/accounts/{account_id}/transactions"))
+        .add_header(helpers::auth(token).0, helpers::auth(token).1)
+        .json(&serde_json::json!({
+            "amount": amount,
+            "currency": "USD",
+            "kind": kind,
+            "category_id": category_id,
             "transacted_at": "2024-01-01T00:00:00Z"
         }))
         .await;
@@ -175,7 +208,10 @@ async fn list_account_transactions_returns_own() {
 
     assert_eq!(res.status_code(), StatusCode::OK);
     let body: Value = res.json();
-    assert_eq!(body.as_array().unwrap().len(), 2);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
+    assert_eq!(body["pagination"]["total"], 2);
+    assert_eq!(body["pagination"]["limit"], 50);
+    assert_eq!(body["pagination"]["offset"], 0);
 }
 
 #[tokio::test]
@@ -195,9 +231,10 @@ async fn list_account_transactions_filter_by_kind() {
         .await;
 
     let body: Value = res.json();
-    let items = body.as_array().unwrap();
+    let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 2);
     assert!(items.iter().all(|t| t["kind"] == "Income"));
+    assert_eq!(body["pagination"]["total"], 2);
 }
 
 #[tokio::test]
@@ -217,7 +254,11 @@ async fn list_account_transactions_pagination() {
         ))
         .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
         .await;
-    assert_eq!(res_page1.json::<Value>().as_array().unwrap().len(), 1);
+    let body1: Value = res_page1.json();
+    assert_eq!(body1["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body1["pagination"]["total"], 3);
+    assert_eq!(body1["pagination"]["limit"], 1);
+    assert_eq!(body1["pagination"]["offset"], 0);
 
     let res_page2 = server
         .get(&format!(
@@ -225,7 +266,33 @@ async fn list_account_transactions_pagination() {
         ))
         .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
         .await;
-    assert_eq!(res_page2.json::<Value>().as_array().unwrap().len(), 1);
+    let body2: Value = res_page2.json();
+    assert_eq!(body2["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body2["pagination"]["total"], 3);
+    assert_eq!(body2["pagination"]["offset"], 1);
+}
+
+#[tokio::test]
+async fn list_account_transactions_total_reflects_full_count() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    for i in 1..=5 {
+        create_tx(&server, &token, account_id, "Income", &i.to_string()).await;
+    }
+
+    let res = server
+        .get(&format!(
+            "/accounts/{account_id}/transactions?limit=2&offset=0"
+        ))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    let body: Value = res.json();
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
+    assert_eq!(body["pagination"]["total"], 5);
 }
 
 #[tokio::test]
@@ -246,7 +313,8 @@ async fn list_all_transactions_spans_accounts() {
 
     assert_eq!(res.status_code(), StatusCode::OK);
     let body: Value = res.json();
-    assert_eq!(body.as_array().unwrap().len(), 2);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
+    assert_eq!(body["pagination"]["total"], 2);
 }
 
 #[tokio::test]
@@ -257,6 +325,305 @@ async fn list_all_transactions_no_auth_returns_401() {
     let res = server.get("/transactions").await;
 
     assert_eq!(res.status_code(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn list_account_transactions_filter_by_date_range() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    create_tx_at(&server, &token, account_id, "Income", "1", "2024-01-01T00:00:00Z").await;
+    let mid =
+        create_tx_at(&server, &token, account_id, "Income", "2", "2024-06-01T00:00:00Z").await;
+    create_tx_at(&server, &token, account_id, "Income", "3", "2024-12-01T00:00:00Z").await;
+
+    // 2024-04-01 .. 2024-08-01 (only the middle tx)
+    let from: i64 = 1711929600;
+    let to: i64 = 1722470400;
+
+    let res = server
+        .get(&format!(
+            "/accounts/{account_id}/transactions?from={from}&to={to}"
+        ))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::OK);
+    let body: Value = res.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_str().unwrap(), mid.to_string());
+    assert_eq!(body["pagination"]["total"], 1);
+}
+
+#[tokio::test]
+async fn list_account_transactions_filter_by_category() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+    let cat_id = helpers::create_category_for(&server, &token).await;
+
+    let categorized =
+        create_tx_with_category(&server, &token, account_id, "Expense", "10", cat_id).await;
+    create_tx(&server, &token, account_id, "Expense", "20").await;
+
+    let res = server
+        .get(&format!(
+            "/accounts/{account_id}/transactions?category_id={cat_id}"
+        ))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    let body: Value = res.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_str().unwrap(), categorized.to_string());
+    assert_eq!(body["pagination"]["total"], 1);
+}
+
+#[tokio::test]
+async fn list_account_transactions_invalid_kind_returns_400() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    let res = server
+        .get(&format!("/accounts/{account_id}/transactions?kind=Bogus"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_account_transactions_no_auth_returns_401() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    let res = server
+        .get(&format!("/accounts/{account_id}/transactions"))
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn list_account_transactions_other_users_account_returns_empty() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid_a, token_a) = helpers::create_test_user();
+    let (_uid_b, token_b) = helpers::create_test_user();
+
+    let acc_a = helpers::create_account_for(&server, &token_a).await;
+    create_tx(&server, &token_a, acc_a, "Income", "100").await;
+
+    // user B requests user A's account path. Current behavior: empty list, not 404.
+    let res = server
+        .get(&format!("/accounts/{acc_a}/transactions"))
+        .add_header(helpers::auth(&token_b).0, helpers::auth(&token_b).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::OK);
+    let body: Value = res.json();
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    assert_eq!(body["pagination"]["total"], 0);
+}
+
+#[tokio::test]
+async fn list_account_transactions_unknown_account_returns_empty() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let random_id = Uuid::new_v4();
+
+    // No ownership/existence check on the path; SQL filter just yields empty.
+    let res = server
+        .get(&format!("/accounts/{random_id}/transactions"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::OK);
+    let body: Value = res.json();
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    assert_eq!(body["pagination"]["total"], 0);
+}
+
+#[tokio::test]
+async fn list_all_transactions_filter_by_date_range() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let acc1 = helpers::create_account_for(&server, &token).await;
+    let acc2 = helpers::create_account_for(&server, &token).await;
+
+    create_tx_at(&server, &token, acc1, "Income", "1", "2024-01-01T00:00:00Z").await;
+    let mid = create_tx_at(&server, &token, acc2, "Expense", "2", "2024-06-01T00:00:00Z").await;
+    create_tx_at(&server, &token, acc1, "Income", "3", "2024-12-01T00:00:00Z").await;
+
+    let from: i64 = 1711929600;
+    let to: i64 = 1722470400;
+
+    let res = server
+        .get(&format!("/transactions?from={from}&to={to}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    let body: Value = res.json();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"].as_str().unwrap(), mid.to_string());
+    assert_eq!(body["pagination"]["total"], 1);
+}
+
+#[tokio::test]
+async fn list_all_transactions_pagination() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let acc1 = helpers::create_account_for(&server, &token).await;
+    let acc2 = helpers::create_account_for(&server, &token).await;
+
+    for i in 0..5 {
+        let acc = if i % 2 == 0 { acc1 } else { acc2 };
+        let when = format!("2024-0{}-01T00:00:00Z", i + 1);
+        create_tx_at(&server, &token, acc, "Income", &(i + 1).to_string(), &when).await;
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for offset in [0, 2, 4] {
+        let res = server
+            .get(&format!("/transactions?limit=2&offset={offset}"))
+            .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+            .await;
+        let body: Value = res.json();
+        assert_eq!(body["pagination"]["total"], 5);
+        for item in body["items"].as_array().unwrap() {
+            assert!(seen.insert(item["id"].as_str().unwrap().to_string()));
+        }
+    }
+    assert_eq!(seen.len(), 5);
+}
+
+#[tokio::test]
+async fn list_all_transactions_empty_when_no_data() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+
+    let res = server
+        .get("/transactions")
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::OK);
+    let body: Value = res.json();
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    assert_eq!(body["pagination"]["total"], 0);
+}
+
+#[tokio::test]
+async fn list_account_transactions_out_of_range_timestamp_returns_400() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    let res = server
+        .get(&format!(
+            "/accounts/{account_id}/transactions?from={}",
+            i64::MAX
+        ))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_account_transactions_inverted_range_returns_400() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&server, &token).await;
+
+    // from > to
+    let from: i64 = 1722470400; // 2024-08-01
+    let to: i64 = 1711929600; // 2024-04-01
+    let res = server
+        .get(&format!(
+            "/accounts/{account_id}/transactions?from={from}&to={to}"
+        ))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_all_transactions_out_of_range_timestamp_returns_400() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+
+    let res = server
+        .get(&format!("/transactions?to={}", i64::MIN))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_all_transactions_inverted_range_returns_400() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid, token) = helpers::create_test_user();
+
+    let from: i64 = 1722470400;
+    let to: i64 = 1711929600;
+    let res = server
+        .get(&format!("/transactions?from={from}&to={to}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+
+    assert_eq!(res.status_code(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn list_all_transactions_only_returns_users_own() {
+    let postgres = common::TestPostgres::new().await;
+    let server = helpers::make_app(postgres.pool).await;
+    let (_uid_a, token_a) = helpers::create_test_user();
+    let (_uid_b, token_b) = helpers::create_test_user();
+
+    let acc_a = helpers::create_account_for(&server, &token_a).await;
+    let acc_b = helpers::create_account_for(&server, &token_b).await;
+    let tx_a = create_tx(&server, &token_a, acc_a, "Income", "10").await;
+    let tx_b = create_tx(&server, &token_b, acc_b, "Income", "20").await;
+
+    let res_a = server
+        .get("/transactions")
+        .add_header(helpers::auth(&token_a).0, helpers::auth(&token_a).1)
+        .await;
+    let body_a: Value = res_a.json();
+    let items_a = body_a["items"].as_array().unwrap();
+    assert_eq!(items_a.len(), 1);
+    assert_eq!(items_a[0]["id"].as_str().unwrap(), tx_a.to_string());
+
+    let res_b = server
+        .get("/transactions")
+        .add_header(helpers::auth(&token_b).0, helpers::auth(&token_b).1)
+        .await;
+    let body_b: Value = res_b.json();
+    let items_b = body_b["items"].as_array().unwrap();
+    assert_eq!(items_b.len(), 1);
+    assert_eq!(items_b[0]["id"].as_str().unwrap(), tx_b.to_string());
 }
 
 #[tokio::test]
@@ -341,23 +708,4 @@ async fn delete_transaction_not_found_returns_404() {
         .await;
 
     assert_eq!(res.status_code(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn balance_updates_after_income_and_expense() {
-    let postgres = common::TestPostgres::new().await;
-    let server = helpers::make_app(postgres.pool).await;
-    let (_uid, token) = helpers::create_test_user();
-    let account_id = helpers::create_account_for(&server, &token).await;
-
-    create_tx(&server, &token, account_id, "Income", "100").await;
-    create_tx(&server, &token, account_id, "Expense", "30").await;
-
-    let res = server
-        .get(&format!("/accounts/{account_id}/balance"))
-        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
-        .await;
-
-    let body: Value = res.json();
-    assert_eq!(body["balance"], "70");
 }

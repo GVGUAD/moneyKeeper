@@ -129,11 +129,13 @@ pub trait TransactionRepository: Send + Sync {
         &self,
         params: &TransactionListParams,
     ) -> anyhow::Result<Vec<(Transaction, TransactionDetails)>>;
+    async fn count(&self, params: &TransactionListParams) -> anyhow::Result<i64>;
     #[allow(dead_code)]
     async fn update(&self, tx: &Transaction, details: &TransactionDetails) -> anyhow::Result<()>;
     async fn delete(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<()>;
     /// Insert a transaction using INSERT OR IGNORE (for external syncs).
-    async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<()>;
+    /// Returns true if the row was actually inserted (false = already existed).
+    async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<bool>;
 }
 
 #[cfg(test)]

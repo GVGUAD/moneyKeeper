@@ -133,7 +133,7 @@ async fn webhook_inserts_expense_transaction() {
 
     assert_eq!(txn_res.status_code(), StatusCode::OK);
     let body: Value = txn_res.json();
-    let txns = body.as_array().unwrap();
+    let txns = body["items"].as_array().unwrap();
     assert_eq!(txns.len(), 1);
     assert_eq!(txns[0]["kind"], "Expense");
 }
@@ -183,7 +183,7 @@ async fn webhook_duplicate_is_silently_ignored() {
 
     assert_eq!(txn_res.status_code(), StatusCode::OK);
     let body: Value = txn_res.json();
-    let txns = body.as_array().unwrap();
+    let txns = body["items"].as_array().unwrap();
     assert_eq!(txns.len(), 1);
 }
 

@@ -87,16 +87,10 @@ pub struct AccountResponse {
     pub name: String,
     pub account_type: String,
     pub currency: String,
+    pub balance: Decimal,
     pub details: Option<AccountDetailsDto>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-pub struct BalanceResponse {
-    pub account_id: Uuid,
-    pub balance: Decimal,
-    pub currency: String,
 }
 
 // Transactions
@@ -139,6 +133,19 @@ pub struct TransactionResponse {
     pub details: Option<TransactionDetailsDto>,
 }
 
+#[derive(Serialize)]
+pub struct PaginationInfo {
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+#[derive(Serialize)]
+pub struct TransactionListResponse {
+    pub items: Vec<TransactionResponse>,
+    pub pagination: PaginationInfo,
+}
+
 // Categories
 #[derive(Deserialize)]
 pub struct CreateCategoryRequest {
@@ -170,6 +177,8 @@ pub struct TxListQuery {
     pub limit: i64,
     #[serde(default)]
     pub offset: i64,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
 }
 
 fn default_limit() -> i64 {
@@ -180,20 +189,20 @@ fn default_limit() -> i64 {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ConnectMonobankRequest {
-    pub account_id: uuid::Uuid,
+    pub account_id: Uuid,
     pub token: String,
     pub external_account_id: String,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct MonobankConnectionResponse {
-    pub id: uuid::Uuid,
-    pub account_id: uuid::Uuid,
+    pub id: Uuid,
+    pub account_id: Uuid,
     pub provider: String,
     pub external_account_id: String,
     pub sync_status: String,
-    pub last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, serde::Serialize)]

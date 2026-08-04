@@ -33,6 +33,59 @@ struct TxRow {
     created_at: DateTime<Utc>,
 }
 
+/// Builds the dynamic `WHERE` clause for transaction list/count queries.
+/// Returns the joined condition string and the number of bound parameters.
+fn build_where_clause(params: &TransactionListParams) -> (String, usize) {
+    let mut conditions = vec!["user_id = $1".to_string()];
+    let mut param_count = 1usize;
+
+    if params.account_id.is_some() {
+        param_count += 1;
+        conditions.push(format!("account_id = ${param_count}"));
+    }
+    if params.kind.is_some() {
+        param_count += 1;
+        conditions.push(format!("kind = ${param_count}"));
+    }
+    if params.category_id.is_some() {
+        param_count += 1;
+        conditions.push(format!("category_id = ${param_count}"));
+    }
+    if params.from.is_some() {
+        param_count += 1;
+        conditions.push(format!("transacted_at >= ${param_count}"));
+    }
+    if params.to.is_some() {
+        param_count += 1;
+        conditions.push(format!("transacted_at <= ${param_count}"));
+    }
+    (conditions.join(" AND "), param_count)
+}
+
+/// Binds the same set of WHERE-clause parameters in the same order used by `build_where_clause`.
+fn bind_where_params<'q, O>(
+    mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
+    params: &'q TransactionListParams,
+) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
+    q = q.bind(params.user_id);
+    if let Some(acc) = params.account_id {
+        q = q.bind(acc);
+    }
+    if let Some(k) = &params.kind {
+        q = q.bind(k.as_str());
+    }
+    if let Some(cat) = params.category_id {
+        q = q.bind(cat);
+    }
+    if let Some(from) = params.from {
+        q = q.bind(from);
+    }
+    if let Some(to) = params.to {
+        q = q.bind(to);
+    }
+    q
+}
+
 fn row_to_tx(r: TxRow) -> anyhow::Result<Transaction> {
     Ok(Transaction {
         id: r.id,
@@ -128,57 +181,16 @@ impl TransactionRepository for SqliteTransactionRepository {
         &self,
         params: &TransactionListParams,
     ) -> anyhow::Result<Vec<(Transaction, TransactionDetails)>> {
-        // PostgreSQL requires numbered placeholders $1, $2, ... — build them dynamically.
-        let mut conditions = vec!["user_id = $1".to_string()];
-        let mut param_count = 1usize;
-
-        if params.account_id.is_some() {
-            param_count += 1;
-            conditions.push(format!("account_id = ${param_count}"));
-        }
-        if params.kind.is_some() {
-            param_count += 1;
-            conditions.push(format!("kind = ${param_count}"));
-        }
-        if params.category_id.is_some() {
-            param_count += 1;
-            conditions.push(format!("category_id = ${param_count}"));
-        }
-        if params.from.is_some() {
-            param_count += 1;
-            conditions.push(format!("transacted_at >= ${param_count}"));
-        }
-        if params.to.is_some() {
-            param_count += 1;
-            conditions.push(format!("transacted_at <= ${param_count}"));
-        }
-        param_count += 1;
-        let limit_param = param_count;
-        param_count += 1;
-        let offset_param = param_count;
+        let (where_clause, param_count) = build_where_clause(params);
+        let limit_param = param_count + 1;
+        let offset_param = param_count + 2;
 
         let sql = format!(
-            "SELECT * FROM transactions WHERE {} \
-             ORDER BY transacted_at DESC LIMIT ${limit_param} OFFSET ${offset_param}",
-            conditions.join(" AND ")
+            "SELECT * FROM transactions WHERE {where_clause} \
+             ORDER BY transacted_at DESC LIMIT ${limit_param} OFFSET ${offset_param}"
         );
 
-        let mut q = sqlx::query_as::<_, TxRow>(&sql).bind(params.user_id);
-        if let Some(acc) = params.account_id {
-            q = q.bind(acc);
-        }
-        if let Some(k) = &params.kind {
-            q = q.bind(k.as_str());
-        }
-        if let Some(cat) = params.category_id {
-            q = q.bind(cat);
-        }
-        if let Some(from) = params.from {
-            q = q.bind(from);
-        }
-        if let Some(to) = params.to {
-            q = q.bind(to);
-        }
+        let q = bind_where_params(sqlx::query_as::<_, TxRow>(&sql), params);
         let rows = q
             .bind(params.limit)
             .bind(params.offset)
@@ -192,6 +204,14 @@ impl TransactionRepository for SqliteTransactionRepository {
             result.push((tx, details));
         }
         Ok(result)
+    }
+
+    async fn count(&self, params: &TransactionListParams) -> anyhow::Result<i64> {
+        let (where_clause, _) = build_where_clause(params);
+        let sql = format!("SELECT COUNT(*) FROM transactions WHERE {where_clause}");
+        let q = bind_where_params(sqlx::query_as::<_, (i64,)>(&sql), params);
+        let (count,) = q.fetch_one(&self.pool).await?;
+        Ok(count)
     }
 
     async fn update(&self, tx: &Transaction, details: &TransactionDetails) -> anyhow::Result<()> {
@@ -247,8 +267,8 @@ impl TransactionRepository for SqliteTransactionRepository {
         Ok(())
     }
 
-    async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<()> {
-        sqlx::query(
+    async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<bool> {
+        let result = sqlx::query(
             "INSERT INTO transactions \
              (id, account_id, user_id, amount, currency, kind, category_id, note, external_id, \
               transacted_at, created_at) \
@@ -268,7 +288,7 @@ impl TransactionRepository for SqliteTransactionRepository {
         .bind(tx.created_at)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 }
 
@@ -321,6 +341,8 @@ mod tests {
     use super::*;
     use crate::domain::account::{Account, AccountDetails, AccountRepository, AccountType};
     use crate::infrastructure::account_repository::SqliteAccountRepository;
+    use crate::infrastructure::test_db;
+    use chrono::TimeZone;
     use sqlx::PgPool;
 
     async fn setup(pool: PgPool) -> (PgPool, Uuid, Uuid) {
@@ -339,9 +361,9 @@ mod tests {
         (pool, user_id, account_id)
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn create_and_find_income_transaction(pool: PgPool) {
-        let (pool, user_id, account_id) = setup(pool).await;
+    #[tokio::test]
+    async fn create_and_find_income_transaction() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
         let repo = SqliteTransactionRepository::new(pool);
         let tx = Transaction::new(
             account_id,
@@ -359,9 +381,9 @@ mod tests {
         assert_eq!(found.note, Some("salary".to_string()));
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn list_transactions_filtered_by_kind(pool: PgPool) {
-        let (pool, user_id, account_id) = setup(pool).await;
+    #[tokio::test]
+    async fn list_transactions_filtered_by_kind() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
         let repo = SqliteTransactionRepository::new(pool);
         let income = Transaction::new(
             account_id,
@@ -402,5 +424,282 @@ mod tests {
         let results = repo.list(&params).await.unwrap();
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].0.kind, TransactionKind::Income));
+    }
+
+    fn base_params(user_id: Uuid) -> TransactionListParams {
+        TransactionListParams {
+            account_id: None,
+            user_id,
+            kind: None,
+            category_id: None,
+            from: None,
+            to: None,
+            limit: 100,
+            offset: 0,
+        }
+    }
+
+    async fn insert_tx(
+        repo: &SqliteTransactionRepository,
+        account_id: Uuid,
+        user_id: Uuid,
+        amount: i64,
+        kind: TransactionKind,
+        category_id: Option<Uuid>,
+        transacted_at: DateTime<Utc>,
+    ) -> Uuid {
+        let tx = Transaction::new(
+            account_id,
+            user_id,
+            Decimal::new(amount, 0),
+            "USD".to_string(),
+            kind,
+            category_id,
+            None,
+            transacted_at,
+        );
+        let id = tx.id;
+        repo.create(&tx, &TransactionDetails::None).await.unwrap();
+        id
+    }
+
+    async fn insert_account(pool: &PgPool, user_id: Uuid) -> Uuid {
+        let account = Account::new(
+            user_id,
+            "Other".to_string(),
+            AccountType::Cash,
+            "USD".to_string(),
+        );
+        let id = account.id;
+        SqliteAccountRepository::new(pool.clone())
+            .create(&account, &AccountDetails::None)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn insert_category(pool: &PgPool, user_id: Uuid) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO categories (id, user_id, name, color, created_at) \
+             VALUES ($1, $2, $3, NULL, $4)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind("Test Cat")
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn list_filtered_by_date_range() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
+        let repo = SqliteTransactionRepository::new(pool);
+        let t1 = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
+        let t3 = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
+        insert_tx(&repo, account_id, user_id, 1, TransactionKind::Income, None, t1).await;
+        let mid = insert_tx(&repo, account_id, user_id, 2, TransactionKind::Income, None, t2).await;
+        insert_tx(&repo, account_id, user_id, 3, TransactionKind::Income, None, t3).await;
+
+        let params = TransactionListParams {
+            from: Some(Utc.with_ymd_and_hms(2024, 4, 1, 0, 0, 0).unwrap()),
+            to: Some(Utc.with_ymd_and_hms(2024, 8, 1, 0, 0, 0).unwrap()),
+            ..base_params(user_id)
+        };
+
+        let results = repo.list(&params).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, mid);
+        assert_eq!(repo.count(&params).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_filtered_by_category() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
+        let cat_id = insert_category(&pool, user_id).await;
+        let repo = SqliteTransactionRepository::new(pool);
+        let categorized = insert_tx(
+            &repo,
+            account_id,
+            user_id,
+            10,
+            TransactionKind::Expense,
+            Some(cat_id),
+            Utc::now(),
+        )
+        .await;
+        insert_tx(
+            &repo,
+            account_id,
+            user_id,
+            20,
+            TransactionKind::Expense,
+            None,
+            Utc::now(),
+        )
+        .await;
+
+        let params = TransactionListParams {
+            category_id: Some(cat_id),
+            ..base_params(user_id)
+        };
+
+        let results = repo.list(&params).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, categorized);
+        assert_eq!(results[0].0.category_id, Some(cat_id));
+    }
+
+    #[tokio::test]
+    async fn list_filtered_by_account() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
+        let other_account = insert_account(&pool, user_id).await;
+        let repo = SqliteTransactionRepository::new(pool);
+        let target = insert_tx(
+            &repo,
+            account_id,
+            user_id,
+            5,
+            TransactionKind::Income,
+            None,
+            Utc::now(),
+        )
+        .await;
+        insert_tx(
+            &repo,
+            other_account,
+            user_id,
+            7,
+            TransactionKind::Income,
+            None,
+            Utc::now(),
+        )
+        .await;
+
+        let params = TransactionListParams {
+            account_id: Some(account_id),
+            ..base_params(user_id)
+        };
+
+        let results = repo.list(&params).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, target);
+        assert_eq!(results[0].0.account_id, account_id);
+    }
+
+    #[tokio::test]
+    async fn list_only_returns_user_own() {
+        let (pool, user1, account1) = setup(test_db::fresh_pool().await).await;
+        let user2 = Uuid::new_v4();
+        let account2 = insert_account(&pool, user2).await;
+        let repo = SqliteTransactionRepository::new(pool);
+
+        let mine = insert_tx(
+            &repo,
+            account1,
+            user1,
+            1,
+            TransactionKind::Income,
+            None,
+            Utc::now(),
+        )
+        .await;
+        insert_tx(
+            &repo,
+            account2,
+            user2,
+            2,
+            TransactionKind::Income,
+            None,
+            Utc::now(),
+        )
+        .await;
+
+        let params = base_params(user1);
+        let results = repo.list(&params).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, mine);
+        assert_eq!(repo.count(&params).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_pagination_orders_newest_first() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
+        let repo = SqliteTransactionRepository::new(pool);
+        let times = [
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 2, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 4, 1, 0, 0, 0).unwrap(),
+        ];
+        let mut ids = Vec::new();
+        for (i, t) in times.iter().enumerate() {
+            ids.push(
+                insert_tx(
+                    &repo,
+                    account_id,
+                    user_id,
+                    (i + 1) as i64,
+                    TransactionKind::Income,
+                    None,
+                    *t,
+                )
+                .await,
+            );
+        }
+
+        let page1 = repo
+            .list(&TransactionListParams {
+                limit: 2,
+                offset: 0,
+                ..base_params(user_id)
+            })
+            .await
+            .unwrap();
+        let page2 = repo
+            .list(&TransactionListParams {
+                limit: 2,
+                offset: 2,
+                ..base_params(user_id)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page1[0].0.id, ids[3]);
+        assert_eq!(page1[1].0.id, ids[2]);
+        assert_eq!(page2[0].0.id, ids[1]);
+        assert_eq!(page2[1].0.id, ids[0]);
+    }
+
+    #[tokio::test]
+    async fn count_ignores_limit_offset() {
+        let (pool, user_id, account_id) = setup(test_db::fresh_pool().await).await;
+        let repo = SqliteTransactionRepository::new(pool);
+        for i in 0..5 {
+            insert_tx(
+                &repo,
+                account_id,
+                user_id,
+                (i + 1) as i64,
+                TransactionKind::Income,
+                None,
+                Utc::now(),
+            )
+            .await;
+        }
+
+        let params = TransactionListParams {
+            limit: 2,
+            offset: 0,
+            ..base_params(user_id)
+        };
+        assert_eq!(repo.list(&params).await.unwrap().len(), 2);
+        assert_eq!(repo.count(&params).await.unwrap(), 5);
     }
 }

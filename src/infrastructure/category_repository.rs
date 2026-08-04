@@ -95,10 +95,11 @@ impl CategoryRepository for SqliteCategoryRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::PgPool;
+    use crate::infrastructure::test_db;
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn create_list_delete_category(pool: PgPool) {
+    #[tokio::test]
+    async fn create_list_delete_category() {
+        let pool = test_db::fresh_pool().await;
         let repo = SqliteCategoryRepository::new(pool);
         let user_id = Uuid::new_v4();
         let cat = Category::new(user_id, "Food".to_string(), Some("#ff0000".to_string()));
@@ -111,8 +112,9 @@ mod tests {
         assert!(list.is_empty());
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn update_category_name(pool: PgPool) {
+    #[tokio::test]
+    async fn update_category_name() {
+        let pool = test_db::fresh_pool().await;
         let repo = SqliteCategoryRepository::new(pool);
         let user_id = Uuid::new_v4();
         let mut cat = Category::new(user_id, "Food".to_string(), None);

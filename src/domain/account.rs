@@ -45,6 +45,7 @@ pub struct Account {
     pub name: String,
     pub account_type: AccountType,
     pub currency: String,
+    pub balance: Decimal,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -58,6 +59,7 @@ impl Account {
             name,
             account_type,
             currency,
+            balance: Decimal::ZERO,
             created_at: now,
             updated_at: now,
         }
@@ -170,7 +172,12 @@ pub trait AccountRepository: Send + Sync {
     async fn list_by_user(&self, user_id: Uuid) -> anyhow::Result<Vec<(Account, AccountDetails)>>;
     async fn update(&self, account: &Account, details: &AccountDetails) -> anyhow::Result<()>;
     async fn delete(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<()>;
-    async fn compute_balance(&self, account_id: Uuid, user_id: Uuid) -> anyhow::Result<Decimal>;
+    async fn adjust_balance(
+        &self,
+        account_id: Uuid,
+        user_id: Uuid,
+        delta: Decimal,
+    ) -> anyhow::Result<()>;
 }
 
 #[cfg(test)]
@@ -220,5 +227,16 @@ mod tests {
         for d in [LoanDirection::Borrowed, LoanDirection::Lent] {
             assert_eq!(LoanDirection::from_str(d.as_str()).unwrap(), d);
         }
+    }
+
+    #[test]
+    fn account_new_has_zero_balance() {
+        let acct = Account::new(
+            Uuid::new_v4(),
+            "Wallet".to_string(),
+            AccountType::Cash,
+            "USD".to_string(),
+        );
+        assert_eq!(acct.balance, Decimal::ZERO);
     }
 }

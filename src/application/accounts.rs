@@ -1,5 +1,4 @@
 use chrono::Utc;
-use rust_decimal::Decimal;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -63,10 +62,5 @@ impl AccountService {
     pub async fn delete(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<()> {
         self.get(id, user_id).await?;
         self.repo.delete(id, user_id).await
-    }
-
-    pub async fn get_balance(&self, id: Uuid, user_id: Uuid) -> anyhow::Result<Decimal> {
-        self.get(id, user_id).await?;
-        self.repo.compute_balance(id, user_id).await
     }
 }

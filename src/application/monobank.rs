@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::domain::account::AccountRepository;
 use crate::domain::bank_connection::{
     BankConnection, BankConnectionRepository, BankProvider, SyncStatus,
 };
@@ -13,6 +14,7 @@ use crate::domain::transaction::{Transaction, TransactionKind, TransactionReposi
 pub struct MonobankService {
     connection_repo: Arc<dyn BankConnectionRepository>,
     transaction_repo: Arc<dyn TransactionRepository>,
+    account_repo: Arc<dyn AccountRepository>,
     monobank_client: Arc<dyn MonobankApiClient>,
     public_url: String,
 }
@@ -21,12 +23,14 @@ impl MonobankService {
     pub fn new(
         connection_repo: Arc<dyn BankConnectionRepository>,
         transaction_repo: Arc<dyn TransactionRepository>,
+        account_repo: Arc<dyn AccountRepository>,
         monobank_client: Arc<dyn MonobankApiClient>,
         public_url: String,
     ) -> Self {
         Self {
             connection_repo,
             transaction_repo,
+            account_repo,
             monobank_client,
             public_url,
         }
@@ -119,6 +123,7 @@ impl MonobankService {
     pub fn spawn_sync(&self, conn: BankConnection, from: DateTime<Utc>) {
         let connection_repo = Arc::clone(&self.connection_repo);
         let transaction_repo = Arc::clone(&self.transaction_repo);
+        let account_repo = Arc::clone(&self.account_repo);
         let monobank_client = Arc::clone(&self.monobank_client);
         let public_url = self.public_url.clone();
 
@@ -126,6 +131,7 @@ impl MonobankService {
             run_sync(
                 connection_repo,
                 transaction_repo,
+                account_repo,
                 monobank_client,
                 conn,
                 from,
@@ -141,8 +147,18 @@ impl MonobankService {
         item: &MonoStatementItem,
     ) -> anyhow::Result<bool> {
         let tx = build_transaction(conn.account_id, conn.user_id, item);
-        self.transaction_repo.create_idempotent(&tx).await?;
-        Ok(true)
+        let inserted = self.transaction_repo.create_idempotent(&tx).await?;
+        if inserted {
+            let delta = if tx.kind.affects_balance_positively() {
+                tx.amount
+            } else {
+                -tx.amount
+            };
+            self.account_repo
+                .adjust_balance(tx.account_id, tx.user_id, delta)
+                .await?;
+        }
+        Ok(inserted)
     }
 }
 
@@ -173,10 +189,11 @@ fn build_transaction(
 async fn run_sync(
     connection_repo: Arc<dyn BankConnectionRepository>,
     transaction_repo: Arc<dyn TransactionRepository>,
+    account_repo: Arc<dyn AccountRepository>,
     monobank_client: Arc<dyn MonobankApiClient>,
     conn: BankConnection,
     history_from: DateTime<Utc>,
-    public_url: String,
+    _public_url: String,
 ) {
     if let Err(e) = connection_repo
         .update_status(conn.id, SyncStatus::Syncing, None)
@@ -213,16 +230,37 @@ async fn run_sync(
                 return;
             }
         };
-        tracing::info!("in the loop {}", items.len());
+        tracing::info!("found {} transactions", items.len());
         for item in &items {
             let tx = build_transaction(conn.account_id, conn.user_id, item);
-
-            if let Err(e) = transaction_repo.create_idempotent(&tx).await {
-                tracing::error!(
-                    conn_id = %conn.id,
-                    item_id = %item.id,
-                    "failed to insert statement item: {e}"
-                );
+            match transaction_repo.create_idempotent(&tx).await {
+                Ok(true) => {
+                    let delta = if tx.kind.affects_balance_positively() {
+                        tx.amount
+                    } else {
+                        -tx.amount
+                    };
+                    if let Err(e) = account_repo
+                        .adjust_balance(tx.account_id, tx.user_id, delta)
+                        .await
+                    {
+                        tracing::error!(
+                            conn_id = %conn.id,
+                            item_id = %item.id,
+                            "failed to adjust account balance: {e}"
+                        );
+                    }
+                }
+                Ok(false) => {
+                    tracing::warn!(item = %item.id, "already exists");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        conn_id = %conn.id,
+                        item_id = %item.id,
+                        "failed to insert statement item: {e}"
+                    );
+                }
             }
         }
 
@@ -395,6 +433,10 @@ mod tests {
                 .collect())
         }
 
+        async fn count(&self, _params: &TransactionListParams) -> anyhow::Result<i64> {
+            Ok(self.transactions.lock().unwrap().len() as i64)
+        }
+
         async fn update(
             &self,
             _tx: &Transaction,
@@ -409,7 +451,7 @@ mod tests {
             Ok(())
         }
 
-        async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<()> {
+        async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<bool> {
             let mut txs = self.transactions.lock().unwrap();
             let already_exists = tx.external_id.as_ref().is_some_and(|eid| {
                 txs.iter()
@@ -417,7 +459,53 @@ mod tests {
             });
             if !already_exists {
                 txs.push(tx.clone());
+                Ok(true)
+            } else {
+                Ok(false)
             }
+        }
+    }
+
+    struct MockAccountRepo;
+
+    #[async_trait::async_trait]
+    impl crate::domain::account::AccountRepository for MockAccountRepo {
+        async fn create(
+            &self,
+            _account: &crate::domain::account::Account,
+            _details: &crate::domain::account::AccountDetails,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn find_by_id(
+            &self,
+            _id: Uuid,
+            _user_id: Uuid,
+        ) -> anyhow::Result<Option<(crate::domain::account::Account, crate::domain::account::AccountDetails)>> {
+            Ok(None)
+        }
+        async fn list_by_user(
+            &self,
+            _user_id: Uuid,
+        ) -> anyhow::Result<Vec<(crate::domain::account::Account, crate::domain::account::AccountDetails)>> {
+            Ok(vec![])
+        }
+        async fn update(
+            &self,
+            _account: &crate::domain::account::Account,
+            _details: &crate::domain::account::AccountDetails,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, _id: Uuid, _user_id: Uuid) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn adjust_balance(
+            &self,
+            _account_id: Uuid,
+            _user_id: Uuid,
+            _delta: rust_decimal::Decimal,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
     }
@@ -452,6 +540,7 @@ mod tests {
         MonobankService::new(
             conn_repo,
             tx_repo,
+            Arc::new(MockAccountRepo),
             Arc::new(MockMonobankClient),
             "https://example.com".to_string(),
         )

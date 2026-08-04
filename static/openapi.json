@@ -210,49 +210,6 @@
         ]
       }
     },
-    "/accounts/{id}/balance": {
-      "get": {
-        "tags": [
-          "accounts"
-        ],
-        "operationId": "get_balance",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Account ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "current balance",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BalanceResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "account not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
     "/accounts/{id}/transactions": {
       "get": {
         "tags": [
@@ -304,6 +261,26 @@
             }
           },
           {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive lower bound on transacted_at, as a Unix timestamp in seconds (UTC).",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on transacted_at, as a Unix timestamp in seconds (UTC). Must be >= from.",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
             "name": "offset",
             "in": "query",
             "required": false,
@@ -320,10 +297,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TransactionResponse"
-                  }
+                  "$ref": "#/components/schemas/TransactionListResponse"
                 }
               }
             }
@@ -754,17 +728,39 @@
             "name": "limit",
             "in": "query",
             "description": "Maximum results to return (default: 50)",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "integer",
-              "format": "int64"
+              "format": "int64",
+              "default": 50
             }
           },
           {
             "name": "offset",
             "in": "query",
             "description": "Number of results to skip (default: 0)",
-            "required": true,
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "default": 0
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive lower bound on transacted_at, as a Unix timestamp in seconds (UTC).",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on transacted_at, as a Unix timestamp in seconds (UTC). Must be >= from.",
             "schema": {
               "type": "integer",
               "format": "int64"
@@ -777,10 +773,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TransactionResponse"
-                  }
+                  "$ref": "#/components/schemas/TransactionListResponse"
                 }
               }
             }
@@ -983,12 +976,17 @@
           "name",
           "account_type",
           "currency",
+          "balance",
           "created_at",
           "updated_at"
         ],
         "properties": {
           "account_type": {
             "type": "string"
+          },
+          "balance": {
+            "type": "number",
+            "description": "Current account balance"
           },
           "created_at": {
             "type": "string",
@@ -1017,26 +1015,6 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
-          }
-        }
-      },
-      "BalanceResponse": {
-        "type": "object",
-        "required": [
-          "account_id",
-          "balance",
-          "currency"
-        ],
-        "properties": {
-          "account_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "balance": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string"
           }
         }
       },
@@ -1346,6 +1324,46 @@
             }
           }
         ]
+      },
+      "PaginationInfo": {
+        "type": "object",
+        "required": [
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TransactionListResponse": {
+        "type": "object",
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransactionResponse"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/PaginationInfo"
+          }
+        }
       },
       "TransactionResponse": {
         "type": "object",

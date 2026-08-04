@@ -8,7 +8,6 @@ use crate::domain::account::{
     Account, AccountDetails, AccountRepository, AccountType, BinanceDetails, CompoundingPeriod,
     InvestmentDetails, LoanDetails, LoanDirection, SavingsDetails,
 };
-use crate::domain::transaction::TransactionKind;
 
 pub struct SqliteAccountRepository {
     pool: PgPool,
@@ -27,6 +26,7 @@ struct AccountRow {
     name: String,
     account_type: String,
     currency: String,
+    balance: Decimal,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -38,6 +38,7 @@ fn row_to_account(r: AccountRow) -> anyhow::Result<Account> {
         name: r.name,
         account_type: AccountType::from_str(&r.account_type)?,
         currency: r.currency,
+        balance: r.balance,
         created_at: r.created_at,
         updated_at: r.updated_at,
     })
@@ -47,14 +48,15 @@ fn row_to_account(r: AccountRow) -> anyhow::Result<Account> {
 impl AccountRepository for SqliteAccountRepository {
     async fn create(&self, account: &Account, details: &AccountDetails) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO accounts (id, user_id, name, account_type, currency, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO accounts (id, user_id, name, account_type, currency, balance, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(account.id)
         .bind(account.user_id)
         .bind(&account.name)
         .bind(account.account_type.as_str())
         .bind(&account.currency)
+        .bind(account.balance)
         .bind(account.created_at)
         .bind(account.updated_at)
         .execute(&self.pool)
@@ -135,25 +137,24 @@ impl AccountRepository for SqliteAccountRepository {
         Ok(())
     }
 
-    async fn compute_balance(&self, account_id: Uuid, user_id: Uuid) -> anyhow::Result<Decimal> {
-        let rows: Vec<(Decimal, String)> = sqlx::query_as(
-            "SELECT amount, kind FROM transactions WHERE account_id = $1 AND user_id = $2",
+    async fn adjust_balance(
+        &self,
+        account_id: Uuid,
+        user_id: Uuid,
+        delta: Decimal,
+    ) -> anyhow::Result<()> {
+        let result = sqlx::query(
+            "UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND user_id = $3",
         )
+        .bind(delta)
         .bind(account_id)
         .bind(user_id)
-        .fetch_all(&self.pool)
+        .execute(&self.pool)
         .await?;
-
-        let mut balance = Decimal::ZERO;
-        for (amount, kind_str) in rows {
-            let kind = TransactionKind::from_str(&kind_str)?;
-            if kind.affects_balance_positively() {
-                balance += amount;
-            } else {
-                balance -= amount;
-            }
+        if result.rows_affected() == 0 {
+            anyhow::bail!("account {} not found for user {}", account_id, user_id);
         }
-        Ok(balance)
+        Ok(())
     }
 }
 
@@ -316,10 +317,11 @@ impl SqliteAccountRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::PgPool;
+    use crate::infrastructure::test_db;
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn create_and_find_cash_account(pool: PgPool) {
+    #[tokio::test]
+    async fn create_and_find_cash_account() {
+        let pool = test_db::fresh_pool().await;
         let repo = SqliteAccountRepository::new(pool);
         let user_id = Uuid::new_v4();
         let account = Account::new(
@@ -334,8 +336,9 @@ mod tests {
         assert!(matches!(details, AccountDetails::None));
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn create_and_find_savings_account(pool: PgPool) {
+    #[tokio::test]
+    async fn create_and_find_savings_account() {
+        let pool = test_db::fresh_pool().await;
         let repo = SqliteAccountRepository::new(pool);
         let user_id = Uuid::new_v4();
         let account = Account::new(
@@ -358,8 +361,9 @@ mod tests {
         }
     }
 
-    #[sqlx::test(migrations = "src/infrastructure/migrations")]
-    async fn cannot_find_other_users_account(pool: PgPool) {
+    #[tokio::test]
+    async fn cannot_find_other_users_account() {
+        let pool = test_db::fresh_pool().await;
         let repo = SqliteAccountRepository::new(pool);
         let user_id = Uuid::new_v4();
         let account = Account::new(
@@ -372,5 +376,39 @@ mod tests {
         let other_user_id = Uuid::new_v4();
         let result = repo.find_by_id(account.id, other_user_id).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn new_account_has_zero_balance() {
+        let pool = test_db::fresh_pool().await;
+        let repo = SqliteAccountRepository::new(pool);
+        let user_id = Uuid::new_v4();
+        let account = Account::new(
+            user_id,
+            "Savings".to_string(),
+            AccountType::Cash,
+            "USD".to_string(),
+        );
+        repo.create(&account, &AccountDetails::None).await.unwrap();
+        let (found, _) = repo.find_by_id(account.id, user_id).await.unwrap().unwrap();
+        assert_eq!(found.balance, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn adjust_balance_adds_delta() {
+        let pool = test_db::fresh_pool().await;
+        let repo = SqliteAccountRepository::new(pool);
+        let user_id = Uuid::new_v4();
+        let account = Account::new(
+            user_id,
+            "Cash".to_string(),
+            AccountType::Cash,
+            "USD".to_string(),
+        );
+        repo.create(&account, &AccountDetails::None).await.unwrap();
+        repo.adjust_balance(account.id, user_id, Decimal::new(100, 0)).await.unwrap();
+        repo.adjust_balance(account.id, user_id, Decimal::new(-30, 0)).await.unwrap();
+        let (found, _) = repo.find_by_id(account.id, user_id).await.unwrap().unwrap();
+        assert_eq!(found.balance, Decimal::new(70, 0));
     }
 }

@@ -6,8 +6,6 @@ RUN apk add --no-cache musl-dev pkgconf
 
 WORKDIR /app
 
-ENV SQLX_OFFLINE=true
-
 # Cache dependencies layer
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && \
@@ -16,8 +14,8 @@ RUN mkdir -p src && \
     cargo build --release 2>/dev/null || true && \
     rm -rf src
 
-# Build the real binary — .sqlx/ cache must exist for SQLX_OFFLINE=true
-COPY .sqlx ./.sqlx
+# Build the real binary
+COPY static ./static
 COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
