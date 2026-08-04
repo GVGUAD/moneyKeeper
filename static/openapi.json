@@ -1328,6 +1328,53 @@
           }
         ]
       }
+    },
+    "/transactions/{id}/subscription": {
+      "post": {
+        "tags": ["subscriptions", "transactions"],
+        "summary": "Create or attach a subscription from an expense transaction",
+        "operationId": "mark_transaction_as_subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Transaction ID",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MarkTransactionSubscriptionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "transaction was already linked to the requested subscription",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MarkTransactionSubscriptionResponse" }
+              }
+            }
+          },
+          "201": {
+            "description": "manual subscription charge created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MarkTransactionSubscriptionResponse" }
+              }
+            }
+          },
+          "400": { "description": "invalid body, invalid billing period, or transaction is not an expense" },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "transaction or subscription not found, including another user's resource" },
+          "409": { "description": "transaction is already linked to a different subscription" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
     }
   },
   "components": {
@@ -1868,7 +1915,9 @@
           "currency",
           "kind",
           "transacted_at",
-          "created_at"
+          "created_at",
+          "subscription_id",
+          "subscription_charge_id"
         ],
         "properties": {
           "account_id": {
@@ -1914,6 +1963,15 @@
               "string",
               "null"
             ]
+          },
+          "subscription_id": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "description": "Subscription linked through this transaction's charge."
+          },
+          "subscription_charge_id": {
+            "type": ["string", "null"],
+            "format": "uuid"
           },
           "transacted_at": {
             "type": "string",
@@ -2077,6 +2135,39 @@
         "required": ["transaction_id"],
         "properties": {
           "transaction_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "MarkTransactionSubscriptionRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["mode", "product_name", "billing_period"],
+            "properties": {
+              "mode": { "type": "string", "const": "create" },
+              "product_name": { "type": "string", "minLength": 1 },
+              "billing_period": {
+                "type": "string",
+                "enum": ["weekly", "monthly", "yearly"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["mode", "subscription_id"],
+            "properties": {
+              "mode": { "type": "string", "const": "attach" },
+              "subscription_id": { "type": "string", "format": "uuid" }
+            }
+          }
+        ]
+      },
+      "MarkTransactionSubscriptionResponse": {
+        "type": "object",
+        "required": ["subscription", "charge", "subscription_created"],
+        "properties": {
+          "subscription": { "$ref": "#/components/schemas/SubscriptionResponse" },
+          "charge": { "$ref": "#/components/schemas/SubscriptionChargeResponse" },
+          "subscription_created": { "type": "boolean" }
         }
       },
       "ForecastResponse": {

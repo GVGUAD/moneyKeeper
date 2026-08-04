@@ -131,8 +131,56 @@ pub struct SubscriptionUpsertResult {
     pub inserted: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum TransactionSubscriptionTarget {
+    Create {
+        subscription_id: Uuid,
+        product_name: String,
+        billing_period: BillingPeriod,
+    },
+    Attach {
+        subscription_id: Uuid,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct MarkTransactionSubscription {
+    pub user_id: Uuid,
+    pub transaction_id: Uuid,
+    pub target: TransactionSubscriptionTarget,
+    pub requested_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkTransactionSubscriptionOutcome {
+    Created {
+        subscription_id: Uuid,
+        charge_id: Uuid,
+        subscription_created: bool,
+    },
+    AlreadyLinked {
+        subscription_id: Uuid,
+        charge_id: Uuid,
+    },
+    TransactionNotFound,
+    TransactionNotExpense,
+    TransactionInvalid,
+    SubscriptionNotFound,
+    TransactionAlreadyLinked {
+        subscription_id: Uuid,
+        charge_id: Uuid,
+    },
+}
+
 #[async_trait::async_trait]
 pub trait SubscriptionRepository: Send + Sync {
+    /// Atomically creates or attaches a subscription charge for an existing
+    /// expense transaction. Implementations must reserve the transaction so a
+    /// concurrent request cannot create a second charge link.
+    async fn mark_transaction_as_subscription(
+        &self,
+        command: &MarkTransactionSubscription,
+    ) -> anyhow::Result<MarkTransactionSubscriptionOutcome>;
     async fn upsert_by_merchant_key(&self, sub: &Subscription) -> anyhow::Result<Subscription>;
     /// Atomically upserts receipt-derived state unless the user previously
     /// deleted this provider/merchant. `None` means a tombstone suppressed it.

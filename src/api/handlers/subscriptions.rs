@@ -8,15 +8,18 @@ use uuid::Uuid;
 use crate::api::{
     dto::{
         ForecastFxQuoteResponse, ForecastNormalizedCurrencyResponse, ForecastResponse,
-        LinkChargeRequest, SubscriptionChargeResponse, SubscriptionListQuery,
-        SubscriptionOverridesResponse, SubscriptionResponse, UpdateSubscriptionRequest,
+        LinkChargeRequest, MarkTransactionSubscriptionRequest, MarkTransactionSubscriptionResponse,
+        SubscriptionChargeResponse, SubscriptionListQuery, SubscriptionOverridesResponse,
+        SubscriptionResponse, UpdateSubscriptionRequest,
     },
     error::AppError,
     middleware::AuthUser,
     state::AppState,
 };
 use crate::domain::error::DomainError;
-use crate::domain::subscription::{BillingPeriod, Subscription, SubscriptionStatus};
+use crate::domain::subscription::{
+    BillingPeriod, Subscription, SubscriptionStatus, TransactionSubscriptionTarget,
+};
 use crate::domain::subscription_charge::{ChargeLinkOutcome, SubscriptionCharge};
 use crate::domain::subscription_error::SubscriptionError;
 
@@ -175,6 +178,57 @@ pub async fn list_charges(
 ) -> Result<Json<Vec<SubscriptionChargeResponse>>, AppError> {
     let items = state.subscriptions.list_charges(user_id, id, None).await?;
     Ok(Json(items.into_iter().map(charge_resp).collect()))
+}
+
+pub async fn mark_transaction(
+    State(state): State<AppState>,
+    Extension(AuthUser(user_id)): Extension<AuthUser>,
+    Path(transaction_id): Path<Uuid>,
+    request: Result<Json<MarkTransactionSubscriptionRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<MarkTransactionSubscriptionResponse>), AppError> {
+    let Json(req) = request.map_err(|_| {
+        DomainError::InvalidInput("invalid mark-transaction subscription body".into())
+    })?;
+    let target = match req {
+        MarkTransactionSubscriptionRequest::Create {
+            product_name,
+            billing_period,
+        } => {
+            let product_name = product_name.trim().to_string();
+            if product_name.is_empty() {
+                return Err(
+                    DomainError::InvalidInput("product_name cannot be empty".into()).into(),
+                );
+            }
+            let billing_period = BillingPeriod::from_str(&billing_period)
+                .map_err(|_| DomainError::InvalidInput("invalid billing_period".into()))?;
+            TransactionSubscriptionTarget::Create {
+                subscription_id: Uuid::new_v4(),
+                product_name,
+                billing_period,
+            }
+        }
+        MarkTransactionSubscriptionRequest::Attach { subscription_id } => {
+            TransactionSubscriptionTarget::Attach { subscription_id }
+        }
+    };
+    let result = state
+        .subscriptions
+        .mark_transaction_as_subscription(user_id, transaction_id, target)
+        .await?;
+    let status = if result.already_linked {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((
+        status,
+        Json(MarkTransactionSubscriptionResponse {
+            subscription: to_resp(result.subscription, None),
+            charge: charge_resp(result.charge),
+            subscription_created: result.subscription_created,
+        }),
+    ))
 }
 
 pub async fn forecast(

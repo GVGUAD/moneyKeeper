@@ -22,11 +22,15 @@ use crate::domain::fx_rate::FxRateRepository;
 #[cfg(test)]
 use crate::domain::receipt_parser::ParsedReceipt;
 use crate::domain::subscription::{
-    BillingPeriod, Subscription, SubscriptionListFilter, SubscriptionRepository, SubscriptionStatus,
+    BillingPeriod, MarkTransactionSubscription, MarkTransactionSubscriptionOutcome, Subscription,
+    SubscriptionListFilter, SubscriptionRepository, SubscriptionStatus,
+    TransactionSubscriptionTarget,
 };
 #[cfg(test)]
 use crate::domain::subscription_charge::{ChargeMatchStatus, ChargeSource, ReceiptKind};
-use crate::domain::subscription_charge::{SubscriptionCharge, SubscriptionChargeRepository};
+use crate::domain::subscription_charge::{
+    SubscriptionCharge, SubscriptionChargeRepository, TransactionSubscriptionLink,
+};
 use crate::domain::subscription_error::SubscriptionError;
 use crate::infrastructure::email::oauth::{GmailOAuthClient, GmailProviderError};
 use crate::infrastructure::email::parsers::ParserRegistry;
@@ -56,6 +60,13 @@ pub struct ForecastFxQuote {
     pub rate: Decimal,
     pub requested_date: NaiveDate,
     pub rate_date: NaiveDate,
+}
+
+pub struct MarkTransactionSubscriptionResult {
+    pub subscription: Subscription,
+    pub charge: SubscriptionCharge,
+    pub subscription_created: bool,
+    pub already_linked: bool,
 }
 
 #[cfg(test)]
@@ -616,6 +627,82 @@ impl SubscriptionService {
             charges.truncate(limit);
         }
         Ok(charges)
+    }
+
+    pub async fn mark_transaction_as_subscription(
+        &self,
+        user_id: Uuid,
+        transaction_id: Uuid,
+        target: TransactionSubscriptionTarget,
+    ) -> anyhow::Result<MarkTransactionSubscriptionResult> {
+        let outcome = self
+            .subscriptions
+            .mark_transaction_as_subscription(&MarkTransactionSubscription {
+                user_id,
+                transaction_id,
+                target,
+                requested_at: Utc::now(),
+            })
+            .await?;
+        let (subscription_id, charge_id, subscription_created, already_linked) = match outcome {
+            MarkTransactionSubscriptionOutcome::Created {
+                subscription_id,
+                charge_id,
+                subscription_created,
+            } => (subscription_id, charge_id, subscription_created, false),
+            MarkTransactionSubscriptionOutcome::AlreadyLinked {
+                subscription_id,
+                charge_id,
+            } => (subscription_id, charge_id, false, true),
+            MarkTransactionSubscriptionOutcome::TransactionNotFound => {
+                return Err(crate::domain::error::DomainError::NotFound(format!(
+                    "transaction {transaction_id}"
+                ))
+                .into());
+            }
+            MarkTransactionSubscriptionOutcome::TransactionNotExpense => {
+                return Err(crate::domain::error::DomainError::InvalidInput(
+                    "only expense transactions can be marked as subscriptions".into(),
+                )
+                .into());
+            }
+            MarkTransactionSubscriptionOutcome::TransactionInvalid => {
+                return Err(crate::domain::error::DomainError::InvalidInput(
+                    "transaction amount and currency must be valid".into(),
+                )
+                .into());
+            }
+            MarkTransactionSubscriptionOutcome::SubscriptionNotFound => {
+                return Err(SubscriptionError::SubscriptionNotFound.into());
+            }
+            MarkTransactionSubscriptionOutcome::TransactionAlreadyLinked {
+                subscription_id,
+                ..
+            } => {
+                return Err(crate::domain::error::DomainError::Conflict(format!(
+                    "transaction is already linked to subscription {subscription_id}"
+                ))
+                .into());
+            }
+        };
+        let subscription = self.get(user_id, subscription_id).await?;
+        let charge = self.find_charge(user_id, charge_id).await?;
+        Ok(MarkTransactionSubscriptionResult {
+            subscription,
+            charge,
+            subscription_created,
+            already_linked,
+        })
+    }
+
+    pub async fn find_transaction_links(
+        &self,
+        user_id: Uuid,
+        transaction_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<TransactionSubscriptionLink>> {
+        self.charges
+            .find_transaction_links(user_id, transaction_ids)
+            .await
     }
 
     pub async fn update_overrides(

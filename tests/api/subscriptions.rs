@@ -69,6 +69,30 @@ async fn seed_subscription_and_charge(ctx: &helpers::TestContext, user_id: Uuid)
     (inserted_sub.id, charge_id)
 }
 
+async fn create_transaction(
+    ctx: &helpers::TestContext,
+    token: &str,
+    account_id: Uuid,
+    kind: &str,
+    category_id: Option<Uuid>,
+    transacted_at: &str,
+) -> Uuid {
+    let response = ctx
+        .server
+        .post(&format!("/accounts/{account_id}/transactions"))
+        .add_header(helpers::auth(token).0, helpers::auth(token).1)
+        .json(&serde_json::json!({
+            "amount": "19.99",
+            "currency": "usd",
+            "kind": kind,
+            "category_id": category_id,
+            "transacted_at": transacted_at
+        }))
+        .await;
+    assert_eq!(response.status_code(), StatusCode::CREATED);
+    Uuid::parse_str(response.json::<Value>()["id"].as_str().unwrap()).unwrap()
+}
+
 #[tokio::test]
 async fn list_subscriptions_empty_for_new_user() {
     let postgres = common::TestPostgres::new().await;
@@ -596,4 +620,238 @@ async fn monobank_webhook_triggers_cross_currency_subscription_matching() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("webhook transaction was not matched to the pending subscription charge");
+}
+
+#[tokio::test]
+async fn expense_transaction_can_create_manual_subscription() {
+    let postgres = common::TestPostgres::new().await;
+    let pool = postgres.pool.clone();
+    let ctx = helpers::make_app_ctx(postgres.pool).await;
+    let (_user_id, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&ctx.server, &token).await;
+    let category_id = helpers::create_category_for(&ctx.server, &token).await;
+    let transaction_id = create_transaction(
+        &ctx,
+        &token,
+        account_id,
+        "Expense",
+        Some(category_id),
+        "2024-01-31T10:15:00Z",
+    )
+    .await;
+
+    let response = ctx
+        .server
+        .post(&format!("/transactions/{transaction_id}/subscription"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "mode": "create",
+            "product_name": "  Video service  ",
+            "billing_period": "monthly"
+        }))
+        .await;
+
+    assert_eq!(response.status_code(), StatusCode::CREATED);
+    let body: Value = response.json();
+    assert_eq!(body["subscription_created"], true);
+    assert_eq!(body["subscription"]["provider"], "other");
+    assert_eq!(body["subscription"]["product_name"], "Video service");
+    assert_eq!(body["subscription"]["amount"], "19.99");
+    assert_eq!(body["subscription"]["currency"], "USD");
+    assert_eq!(body["subscription"]["billing_period"], "monthly");
+    assert_eq!(body["subscription"]["category_id"], category_id.to_string());
+    assert_eq!(body["subscription"]["started_at"], "2024-01-31T10:15:00Z");
+    assert_eq!(
+        body["subscription"]["next_expected_at"],
+        "2024-02-29T10:15:00Z"
+    );
+    assert_eq!(body["charge"]["transaction_id"], transaction_id.to_string());
+    assert_eq!(body["charge"]["match_status"], "Matched");
+    assert_eq!(body["charge"]["kind"], "new_subscription");
+
+    let subscription_id = body["subscription"]["id"].as_str().unwrap().to_string();
+    let charge_id = body["charge"]["id"].as_str().unwrap().to_string();
+    let transaction = ctx
+        .server
+        .get(&format!("/transactions/{transaction_id}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+    assert_eq!(transaction.status_code(), StatusCode::OK);
+    let transaction: Value = transaction.json();
+    assert_eq!(transaction["subscription_id"], subscription_id);
+    assert_eq!(transaction["subscription_charge_id"], charge_id);
+
+    let transactions = ctx
+        .server
+        .get("/transactions")
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+    let transactions: Value = transactions.json();
+    assert_eq!(transactions["items"][0]["subscription_id"], subscription_id);
+    assert_eq!(
+        transactions["items"][0]["subscription_charge_id"],
+        charge_id
+    );
+
+    let persisted: (String, String, String) = sqlx::query_as(
+        "SELECT source,match_source,s.merchant_key \
+         FROM subscription_charges c JOIN subscriptions s ON s.id=c.subscription_id \
+         WHERE c.id=$1",
+    )
+    .bind(Uuid::parse_str(&charge_id).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, "manual");
+    assert_eq!(persisted.1, "manual");
+    assert!(persisted.2.starts_with("manual:"));
+
+    let deleted = ctx
+        .server
+        .delete(&format!("/subscriptions/{subscription_id}"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .await;
+    assert_eq!(deleted.status_code(), StatusCode::NO_CONTENT);
+    let recreated = ctx
+        .server
+        .post(&format!("/transactions/{transaction_id}/subscription"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "mode": "create",
+            "product_name": "Video service",
+            "billing_period": "monthly"
+        }))
+        .await;
+    assert_eq!(recreated.status_code(), StatusCode::CREATED);
+    let recreated: Value = recreated.json();
+    assert_ne!(recreated["subscription"]["id"], subscription_id);
+}
+
+#[tokio::test]
+async fn transaction_can_attach_to_existing_subscription_and_retry_idempotently() {
+    let postgres = common::TestPostgres::new().await;
+    let ctx = helpers::make_app_ctx(postgres.pool).await;
+    let (user_id, token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&ctx.server, &token).await;
+    let (subscription_id, _) = seed_subscription_and_charge(&ctx, user_id).await;
+    let transaction_id = create_transaction(
+        &ctx,
+        &token,
+        account_id,
+        "Expense",
+        None,
+        "2024-05-01T00:00:00Z",
+    )
+    .await;
+    let request = serde_json::json!({
+        "mode": "attach",
+        "subscription_id": subscription_id
+    });
+
+    let first = ctx
+        .server
+        .post(&format!("/transactions/{transaction_id}/subscription"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&request)
+        .await;
+    assert_eq!(first.status_code(), StatusCode::CREATED);
+    let first_body: Value = first.json();
+    assert_eq!(first_body["subscription_created"], false);
+    assert_eq!(
+        first_body["subscription"]["id"],
+        subscription_id.to_string()
+    );
+    let charge_id = first_body["charge"]["id"].as_str().unwrap().to_string();
+
+    let retry = ctx
+        .server
+        .post(&format!("/transactions/{transaction_id}/subscription"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&request)
+        .await;
+    assert_eq!(retry.status_code(), StatusCode::OK);
+    let retry_body: Value = retry.json();
+    assert_eq!(retry_body["charge"]["id"], charge_id);
+
+    let (_, other_subscription_charge) = seed_subscription_and_charge(&ctx, user_id).await;
+    let other_subscription = ctx
+        .charge_repo
+        .find_by_id(other_subscription_charge, user_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .subscription_id;
+    let conflict = ctx
+        .server
+        .post(&format!("/transactions/{transaction_id}/subscription"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "mode": "attach",
+            "subscription_id": other_subscription
+        }))
+        .await;
+    assert_eq!(conflict.status_code(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn marking_transaction_validates_kind_input_and_ownership() {
+    let postgres = common::TestPostgres::new().await;
+    let ctx = helpers::make_app_ctx(postgres.pool).await;
+    let (_user_id, token) = helpers::create_test_user();
+    let (_other_user_id, other_token) = helpers::create_test_user();
+    let account_id = helpers::create_account_for(&ctx.server, &token).await;
+    let income_id = create_transaction(
+        &ctx,
+        &token,
+        account_id,
+        "Income",
+        None,
+        "2024-05-01T00:00:00Z",
+    )
+    .await;
+
+    for payload in [
+        serde_json::json!({
+            "mode": "create",
+            "product_name": "   ",
+            "billing_period": "monthly"
+        }),
+        serde_json::json!({
+            "mode": "create",
+            "product_name": "Service",
+            "billing_period": "daily"
+        }),
+    ] {
+        let response = ctx
+            .server
+            .post(&format!("/transactions/{income_id}/subscription"))
+            .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+            .json(&payload)
+            .await;
+        assert_eq!(response.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    let non_expense = ctx
+        .server
+        .post(&format!("/transactions/{income_id}/subscription"))
+        .add_header(helpers::auth(&token).0, helpers::auth(&token).1)
+        .json(&serde_json::json!({
+            "mode": "create",
+            "product_name": "Salary",
+            "billing_period": "monthly"
+        }))
+        .await;
+    assert_eq!(non_expense.status_code(), StatusCode::BAD_REQUEST);
+
+    let foreign = ctx
+        .server
+        .post(&format!("/transactions/{income_id}/subscription"))
+        .add_header(helpers::auth(&other_token).0, helpers::auth(&other_token).1)
+        .json(&serde_json::json!({
+            "mode": "create",
+            "product_name": "Hidden",
+            "billing_period": "monthly"
+        }))
+        .await;
+    assert_eq!(foreign.status_code(), StatusCode::NOT_FOUND);
 }

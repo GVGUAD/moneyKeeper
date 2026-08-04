@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::subscription_charge::{
     ChargeLinkOutcome, ChargeMatchSource, ChargeMatchStatus, ChargeSource, ReceiptKind,
-    SubscriptionCharge, SubscriptionChargeRepository,
+    SubscriptionCharge, SubscriptionChargeRepository, TransactionSubscriptionLink,
 };
 
 pub struct PgSubscriptionChargeRepository {
@@ -202,6 +202,35 @@ impl SubscriptionChargeRepository for PgSubscriptionChargeRepository {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(row_to_charge).collect()
+    }
+
+    async fn find_transaction_links(
+        &self,
+        user_id: Uuid,
+        transaction_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<TransactionSubscriptionLink>> {
+        if transaction_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
+            "SELECT transaction_id, subscription_id, id \
+             FROM subscription_charges \
+             WHERE user_id=$1 AND transaction_id = ANY($2)",
+        )
+        .bind(user_id)
+        .bind(transaction_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(transaction_id, subscription_id, charge_id)| TransactionSubscriptionLink {
+                    transaction_id,
+                    subscription_id,
+                    charge_id,
+                },
+            )
+            .collect())
     }
 
     async fn link_transaction(
