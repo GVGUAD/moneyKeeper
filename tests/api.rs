@@ -19,4 +19,7 @@ mod monobank;
 #[path = "api/user_settings.rs"]
 mod user_settings;
 
+#[path = "api/subscriptions.rs"]
+mod subscriptions;
+
 mod common;

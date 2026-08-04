@@ -51,6 +51,9 @@ pub struct Transaction {
     pub category_id: Option<Uuid>,
     pub note: Option<String>,
     pub external_id: Option<String>,
+    /// Running account balance as reported by the external provider (e.g. Monobank)
+    /// AFTER this transaction. `None` for manually-entered transactions.
+    pub external_balance: Option<Decimal>,
     pub transacted_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
@@ -77,6 +80,7 @@ impl Transaction {
             category_id,
             note,
             external_id: None,
+            external_balance: None,
             transacted_at,
             created_at: Utc::now(),
         }
@@ -136,6 +140,19 @@ pub trait TransactionRepository: Send + Sync {
     /// Insert a transaction using INSERT OR IGNORE (for external syncs).
     /// Returns true if the row was actually inserted (false = already existed).
     async fn create_idempotent(&self, tx: &Transaction) -> anyhow::Result<bool>;
+    /// Returns expense transactions for `user_id` whose `transacted_at` falls in
+    /// `[from, to]` and whose `amount` is within `[min_amount, max_amount]`,
+    /// excluding those already linked to a `subscription_charge`. Used by the
+    /// subscription matcher.
+    async fn list_match_candidates(
+        &self,
+        user_id: Uuid,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        min_amount: Decimal,
+        max_amount: Decimal,
+        currency: &str,
+    ) -> anyhow::Result<Vec<Transaction>>;
 }
 
 #[cfg(test)]

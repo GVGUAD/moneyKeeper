@@ -2,5 +2,8 @@ pub mod accounts;
 pub mod categories;
 pub mod fx_sync;
 pub mod monobank;
+pub mod subscription_lifecycle;
+pub mod subscription_matching;
+pub mod subscriptions;
 pub mod transactions;
 pub mod user_settings;

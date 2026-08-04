@@ -8,13 +8,20 @@ use moneykeeper::api::state::AppState;
 use moneykeeper::application::accounts::AccountService;
 use moneykeeper::application::categories::CategoryService;
 use moneykeeper::application::monobank::MonobankService;
+use moneykeeper::application::subscription_matching::MatchChargesUseCase;
+use moneykeeper::application::subscriptions::SubscriptionService;
 use moneykeeper::application::transactions::TransactionService;
 use moneykeeper::application::user_settings::UserSettingsService;
 use moneykeeper::domain::monobank::MonobankApiClient;
 use moneykeeper::infrastructure::account_repository::SqliteAccountRepository;
 use moneykeeper::infrastructure::category_repository::SqliteCategoryRepository;
+use moneykeeper::infrastructure::email::oauth::OAuthConfig;
+use moneykeeper::infrastructure::email::parsers::ParserRegistry;
+use moneykeeper::infrastructure::email_connection_repository::PgEmailConnectionRepository;
 use moneykeeper::infrastructure::fx_rate_repository::PgFxRateRepository;
 use moneykeeper::infrastructure::monobank_repository::PgBankConnectionRepository;
+use moneykeeper::infrastructure::subscription_charge_repository::PgSubscriptionChargeRepository;
+use moneykeeper::infrastructure::subscription_repository::PgSubscriptionRepository;
 use moneykeeper::infrastructure::transaction_repository::SqliteTransactionRepository;
 use moneykeeper::infrastructure::user_settings_repository::PgUserSettingsRepository;
 
@@ -90,37 +97,190 @@ pub async fn make_app_with_client(
         Arc::new(SqliteTransactionRepository::new(pool.clone()));
     let account_repo: Arc<dyn moneykeeper::domain::account::AccountRepository> =
         Arc::new(SqliteAccountRepository::new(pool.clone()));
+    let connection_repo: Arc<dyn moneykeeper::domain::bank_connection::BankConnectionRepository> =
+        Arc::new(PgBankConnectionRepository::new(pool.clone()));
     let fx_repo: Arc<dyn moneykeeper::domain::fx_rate::FxRateRepository> =
         Arc::new(PgFxRateRepository::new(pool.clone()));
     let user_settings_repo: Arc<dyn moneykeeper::domain::user_settings::UserSettingsRepository> =
         Arc::new(PgUserSettingsRepository::new(pool.clone()));
+
+    let email_conn_repo: Arc<dyn moneykeeper::domain::email_connection::EmailConnectionRepository> =
+        Arc::new(PgEmailConnectionRepository::new(pool.clone()));
+    let subscription_repo: Arc<dyn moneykeeper::domain::subscription::SubscriptionRepository> =
+        Arc::new(PgSubscriptionRepository::new(pool.clone()));
+    let charge_repo: Arc<
+        dyn moneykeeper::domain::subscription_charge::SubscriptionChargeRepository,
+    > = Arc::new(PgSubscriptionChargeRepository::new(pool.clone()));
+
+    let parsers = Arc::new(ParserRegistry::default_set());
+
+    // Use a no-op email fetcher for tests
+    struct NoopFetcher;
+    #[async_trait::async_trait]
+    impl moneykeeper::domain::email::EmailFetcher for NoopFetcher {
+        async fn fetch_new(
+            &self,
+            _conn: &moneykeeper::domain::email_connection::EmailConnection,
+        ) -> anyhow::Result<(Vec<moneykeeper::domain::email::RawEmail>, Option<String>)> {
+            Ok((vec![], None))
+        }
+    }
+
+    let subscription_service = Arc::new(SubscriptionService::new(
+        Arc::clone(&email_conn_repo),
+        Arc::clone(&subscription_repo),
+        Arc::clone(&charge_repo),
+        Arc::new(NoopFetcher),
+        parsers,
+    ));
+
+    let matcher = Arc::new(MatchChargesUseCase {
+        charges: Arc::clone(&charge_repo),
+        subscriptions: Arc::clone(&subscription_repo),
+        transactions: Arc::clone(&tx_repo),
+        accounts: Arc::clone(&account_repo),
+        fx: Arc::clone(&fx_repo),
+    });
+
+    let oauth_config = Arc::new(OAuthConfig {
+        client_id: "test-client-id".to_string(),
+        client_secret: "test-client-secret".to_string(),
+        redirect_uri: "http://localhost:3000/me/email-connections/gmail/oauth/callback".to_string(),
+    });
+
     let state = AppState {
         accounts: Arc::new(AccountService::new(Arc::clone(&account_repo))),
         transactions: Arc::new(TransactionService::new(
             Arc::clone(&tx_repo),
             Arc::clone(&account_repo),
+            Arc::clone(&connection_repo),
         )),
         categories: Arc::new(CategoryService::new(Arc::new(
             SqliteCategoryRepository::new(pool.clone()),
         ))),
         monobank: Arc::new(MonobankService::new(
-            Arc::new(PgBankConnectionRepository::new(pool.clone())),
+            Arc::clone(&connection_repo),
             tx_repo,
             Arc::clone(&account_repo),
             monobank_client,
             "http://localhost:3000".to_string(),
+            Some(Arc::clone(&matcher)),
         )),
         user_settings: Arc::new(UserSettingsService::new(
             Arc::clone(&user_settings_repo),
             Arc::clone(&fx_repo),
         )),
         supabase_jwks: Arc::new(test_jwks()),
+        subscriptions: Arc::clone(&subscription_service),
+        matcher: Arc::clone(&matcher),
+        fx: Arc::clone(&fx_repo),
+        gmail_oauth: oauth_config,
     };
     TestServer::new(moneykeeper::api::routes::router(state)).unwrap()
 }
 
 pub async fn make_app(pool: PgPool) -> TestServer {
     make_app_with_client(pool, MockMonobankClient::empty()).await
+}
+
+/// Extended test context that exposes service refs for direct manipulation in tests.
+pub struct TestContext {
+    pub server: TestServer,
+    pub subscriptions: Arc<SubscriptionService>,
+    pub matcher: Arc<MatchChargesUseCase>,
+}
+
+pub async fn make_app_ctx(pool: PgPool) -> TestContext {
+    let tx_repo: Arc<dyn moneykeeper::domain::transaction::TransactionRepository> =
+        Arc::new(SqliteTransactionRepository::new(pool.clone()));
+    let account_repo: Arc<dyn moneykeeper::domain::account::AccountRepository> =
+        Arc::new(SqliteAccountRepository::new(pool.clone()));
+    let connection_repo: Arc<dyn moneykeeper::domain::bank_connection::BankConnectionRepository> =
+        Arc::new(PgBankConnectionRepository::new(pool.clone()));
+    let fx_repo: Arc<dyn moneykeeper::domain::fx_rate::FxRateRepository> =
+        Arc::new(PgFxRateRepository::new(pool.clone()));
+    let user_settings_repo: Arc<dyn moneykeeper::domain::user_settings::UserSettingsRepository> =
+        Arc::new(PgUserSettingsRepository::new(pool.clone()));
+
+    let email_conn_repo: Arc<dyn moneykeeper::domain::email_connection::EmailConnectionRepository> =
+        Arc::new(PgEmailConnectionRepository::new(pool.clone()));
+    let subscription_repo: Arc<dyn moneykeeper::domain::subscription::SubscriptionRepository> =
+        Arc::new(PgSubscriptionRepository::new(pool.clone()));
+    let charge_repo: Arc<
+        dyn moneykeeper::domain::subscription_charge::SubscriptionChargeRepository,
+    > = Arc::new(PgSubscriptionChargeRepository::new(pool.clone()));
+
+    let parsers = Arc::new(ParserRegistry::default_set());
+
+    struct NoopFetcher;
+    #[async_trait::async_trait]
+    impl moneykeeper::domain::email::EmailFetcher for NoopFetcher {
+        async fn fetch_new(
+            &self,
+            _conn: &moneykeeper::domain::email_connection::EmailConnection,
+        ) -> anyhow::Result<(Vec<moneykeeper::domain::email::RawEmail>, Option<String>)> {
+            Ok((vec![], None))
+        }
+    }
+
+    let subscription_service = Arc::new(SubscriptionService::new(
+        Arc::clone(&email_conn_repo),
+        Arc::clone(&subscription_repo),
+        Arc::clone(&charge_repo),
+        Arc::new(NoopFetcher),
+        parsers,
+    ));
+
+    let matcher = Arc::new(MatchChargesUseCase {
+        charges: Arc::clone(&charge_repo),
+        subscriptions: Arc::clone(&subscription_repo),
+        transactions: Arc::clone(&tx_repo),
+        accounts: Arc::clone(&account_repo),
+        fx: Arc::clone(&fx_repo),
+    });
+
+    let oauth_config = Arc::new(OAuthConfig {
+        client_id: "test-client-id".to_string(),
+        client_secret: "test-client-secret".to_string(),
+        redirect_uri: "http://localhost:3000/me/email-connections/gmail/oauth/callback".to_string(),
+    });
+
+    let monobank_client = MockMonobankClient::empty();
+
+    let state = AppState {
+        accounts: Arc::new(AccountService::new(Arc::clone(&account_repo))),
+        transactions: Arc::new(TransactionService::new(
+            Arc::clone(&tx_repo),
+            Arc::clone(&account_repo),
+            Arc::clone(&connection_repo),
+        )),
+        categories: Arc::new(CategoryService::new(Arc::new(
+            SqliteCategoryRepository::new(pool.clone()),
+        ))),
+        monobank: Arc::new(MonobankService::new(
+            Arc::clone(&connection_repo),
+            tx_repo,
+            Arc::clone(&account_repo),
+            monobank_client,
+            "http://localhost:3000".to_string(),
+            Some(Arc::clone(&matcher)),
+        )),
+        user_settings: Arc::new(UserSettingsService::new(
+            Arc::clone(&user_settings_repo),
+            Arc::clone(&fx_repo),
+        )),
+        supabase_jwks: Arc::new(test_jwks()),
+        subscriptions: Arc::clone(&subscription_service),
+        matcher: Arc::clone(&matcher),
+        fx: Arc::clone(&fx_repo),
+        gmail_oauth: oauth_config,
+    };
+
+    TestContext {
+        server: TestServer::new(moneykeeper::api::routes::router(state)).unwrap(),
+        subscriptions: subscription_service,
+        matcher,
+    }
 }
 
 pub struct MockMonobankClient {

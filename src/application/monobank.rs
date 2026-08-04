@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::application::subscription_matching::MatchChargesUseCase;
 use crate::domain::account::AccountRepository;
 use crate::domain::bank_connection::{
     BankConnection, BankConnectionRepository, BankProvider, SyncStatus,
@@ -17,6 +18,7 @@ pub struct MonobankService {
     account_repo: Arc<dyn AccountRepository>,
     monobank_client: Arc<dyn MonobankApiClient>,
     public_url: String,
+    pub matcher: Option<Arc<MatchChargesUseCase>>,
 }
 
 impl MonobankService {
@@ -26,6 +28,7 @@ impl MonobankService {
         account_repo: Arc<dyn AccountRepository>,
         monobank_client: Arc<dyn MonobankApiClient>,
         public_url: String,
+        matcher: Option<Arc<MatchChargesUseCase>>,
     ) -> Self {
         Self {
             connection_repo,
@@ -33,6 +36,7 @@ impl MonobankService {
             account_repo,
             monobank_client,
             public_url,
+            matcher,
         }
     }
 
@@ -48,6 +52,28 @@ impl MonobankService {
         monobank_account_id: String,
         account_created_at: DateTime<Utc>,
     ) -> anyhow::Result<BankConnection> {
+        // Best-effort initial balance from Monobank's client-info. If Monobank is
+        // unreachable or doesn't recognise this account, we still create the
+        // connection; the first webhook/sync will set the balance via
+        // sync_balance_from_external.
+        match self.monobank_client.get_accounts(&token).await {
+            Ok(accounts) => {
+                if let Some(mono) = accounts.iter().find(|a| a.id == monobank_account_id) {
+                    self.account_repo
+                        .set_balance(account_id, user_id, mono.balance_decimal())
+                        .await?;
+                } else {
+                    tracing::warn!(
+                        monobank_account_id,
+                        "monobank client-info did not include the connected account"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to fetch initial monobank balance on connect: {e}");
+            }
+        }
+
         let conn = BankConnection::new(
             account_id,
             user_id,
@@ -137,6 +163,7 @@ impl MonobankService {
         let account_repo = Arc::clone(&self.account_repo);
         let monobank_client = Arc::clone(&self.monobank_client);
         let public_url = self.public_url.clone();
+        let matcher = self.matcher.clone();
 
         tokio::spawn(async move {
             run_sync(
@@ -149,6 +176,7 @@ impl MonobankService {
                 to,
                 watermark_on_success,
                 public_url,
+                matcher,
             )
             .await;
         });
@@ -199,13 +227,8 @@ impl MonobankService {
         let tx = build_transaction(conn.account_id, conn.user_id, item);
         let inserted = self.transaction_repo.create_idempotent(&tx).await?;
         if inserted {
-            let delta = if tx.kind.affects_balance_positively() {
-                tx.amount
-            } else {
-                -tx.amount
-            };
             self.account_repo
-                .adjust_balance(tx.account_id, tx.user_id, delta)
+                .sync_balance_from_external(tx.account_id, tx.user_id)
                 .await?;
         }
         Ok(inserted)
@@ -233,6 +256,7 @@ fn build_transaction(
         item.transacted_at(),
     );
     tx.external_id = Some(item.id.clone());
+    tx.external_balance = Some(item.balance_decimal());
     tx
 }
 
@@ -247,6 +271,7 @@ async fn run_sync(
     history_to: DateTime<Utc>,
     watermark_on_success: Option<DateTime<Utc>>,
     _public_url: String,
+    matcher: Option<Arc<MatchChargesUseCase>>,
 ) {
     if let Err(e) = connection_repo
         .update_status(conn.id, SyncStatus::Syncing, conn.last_synced_at)
@@ -286,23 +311,7 @@ async fn run_sync(
         for item in &items {
             let tx = build_transaction(conn.account_id, conn.user_id, item);
             match transaction_repo.create_idempotent(&tx).await {
-                Ok(true) => {
-                    let delta = if tx.kind.affects_balance_positively() {
-                        tx.amount
-                    } else {
-                        -tx.amount
-                    };
-                    if let Err(e) = account_repo
-                        .adjust_balance(tx.account_id, tx.user_id, delta)
-                        .await
-                    {
-                        tracing::error!(
-                            conn_id = %conn.id,
-                            item_id = %item.id,
-                            "failed to adjust account balance: {e}"
-                        );
-                    }
-                }
+                Ok(true) => {}
                 Ok(false) => {
                     tracing::warn!(item = %item.id, "already exists");
                 }
@@ -321,12 +330,31 @@ async fn run_sync(
             tokio::time::sleep(tokio::time::Duration::from_secs(61)).await;
         }
     }
+    // Reconcile account balance from the latest external_balance row at the end of
+    // the sync window. One write per sync (per page would also work, but this is
+    // cheaper and the eventual state is the same).
+    if let Err(e) = account_repo
+        .sync_balance_from_external(conn.account_id, conn.user_id)
+        .await
+    {
+        tracing::error!(
+            conn_id = %conn.id,
+            "failed to reconcile account balance from external: {e}"
+        );
+    }
     tracing::info!(conn_id = %conn.id, "monobank sync completed");
     if let Err(e) = connection_repo
         .update_status(conn.id, SyncStatus::Completed, watermark_on_success)
         .await
     {
         tracing::error!(conn_id = %conn.id, "failed to set sync status to Completed: {e}");
+    }
+
+    let user_id = conn.user_id;
+    if let Some(m) = &matcher
+        && let Err(e) = m.run_for_user(user_id).await
+    {
+        tracing::warn!("matcher failed for user {user_id}: {e:?}");
     }
 }
 
@@ -433,6 +461,15 @@ mod tests {
             conns.retain(|c| !(c.id == id && c.user_id == user_id));
             Ok(())
         }
+
+        async fn exists_for_account(&self, account_id: Uuid) -> anyhow::Result<bool> {
+            Ok(self
+                .connections
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| c.account_id == account_id))
+        }
     }
 
     struct MockTransactionRepo {
@@ -516,6 +553,18 @@ mod tests {
                 Ok(false)
             }
         }
+
+        async fn list_match_candidates(
+            &self,
+            _user_id: Uuid,
+            _from: chrono::DateTime<chrono::Utc>,
+            _to: chrono::DateTime<chrono::Utc>,
+            _min_amount: rust_decimal::Decimal,
+            _max_amount: rust_decimal::Decimal,
+            _currency: &str,
+        ) -> anyhow::Result<Vec<Transaction>> {
+            Ok(vec![])
+        }
     }
 
     struct MockAccountRepo;
@@ -533,13 +582,23 @@ mod tests {
             &self,
             _id: Uuid,
             _user_id: Uuid,
-        ) -> anyhow::Result<Option<(crate::domain::account::Account, crate::domain::account::AccountDetails)>> {
+        ) -> anyhow::Result<
+            Option<(
+                crate::domain::account::Account,
+                crate::domain::account::AccountDetails,
+            )>,
+        > {
             Ok(None)
         }
         async fn list_by_user(
             &self,
             _user_id: Uuid,
-        ) -> anyhow::Result<Vec<(crate::domain::account::Account, crate::domain::account::AccountDetails)>> {
+        ) -> anyhow::Result<
+            Vec<(
+                crate::domain::account::Account,
+                crate::domain::account::AccountDetails,
+            )>,
+        > {
             Ok(vec![])
         }
         async fn update(
@@ -557,6 +616,21 @@ mod tests {
             _account_id: Uuid,
             _user_id: Uuid,
             _delta: rust_decimal::Decimal,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn set_balance(
+            &self,
+            _account_id: Uuid,
+            _user_id: Uuid,
+            _balance: rust_decimal::Decimal,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn sync_balance_from_external(
+            &self,
+            _account_id: Uuid,
+            _user_id: Uuid,
         ) -> anyhow::Result<()> {
             Ok(())
         }
@@ -606,6 +680,7 @@ mod tests {
             Arc::new(MockAccountRepo),
             Arc::new(MockMonobankClient::new()),
             "https://example.com".to_string(),
+            None,
         )
     }
 
@@ -620,6 +695,7 @@ mod tests {
             Arc::new(MockAccountRepo),
             monobank_client,
             "https://example.com".to_string(),
+            None,
         )
     }
 
@@ -780,7 +856,11 @@ mod tests {
         // without hitting the inter-page sleep.
         for _ in 0..50 {
             tokio::task::yield_now().await;
-            let stored = conn_repo.find_by_id(conn_id, user_id).await.unwrap().unwrap();
+            let stored = conn_repo
+                .find_by_id(conn_id, user_id)
+                .await
+                .unwrap()
+                .unwrap();
             if matches!(stored.sync_status, SyncStatus::Completed) {
                 break;
             }

@@ -5,7 +5,9 @@ use axum::middleware as axum_middleware;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post, put};
 
-use crate::api::handlers::{accounts, categories, monobank, transactions, user_settings};
+use crate::api::handlers::{
+    accounts, categories, email_connections, monobank, subscriptions, transactions, user_settings,
+};
 use crate::api::middleware::auth_middleware;
 use crate::api::state::AppState;
 
@@ -62,6 +64,43 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/me/settings",
             get(user_settings::get_settings).patch(user_settings::update_settings),
+        )
+        .route(
+            "/me/email-connections/gmail/oauth/start",
+            post(email_connections::oauth_start),
+        )
+        .route(
+            "/me/email-connections/gmail/oauth/callback",
+            post(email_connections::oauth_callback),
+        )
+        .route("/me/email-connections", get(email_connections::list))
+        .route(
+            "/me/email-connections/{id}",
+            delete(email_connections::delete),
+        )
+        .route(
+            "/me/email-connections/{id}/resync",
+            post(email_connections::resync),
+        )
+        .route("/subscriptions", get(subscriptions::list))
+        .route("/subscriptions/forecast", get(subscriptions::forecast))
+        .route(
+            "/subscriptions/{id}",
+            get(subscriptions::get)
+                .patch(subscriptions::patch)
+                .delete(subscriptions::delete),
+        )
+        .route(
+            "/subscriptions/{id}/charges",
+            get(subscriptions::list_charges),
+        )
+        .route(
+            "/subscription-charges/{id}/link",
+            post(subscriptions::link_charge),
+        )
+        .route(
+            "/subscription-charges/{id}/unlink",
+            post(subscriptions::unlink_charge),
         )
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
