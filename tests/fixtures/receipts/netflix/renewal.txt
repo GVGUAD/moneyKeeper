@@ -1,0 +1,10 @@
+From: Netflix <info@account.netflix.com>
+Subject: Your Netflix payment
+
+Hi Volodymyr,
+
+We just charged your account.
+
+Plan: Netflix Premium
+Total: $15.99 USD
+Date: May 18, 2026

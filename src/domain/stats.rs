@@ -17,15 +17,6 @@ impl Granularity {
             Granularity::Year => "year",
         }
     }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "day" => Some(Self::Day),
-            "month" => Some(Self::Month),
-            "year" => Some(Self::Year),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

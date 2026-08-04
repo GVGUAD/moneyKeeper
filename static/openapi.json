@@ -530,6 +530,335 @@
         ]
       }
     },
+    "/me/email-connections/gmail/oauth/start": {
+      "post": {
+        "tags": ["email-connections"],
+        "summary": "Start Gmail OAuth flow",
+        "operationId": "gmail_oauth_start",
+        "responses": {
+          "200": {
+            "description": "OAuth authorization URL and state token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["authorize_url", "state"],
+                  "properties": {
+                    "authorize_url": { "type": "string" },
+                    "state": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/me/email-connections/gmail/oauth/callback": {
+      "post": {
+        "tags": ["email-connections"],
+        "summary": "Complete Gmail OAuth flow",
+        "operationId": "gmail_oauth_callback",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GmailOAuthCallbackRequest" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "email connection created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EmailConnectionResponse" }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/me/email-connections": {
+      "get": {
+        "tags": ["email-connections"],
+        "summary": "List Gmail connections for current user",
+        "operationId": "list_email_connections",
+        "responses": {
+          "200": {
+            "description": "list of email connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/EmailConnectionResponse" }
+                }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/me/email-connections/{id}": {
+      "delete": {
+        "tags": ["email-connections"],
+        "summary": "Delete a Gmail connection",
+        "operationId": "delete_email_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "connection deleted" },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "connection not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/me/email-connections/{id}/resync": {
+      "post": {
+        "tags": ["email-connections"],
+        "summary": "Manually trigger email sync for a connection",
+        "operationId": "resync_email_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "202": { "description": "sync accepted" },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "connection not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/subscriptions": {
+      "get": {
+        "tags": ["subscriptions"],
+        "summary": "List subscriptions",
+        "operationId": "list_subscriptions",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter by status: active, inactive, or all (default: all)",
+            "schema": { "type": "string", "enum": ["active", "inactive", "all"] }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "list of subscriptions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/SubscriptionResponse" }
+                }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/subscriptions/forecast": {
+      "get": {
+        "tags": ["subscriptions"],
+        "summary": "30-day spend forecast in user's base currency",
+        "operationId": "subscription_forecast",
+        "responses": {
+          "200": {
+            "description": "forecast",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ForecastResponse" }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/subscriptions/{id}": {
+      "get": {
+        "tags": ["subscriptions"],
+        "summary": "Get a subscription",
+        "operationId": "get_subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "subscription found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubscriptionResponse" }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "subscription not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      },
+      "patch": {
+        "tags": ["subscriptions"],
+        "summary": "Update a subscription",
+        "operationId": "patch_subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateSubscriptionRequest" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "subscription updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubscriptionResponse" }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "subscription not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      },
+      "delete": {
+        "tags": ["subscriptions"],
+        "summary": "Delete a subscription and its charges",
+        "operationId": "delete_subscription",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "subscription deleted" },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "subscription not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/subscriptions/{id}/charges": {
+      "get": {
+        "tags": ["subscriptions"],
+        "summary": "List charges for a subscription",
+        "operationId": "list_subscription_charges",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "list of charges",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/SubscriptionChargeResponse" }
+                }
+              }
+            }
+          },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "subscription not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/subscription-charges/{id}/link": {
+      "post": {
+        "tags": ["subscriptions"],
+        "summary": "Manually link a charge to a transaction",
+        "operationId": "link_charge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LinkChargeRequest" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": { "description": "charge linked" },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "charge or transaction not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
+    "/subscription-charges/{id}/unlink": {
+      "post": {
+        "tags": ["subscriptions"],
+        "summary": "Unlink a charge from its transaction",
+        "operationId": "unlink_charge",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "charge unlinked" },
+          "401": { "description": "unauthorized" },
+          "404": { "description": "charge not found" }
+        },
+        "security": [{ "bearer_auth": [] }]
+      }
+    },
     "/monobank/client-info": {
       "get": {
         "tags": [
@@ -1563,16 +1892,97 @@
         "type": "object",
         "properties": {
           "color": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": ["string", "null"]
           },
           "name": {
-            "type": [
-              "string",
-              "null"
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "EmailConnectionResponse": {
+        "type": "object",
+        "required": ["id", "email_address", "provider", "status", "created_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "email_address": { "type": "string" },
+          "provider": { "type": "string", "example": "gmail" },
+          "status": { "type": "string", "enum": ["Pending", "Connected", "Failed"] },
+          "last_synced_at": { "type": ["string", "null"], "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GmailOAuthCallbackRequest": {
+        "type": "object",
+        "required": ["code", "state"],
+        "properties": {
+          "code": { "type": "string" },
+          "state": { "type": "string" }
+        }
+      },
+      "SubscriptionResponse": {
+        "type": "object",
+        "required": ["id", "provider", "product_name", "amount", "currency", "billing_period", "status", "started_at", "created_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "provider": { "type": "string", "example": "GooglePlay" },
+          "product_name": { "type": "string" },
+          "amount": { "type": "string", "description": "Decimal amount" },
+          "currency": { "type": "string", "example": "USD" },
+          "billing_period": { "type": "string", "enum": ["weekly", "monthly", "yearly"] },
+          "status": { "type": "string", "enum": ["active", "inactive"] },
+          "started_at": { "type": "string", "format": "date-time" },
+          "last_charged_at": { "type": ["string", "null"], "format": "date-time" },
+          "next_expected_at": { "type": ["string", "null"], "format": "date-time" },
+          "category_id": { "type": ["string", "null"], "format": "uuid" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UpdateSubscriptionRequest": {
+        "type": "object",
+        "properties": {
+          "product_name": { "type": ["string", "null"] },
+          "billing_period": { "type": ["string", "null"], "enum": ["weekly", "monthly", "yearly"] },
+          "status": { "type": ["string", "null"], "enum": ["active", "inactive"] },
+          "category_id": {
+            "description": "Pass null to clear, omit to leave unchanged",
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "format": "uuid" }
             ]
+          }
+        }
+      },
+      "SubscriptionChargeResponse": {
+        "type": "object",
+        "required": ["id", "subscription_id", "amount", "currency", "charged_at", "kind", "match_status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "subscription_id": { "type": "string", "format": "uuid" },
+          "amount": { "type": "string", "description": "Decimal amount" },
+          "currency": { "type": "string" },
+          "charged_at": { "type": "string", "format": "date-time" },
+          "kind": { "type": "string", "enum": ["new_subscription", "renewal", "one_time_purchase", "refund"] },
+          "transaction_id": { "type": ["string", "null"], "format": "uuid" },
+          "match_status": { "type": "string", "enum": ["Pending", "Matched", "Unmatched"] }
+        }
+      },
+      "LinkChargeRequest": {
+        "type": "object",
+        "required": ["transaction_id"],
+        "properties": {
+          "transaction_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "ForecastResponse": {
+        "type": "object",
+        "required": ["base_currency", "base_total", "by_currency"],
+        "properties": {
+          "base_currency": { "type": "string", "example": "UAH" },
+          "base_total": { "type": "string", "description": "Total 30-day spend in base currency" },
+          "by_currency": {
+            "type": "object",
+            "description": "30-day spend broken down by original currency",
+            "additionalProperties": { "type": "string" }
           }
         }
       }

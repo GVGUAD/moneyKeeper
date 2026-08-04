@@ -29,6 +29,7 @@ struct TxRow {
     category_id: Option<Uuid>,
     note: Option<String>,
     external_id: Option<String>,
+    external_balance: Option<Decimal>,
     transacted_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
 }
@@ -97,6 +98,7 @@ fn row_to_tx(r: TxRow) -> anyhow::Result<Transaction> {
         category_id: r.category_id,
         note: r.note,
         external_id: r.external_id,
+        external_balance: r.external_balance,
         transacted_at: r.transacted_at,
         created_at: r.created_at,
     })
@@ -108,8 +110,8 @@ impl TransactionRepository for SqliteTransactionRepository {
         sqlx::query(
             "INSERT INTO transactions \
              (id, account_id, user_id, amount, currency, kind, category_id, note, external_id, \
-              transacted_at, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+              external_balance, transacted_at, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(tx.id)
         .bind(tx.account_id)
@@ -120,6 +122,7 @@ impl TransactionRepository for SqliteTransactionRepository {
         .bind(tx.category_id)
         .bind(&tx.note)
         .bind(&tx.external_id)
+        .bind(tx.external_balance)
         .bind(tx.transacted_at)
         .bind(tx.created_at)
         .execute(&self.pool)
@@ -271,8 +274,8 @@ impl TransactionRepository for SqliteTransactionRepository {
         let result = sqlx::query(
             "INSERT INTO transactions \
              (id, account_id, user_id, amount, currency, kind, category_id, note, external_id, \
-              transacted_at, created_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+              external_balance, transacted_at, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
              ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING",
         )
         .bind(tx.id)
@@ -284,11 +287,42 @@ impl TransactionRepository for SqliteTransactionRepository {
         .bind(tx.category_id)
         .bind(&tx.note)
         .bind(&tx.external_id)
+        .bind(tx.external_balance)
         .bind(tx.transacted_at)
         .bind(tx.created_at)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_match_candidates(
+        &self,
+        user_id: Uuid,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+        min_amount: Decimal,
+        max_amount: Decimal,
+        currency: &str,
+    ) -> anyhow::Result<Vec<Transaction>> {
+        let rows = sqlx::query_as::<_, TxRow>(
+            "SELECT t.* FROM transactions t \
+             LEFT JOIN subscription_charges sc ON sc.transaction_id = t.id \
+             WHERE t.user_id = $1 \
+               AND t.kind = 'Expense' \
+               AND t.transacted_at BETWEEN $2 AND $3 \
+               AND t.amount BETWEEN $4 AND $5 \
+               AND t.currency = $6 \
+               AND sc.id IS NULL",
+        )
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .bind(min_amount)
+        .bind(max_amount)
+        .bind(currency)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(row_to_tx).collect()
     }
 }
 
@@ -501,9 +535,36 @@ mod tests {
         let t1 = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
         let t2 = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
         let t3 = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
-        insert_tx(&repo, account_id, user_id, 1, TransactionKind::Income, None, t1).await;
-        let mid = insert_tx(&repo, account_id, user_id, 2, TransactionKind::Income, None, t2).await;
-        insert_tx(&repo, account_id, user_id, 3, TransactionKind::Income, None, t3).await;
+        insert_tx(
+            &repo,
+            account_id,
+            user_id,
+            1,
+            TransactionKind::Income,
+            None,
+            t1,
+        )
+        .await;
+        let mid = insert_tx(
+            &repo,
+            account_id,
+            user_id,
+            2,
+            TransactionKind::Income,
+            None,
+            t2,
+        )
+        .await;
+        insert_tx(
+            &repo,
+            account_id,
+            user_id,
+            3,
+            TransactionKind::Income,
+            None,
+            t3,
+        )
+        .await;
 
         let params = TransactionListParams {
             from: Some(Utc.with_ymd_and_hms(2024, 4, 1, 0, 0, 0).unwrap()),

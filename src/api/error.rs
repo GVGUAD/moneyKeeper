@@ -4,6 +4,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use crate::domain::error::DomainError;
+use crate::domain::subscription_error::SubscriptionError;
 
 pub struct AppError(anyhow::Error);
 
@@ -16,6 +17,16 @@ impl IntoResponse for AppError {
                 DomainError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
                 DomainError::Conflict(m) => (StatusCode::CONFLICT, m.clone()),
                 DomainError::InvalidInput(m) => (StatusCode::BAD_REQUEST, m.clone()),
+            };
+            return (status, Json(json!({"error": msg}))).into_response();
+        }
+        if let Some(s) = err.downcast_ref::<SubscriptionError>() {
+            let (status, msg) = match s {
+                SubscriptionError::ConnectionNotFound
+                | SubscriptionError::SubscriptionNotFound
+                | SubscriptionError::ChargeNotFound => (StatusCode::NOT_FOUND, s.to_string()),
+                SubscriptionError::DuplicateCharge(_) => (StatusCode::CONFLICT, s.to_string()),
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, s.to_string()),
             };
             return (status, Json(json!({"error": msg}))).into_response();
         }

@@ -240,6 +240,78 @@ pub struct UpdateUserSettingsRequest {
     pub base_currency: String,
 }
 
+// ── Subscriptions ──────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize)]
+pub struct EmailConnectionResponse {
+    pub id: Uuid,
+    pub email_address: String,
+    pub provider: String,
+    pub status: String,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct GmailOAuthCallbackRequest {
+    pub code: String,
+    pub state: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SubscriptionResponse {
+    pub id: Uuid,
+    pub provider: String,
+    pub product_name: String,
+    pub amount: Decimal,
+    pub currency: String,
+    pub billing_period: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub last_charged_at: Option<DateTime<Utc>>,
+    pub next_expected_at: Option<DateTime<Utc>>,
+    pub category_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SubscriptionListQuery {
+    pub status: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct UpdateSubscriptionRequest {
+    pub product_name: Option<String>,
+    pub billing_period: Option<String>,
+    pub status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub category_id: Option<Option<Uuid>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SubscriptionChargeResponse {
+    pub id: Uuid,
+    pub subscription_id: Uuid,
+    pub amount: Decimal,
+    pub currency: String,
+    pub charged_at: DateTime<Utc>,
+    pub kind: String,
+    pub transaction_id: Option<Uuid>,
+    pub match_status: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LinkChargeRequest {
+    pub transaction_id: Uuid,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ForecastResponse {
+    pub base_currency: String,
+    pub base_total: Decimal,
+    pub by_currency: std::collections::HashMap<String, Decimal>,
+}
+
 /// Webhook payload from Monobank
 #[derive(Debug, serde::Deserialize)]
 pub struct MonobankWebhookPayload {
