@@ -6,12 +6,14 @@ use crate::application::accounts::AccountService;
 use crate::application::categories::CategoryService;
 use crate::application::monobank::MonobankService;
 use crate::application::transactions::TransactionService;
+use crate::application::user_settings::UserSettingsService;
 
 #[derive(Clone)]
-pub struct  AppState {
+pub struct AppState {
     pub accounts: Arc<AccountService>,
     pub transactions: Arc<TransactionService>,
     pub categories: Arc<CategoryService>,
     pub monobank: Arc<MonobankService>,
+    pub user_settings: Arc<UserSettingsService>,
     pub supabase_jwks: Arc<JwkSet>,
 }

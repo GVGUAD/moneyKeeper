@@ -5,7 +5,7 @@ use axum::middleware as axum_middleware;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{delete, get, post, put};
 
-use crate::api::handlers::{accounts, categories, monobank, transactions};
+use crate::api::handlers::{accounts, categories, monobank, transactions, user_settings};
 use crate::api::middleware::auth_middleware;
 use crate::api::state::AppState;
 
@@ -54,6 +54,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/monobank/connections/{id}",
             delete(monobank::delete_connection),
+        )
+        .route(
+            "/monobank/connections/{id}/resync",
+            post(monobank::resync_connection),
+        )
+        .route(
+            "/me/settings",
+            get(user_settings::get_settings).patch(user_settings::update_settings),
         )
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
