@@ -8,14 +8,16 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::integration::IntegrationEvent;
+use crate::contexts::classification::public::CategoryCatalogFacade;
 use crate::shared_kernel::{
     Clock, EventEnvelope, EventId, SystemClock,
 };
 
 use super::ports::{
-    AuditRecord, AuditStore, CommandReceiptStore, JournalStore, LedgerAccountStore,
+    AuditRecord, AuditStore, CommandReceiptStore, LedgerAccountStore,
     LedgerOutboxStore, LedgerUnitOfWork, ProjectionStore, TransactionControl,
 };
+use super::commit::commit_journal;
 use super::super::{
     domain::{
         Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount,
@@ -30,18 +32,26 @@ use super::super::{
 /// Public command facade with private PostgreSQL composition.
 #[derive(Clone)]
 pub struct LedgerFacade {
-    uow: PgLedgerUnitOfWork,
-    clock: Arc<dyn Clock>,
+    pub(super) uow: PgLedgerUnitOfWork,
+    pub(super) clock: Arc<dyn Clock>,
+    pub(super) categories: Option<CategoryCatalogFacade>,
 }
 
 impl LedgerFacade {
     pub(crate) fn new(uow: PgLedgerUnitOfWork) -> Self {
-        Self { uow, clock: Arc::new(SystemClock) }
+        Self { uow, clock: Arc::new(SystemClock), categories: None }
+    }
+
+    pub(crate) fn new_with_categories(
+        uow: PgLedgerUnitOfWork,
+        categories: CategoryCatalogFacade,
+    ) -> Self {
+        Self { uow, clock: Arc::new(SystemClock), categories: Some(categories) }
     }
 
     #[cfg(test)]
     pub(crate) fn with_clock(uow: PgLedgerUnitOfWork, clock: Arc<dyn Clock>) -> Self {
-        Self { uow, clock }
+        Self { uow, clock, categories: None }
     }
 
     /// Opens an account and records any non-zero opening balance as a journal.
@@ -155,9 +165,13 @@ async fn open_account<U: LedgerUnitOfWork>(
                     )?,
                 ],
             )?;
-            tx.insert_journal("open_account", &journal).await?;
-            tx.apply_postings(&journal).await?;
-            append_journal_facts(&mut tx, &journal, "ledger.entry-posted.v1").await?;
+            commit_journal(
+                &mut tx,
+                "open_account",
+                &journal,
+                None,
+                "ledger.entry-posted.v1",
+            ).await?;
             Some(journal.id())
         };
 
@@ -390,7 +404,7 @@ where
     )?).await
 }
 
-async fn append_journal_facts<T>(
+pub(super) async fn append_journal_facts<T>(
     tx: &mut T,
     journal: &JournalEntry,
     event_type: &'static str,

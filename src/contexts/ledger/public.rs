@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::shared_kernel::{CausationId, CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
+use crate::contexts::classification::public::CategoryId;
 
 pub use super::application::accounts::LedgerFacade;
 
@@ -96,5 +97,56 @@ pub struct AccountView {
 pub struct AccountResult {
     pub account: AccountView,
     pub opening_journal_id: Option<JournalEntryId>,
+    pub replayed: bool,
+}
+
+/// Closed user intent translated into controlled double-entry shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualTransactionKind {
+    Income,
+    Expense,
+}
+
+/// Records positive Money as income or expense against one user account.
+#[derive(Clone, Debug)]
+pub struct RecordManualTransaction {
+    pub user_id: UserId,
+    pub account_id: LedgerAccountId,
+    pub kind: ManualTransactionKind,
+    pub amount: Money,
+    pub description: String,
+    pub category_id: Option<CategoryId>,
+    pub note: Option<String>,
+    pub tags: NormalizedTags,
+    pub budget_visibility: BudgetVisibility,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// One account effect returned after a financial command.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountEffect {
+    pub account_id: LedgerAccountId,
+    pub currency: CurrencyCode,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub signed_amount: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub display_effect: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub signed_balance: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub display_balance: Decimal,
+    pub balance_version: i64,
+}
+
+/// Durable manual-transaction command result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionResult {
+    pub journal_entry_id: JournalEntryId,
+    pub effects: Vec<AccountEffect>,
+    pub annotation_version: AnnotationVersion,
     pub replayed: bool,
 }
