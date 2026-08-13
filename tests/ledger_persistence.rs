@@ -788,3 +788,48 @@ async fn correction_normalizes_liability_sign_and_rejects_zero_delta() {
     }).await.unwrap_err();
     assert!(zero.is_invalid_money());
 }
+
+#[tokio::test]
+async fn queries_are_tenant_scoped_stable_and_projection_is_rebuildable() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let ledger = moneykeeper::contexts::ledger::build_with_categories(&verified, contexts.categories);
+    let user = UserId::generate();
+    let other = UserId::generate();
+    let account = ledger.open_account(open_command(
+        user, "query-open", "Cash", "20.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let foreign = ledger.open_account(open_command(
+        other, "query-foreign", "Foreign", "10.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let first = ledger.record_manual_transaction(manual_command(
+        user, account.account.id, "query-expense-1", Decimal::ONE, None,
+    )).await.unwrap();
+    let second = ledger.record_manual_transaction(manual_command(
+        user, account.account.id, "query-expense-2", Decimal::new(200, 2), None,
+    )).await.unwrap();
+
+    let listed = ledger.list_accounts(user).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, account.account.id);
+    assert!(ledger.get_account(user, foreign.account.id).await.unwrap_err().is_not_found());
+
+    let activity = ledger.account_activity(user, account.account.id, None, 20).await.unwrap();
+    assert!(activity.windows(2).all(|pair| {
+        (pair[0].occurred_at, pair[0].ledger_sequence) >= (pair[1].occurred_at, pair[1].ledger_sequence)
+    }));
+    assert!(activity.iter().any(|journal| journal.id == first.journal_entry_id));
+    let detail = ledger.get_journal(user, second.journal_entry_id).await.unwrap();
+    assert_eq!(detail.postings.len(), 2);
+    assert_eq!(detail.annotation_version.unwrap().get(), 1);
+
+    sqlx::query(
+        "UPDATE ledger.account_balances SET signed_balance = signed_balance + 7 \
+         WHERE account_id = $1 AND user_id = $2",
+    ).bind(account.account.id.into_uuid()).bind(user.into_uuid()).execute(&pool).await.unwrap();
+    let mismatches = ledger.verify_projection().await.unwrap();
+    assert_eq!(mismatches.len(), 1);
+    assert_eq!(mismatches[0].delta, Decimal::new(-700, 2));
+    ledger.rebuild_projection().await.unwrap();
+    assert!(ledger.verify_projection().await.unwrap().is_empty());
+}

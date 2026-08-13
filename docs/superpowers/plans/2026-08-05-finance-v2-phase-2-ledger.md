@@ -529,7 +529,7 @@ git commit -m "feat(ledger): make financial corrections immutable and visible"
 - Modify: `tests/ledger_persistence.rs`
 - Modify: `tests/ledger_concurrency.rs`
 
-- [ ] **Step 1 — RED: write query and rebuild tests**
+- [x] **Step 1 — RED: write query and rebuild tests**
 
 Test account lists/balances, stable cursor pagination by `(occurred_at, ledger_sequence)`, account activity, journal detail with postings/relations/annotation/source/actor, archived-account history, and cross-user invisibility.
 
@@ -542,7 +542,7 @@ account_balances.signed_balance
 
 Run concurrent manual posts/corrections/transfers and assert the same invariant afterward.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run:
 
@@ -553,11 +553,11 @@ cargo test --test ledger_concurrency projection_never_drifts
 
 Expected: FAIL because query/projection adapters do not exist.
 
-- [ ] **Step 3 — GREEN: implement read-only SQL and rebuild tooling**
+- [x] **Step 3 — GREEN: implement read-only SQL and rebuild tooling**
 
 `PgLedgerQueries` owns a pool and may only issue `SELECT`. Projection write/rebuild functions remain an operational adapter, unavailable through HTTP handlers. Stable ordering always includes the monotonic ledger sequence as a tie-breaker.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run:
 
@@ -568,11 +568,11 @@ cargo test --test ledger_concurrency
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: remove statistics from Ledger queries**
+- [x] **Step 5 — REFACTOR: remove statistics from Ledger queries**
 
 Net-worth charts, category rollups, and multi-currency valuations belong to Reporting. Ledger queries expose accounting facts and current per-account balances only.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/queries.rs src/contexts/ledger/infrastructure/pg_queries.rs src/contexts/ledger/infrastructure/projection.rs src/contexts/ledger/infrastructure/mod.rs src/contexts/ledger/public.rs tests/ledger_persistence.rs tests/ledger_concurrency.rs

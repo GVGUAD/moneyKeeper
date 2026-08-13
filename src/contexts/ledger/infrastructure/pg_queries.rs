@@ -1,0 +1,154 @@
+//! Pool-backed read-only Ledger query adapter.
+
+use rust_decimal::Decimal;
+use sqlx::{FromRow, PgPool};
+use uuid::Uuid;
+
+use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::shared_kernel::{CorrelationId, CurrencyCode, UserId};
+
+use super::rows::AccountRow;
+use super::super::{
+    domain::{
+        AccountNature, AnnotationVersion, JournalEntryId, JournalRelations, JournalSource,
+        LedgerAccountId, LedgerError, PostingId,
+    },
+    public::{AccountView, ActivityCursor, JournalView, PostingView},
+};
+
+/// SELECT-only accounting-fact queries.
+#[derive(Clone)]
+pub(crate) struct PgLedgerQueries { pool: PgPool }
+
+impl PgLedgerQueries {
+    pub(crate) fn new(pool: &VerifiedV2Pool) -> Self { Self { pool: pool.pool().clone() } }
+
+    pub(crate) async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError> {
+        let rows = sqlx::query_as::<_, AccountBalanceRow>(
+            "SELECT a.id, a.user_id, a.name, a.currency, a.nature, a.kind, a.authority, \
+                    a.visibility, a.lifecycle, a.system_role, a.version, a.created_at, a.updated_at, \
+                    b.signed_balance, b.version AS balance_version, b.as_of \
+             FROM ledger.accounts a JOIN ledger.account_balances b \
+               ON b.account_id = a.id AND b.user_id = a.user_id \
+             WHERE a.user_id = $1 AND a.visibility = 'user_visible' \
+             ORDER BY lower(a.name), a.id",
+        ).bind(user_id.into_uuid()).fetch_all(&self.pool).await.map_err(LedgerError::database)?;
+        rows.into_iter().map(AccountBalanceRow::into_view).collect()
+    }
+
+    pub(crate) async fn get_account(&self, user_id: UserId, id: LedgerAccountId) -> Result<AccountView, LedgerError> {
+        let row = sqlx::query_as::<_, AccountBalanceRow>(
+            "SELECT a.id, a.user_id, a.name, a.currency, a.nature, a.kind, a.authority, \
+                    a.visibility, a.lifecycle, a.system_role, a.version, a.created_at, a.updated_at, \
+                    b.signed_balance, b.version AS balance_version, b.as_of \
+             FROM ledger.accounts a JOIN ledger.account_balances b \
+               ON b.account_id = a.id AND b.user_id = a.user_id \
+             WHERE a.user_id = $1 AND a.id = $2 AND a.visibility = 'user_visible'",
+        ).bind(user_id.into_uuid()).bind(id.into_uuid())
+         .fetch_optional(&self.pool).await.map_err(LedgerError::database)?
+         .ok_or_else(LedgerError::not_found)?;
+        row.into_view()
+    }
+
+    pub(crate) async fn account_activity(&self, user_id: UserId, account_id: LedgerAccountId, after: Option<ActivityCursor>, limit: u32) -> Result<Vec<JournalView>, LedgerError> {
+        if limit == 0 || limit > 200 { return Err(LedgerError::invalid_state("activity limit must be 1 to 200")) }
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT j.id FROM ledger.journal_entries j \
+             JOIN ledger.postings p ON p.journal_entry_id = j.id AND p.user_id = j.user_id \
+             WHERE j.user_id = $1 AND p.account_id = $2 \
+               AND ($3::timestamptz IS NULL OR (j.occurred_at, j.ledger_sequence) < ($3, $4)) \
+             GROUP BY j.id, j.occurred_at, j.ledger_sequence \
+             ORDER BY j.occurred_at DESC, j.ledger_sequence DESC LIMIT $5",
+        ).bind(user_id.into_uuid()).bind(account_id.into_uuid())
+         .bind(after.map(|cursor| cursor.occurred_at)).bind(after.map(|cursor| cursor.ledger_sequence))
+         .bind(i64::from(limit)).fetch_all(&self.pool).await.map_err(LedgerError::database)?;
+        let mut views = Vec::with_capacity(ids.len());
+        for id in ids { views.push(self.get_journal(user_id, JournalEntryId::new(id)).await?); }
+        Ok(views)
+    }
+
+    pub(crate) async fn get_journal(&self, user_id: UserId, id: JournalEntryId) -> Result<JournalView, LedgerError> {
+        #[derive(FromRow)]
+        struct JournalRow {
+            id: Uuid, user_id: Uuid, ledger_sequence: i64, source: String, description: String,
+            occurred_at: chrono::DateTime<chrono::Utc>, recorded_at: chrono::DateTime<chrono::Utc>,
+            correlation_id: Uuid, reverses_transaction_id: Option<Uuid>,
+            corrects_transaction_id: Option<Uuid>, replaces_transaction_id: Option<Uuid>,
+            annotation_version: Option<i64>,
+        }
+        let row = sqlx::query_as::<_, JournalRow>(
+            "SELECT j.id, j.user_id, j.ledger_sequence, j.source, j.description, j.occurred_at, \
+                    j.recorded_at, j.correlation_id, j.reverses_transaction_id, \
+                    j.corrects_transaction_id, j.replaces_transaction_id, a.version AS annotation_version \
+             FROM ledger.journal_entries j LEFT JOIN ledger.transaction_annotations a \
+               ON a.journal_entry_id = j.id AND a.user_id = j.user_id \
+             WHERE j.id = $1 AND j.user_id = $2",
+        ).bind(id.into_uuid()).bind(user_id.into_uuid())
+         .fetch_optional(&self.pool).await.map_err(LedgerError::database)?
+         .ok_or_else(LedgerError::not_found)?;
+        #[derive(FromRow)]
+        struct PostingRow { id: Uuid, account_id: Uuid, position: i16, currency: String, account_nature: String, signed_amount: Decimal }
+        let posting_rows = sqlx::query_as::<_, PostingRow>(
+            "SELECT id, account_id, position, currency, account_nature, signed_amount \
+             FROM ledger.postings WHERE journal_entry_id = $1 AND user_id = $2 ORDER BY position",
+        ).bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_all(&self.pool).await.map_err(LedgerError::database)?;
+        let postings = posting_rows.into_iter().map(|posting| {
+            let nature = AccountNature::parse(&posting.account_nature)?;
+            Ok(PostingView {
+                id: PostingId::new(posting.id), account_id: LedgerAccountId::new(posting.account_id),
+                position: u16::try_from(posting.position).map_err(|_| LedgerError::persistence("stored position invalid"))?,
+                currency: CurrencyCode::new(posting.currency).map_err(|_| LedgerError::persistence("stored currency invalid"))?,
+                signed_amount: posting.signed_amount,
+                display_effect: posting.signed_amount * Decimal::from(nature.normal_sign()),
+            })
+        }).collect::<Result<Vec<_>, LedgerError>>()?;
+        let relations = if let Some(related) = row.reverses_transaction_id {
+            JournalRelations::reversal_of(JournalEntryId::new(related))
+        } else if let Some(related) = row.corrects_transaction_id {
+            JournalRelations::correction_of(JournalEntryId::new(related))
+        } else if let Some(related) = row.replaces_transaction_id {
+            JournalRelations::replacement_of(JournalEntryId::new(related))
+        } else { JournalRelations::none() };
+        Ok(JournalView {
+            id: JournalEntryId::new(row.id), user_id: UserId::new(row.user_id),
+            ledger_sequence: row.ledger_sequence,
+            source: match row.source.as_str() {
+                "manual" => JournalSource::Manual, "import" => JournalSource::Import,
+                "system" => JournalSource::System, "correction" => JournalSource::Correction,
+                "reconciliation" => JournalSource::Reconciliation,
+                _ => return Err(LedgerError::persistence("stored source invalid")),
+            },
+            description: row.description, occurred_at: row.occurred_at, recorded_at: row.recorded_at,
+            correlation_id: CorrelationId::new(row.correlation_id), relations, postings,
+            annotation_version: row.annotation_version.map(AnnotationVersion::new).transpose()?,
+        })
+    }
+}
+
+#[derive(FromRow)]
+struct AccountBalanceRow {
+    id: Uuid, user_id: Uuid, name: String, currency: String, nature: String, kind: String,
+    authority: String, visibility: String, lifecycle: String, system_role: Option<String>,
+    version: i64, created_at: chrono::DateTime<chrono::Utc>, updated_at: chrono::DateTime<chrono::Utc>,
+    signed_balance: Decimal, balance_version: i64, as_of: chrono::DateTime<chrono::Utc>,
+}
+
+impl AccountBalanceRow {
+    fn into_view(self) -> Result<AccountView, LedgerError> {
+        let signed_balance = self.signed_balance;
+        let account = AccountRow {
+            id: self.id, user_id: self.user_id, name: self.name, currency: self.currency,
+            nature: self.nature, kind: self.kind, authority: self.authority,
+            visibility: self.visibility, lifecycle: self.lifecycle, system_role: self.system_role,
+            version: self.version, created_at: self.created_at, updated_at: self.updated_at,
+        }.into_domain()?;
+        Ok(AccountView {
+            id: account.id(), user_id: account.user_id(), name: account.name().to_owned(),
+            currency: account.currency().clone(), nature: account.nature(), kind: account.kind(),
+            authority: account.authority(), visibility: account.visibility(), lifecycle: account.lifecycle(),
+            version: account.version(), signed_balance,
+            display_balance: signed_balance * Decimal::from(account.normal_sign()),
+            balance_version: self.balance_version, as_of: self.as_of,
+        })
+    }
+}
