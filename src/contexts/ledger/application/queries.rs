@@ -1,10 +1,10 @@
 //! Read-only Ledger query facade and operational projection checks.
 
-use super::accounts::LedgerFacade;
 use super::super::{
     domain::{JournalEntryId, LedgerAccountId, LedgerError},
     public::{AccountView, ActivityCursor, JournalView, ProjectionMismatch},
 };
+use super::accounts::LedgerFacade;
 use crate::shared_kernel::UserId;
 
 impl LedgerFacade {
@@ -14,7 +14,11 @@ impl LedgerFacade {
     }
 
     /// Gets one tenant-scoped account balance view.
-    pub async fn get_account(&self, user_id: UserId, id: LedgerAccountId) -> Result<AccountView, LedgerError> {
+    pub async fn get_account(
+        &self,
+        user_id: UserId,
+        id: LedgerAccountId,
+    ) -> Result<AccountView, LedgerError> {
         self.queries.get_account(user_id, id).await
     }
 
@@ -26,7 +30,9 @@ impl LedgerFacade {
         after: Option<ActivityCursor>,
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError> {
-        self.queries.account_activity(user_id, account_id, after, limit).await
+        self.queries
+            .account_activity(user_id, account_id, after, limit)
+            .await
     }
 
     /// Lists tenant journal facts in stable reverse chronological order.
@@ -40,7 +46,11 @@ impl LedgerFacade {
     }
 
     /// Gets one fully detailed immutable journal.
-    pub async fn get_journal(&self, user_id: UserId, id: JournalEntryId) -> Result<JournalView, LedgerError> {
+    pub async fn get_journal(
+        &self,
+        user_id: UserId,
+        id: JournalEntryId,
+    ) -> Result<JournalView, LedgerError> {
         self.queries.get_journal(user_id, id).await
     }
 

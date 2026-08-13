@@ -17,9 +17,13 @@ pub struct CategoryReference(Uuid);
 
 impl CategoryReference {
     /// Creates a category reference from Classification's opaque UUID identity.
-    pub const fn new(value: Uuid) -> Self { Self(value) }
+    pub const fn new(value: Uuid) -> Self {
+        Self(value)
+    }
     /// Returns the persisted UUID representation.
-    pub const fn into_uuid(self) -> Uuid { self.0 }
+    pub const fn into_uuid(self) -> Uuid {
+        self.0
+    }
 }
 
 /// Optimistic annotation version.
@@ -37,7 +41,9 @@ impl AnnotationVersion {
         Ok(Self(value))
     }
 
-    pub const fn get(self) -> i64 { self.0 }
+    pub const fn get(self) -> i64 {
+        self.0
+    }
 
     fn next(self) -> Result<Self, LedgerError> {
         self.0
@@ -74,7 +80,9 @@ impl NormalizedTags {
     pub const MAX_TAG_CHARACTERS: usize = 40;
 
     /// Returns an empty tag set.
-    pub const fn empty() -> Self { Self(Vec::new()) }
+    pub const fn empty() -> Self {
+        Self(Vec::new())
+    }
 
     /// Normalizes tag values by trimming and Unicode-lowercasing.
     pub fn new<I, S>(values: I) -> Result<Self, LedgerError>
@@ -100,7 +108,9 @@ impl NormalizedTags {
     }
 
     /// Returns the canonical tag order.
-    pub fn as_slice(&self) -> &[String] { &self.0 }
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
 }
 
 /// Partial annotation mutation. Nested options distinguish unchanged from clear.
@@ -186,9 +196,18 @@ impl TransactionAnnotation {
         updated_at: DateTime<Utc>,
     ) -> Result<Self, LedgerError> {
         Ok(Self {
-            id, journal_entry_id, user_id, description: validate_description(description)?,
-            category, note: validate_note(note)?, tags, budget_visibility, version,
-            created_at, updated_at, audit_events: Vec::new(),
+            id,
+            journal_entry_id,
+            user_id,
+            description: validate_description(description)?,
+            category,
+            note: validate_note(note)?,
+            tags,
+            budget_visibility,
+            version,
+            created_at,
+            updated_at,
+            audit_events: Vec::new(),
         })
     }
 
@@ -213,7 +232,11 @@ impl TransactionAnnotation {
             .transpose()?
             .unwrap_or_else(|| self.description.clone());
         let category = changes.category.unwrap_or(self.category);
-        let note = changes.note.map(validate_note).transpose()?.unwrap_or_else(|| self.note.clone());
+        let note = changes
+            .note
+            .map(validate_note)
+            .transpose()?
+            .unwrap_or_else(|| self.note.clone());
         let tags = changes.tags.unwrap_or_else(|| self.tags.clone());
         let budget_visibility = changes.budget_visibility.unwrap_or(self.budget_visibility);
 
@@ -244,20 +267,41 @@ impl TransactionAnnotation {
         Ok(true)
     }
 
-    pub const fn id(&self) -> AnnotationId { self.id }
-    pub const fn journal_entry_id(&self) -> JournalEntryId { self.journal_entry_id }
-    pub const fn user_id(&self) -> UserId { self.user_id }
-    pub fn description(&self) -> &str { &self.description }
-    pub const fn category(&self) -> Option<CategoryReference> { self.category }
-    pub fn note(&self) -> Option<&str> { self.note.as_deref() }
-    pub const fn tags(&self) -> &NormalizedTags { &self.tags }
-    pub const fn budget_visibility(&self) -> BudgetVisibility { self.budget_visibility }
-    pub const fn version(&self) -> AnnotationVersion { self.version }
-    pub const fn created_at(&self) -> DateTime<Utc> { self.created_at }
-    pub const fn updated_at(&self) -> DateTime<Utc> { self.updated_at }
-    pub fn audit_events(&self) -> &[AnnotationChanged] { &self.audit_events }
-    pub(crate) fn take_audit_events(&mut self) -> Vec<AnnotationChanged> {
-        std::mem::take(&mut self.audit_events)
+    pub const fn id(&self) -> AnnotationId {
+        self.id
+    }
+    pub const fn journal_entry_id(&self) -> JournalEntryId {
+        self.journal_entry_id
+    }
+    pub const fn user_id(&self) -> UserId {
+        self.user_id
+    }
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+    pub const fn category(&self) -> Option<CategoryReference> {
+        self.category
+    }
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+    pub const fn tags(&self) -> &NormalizedTags {
+        &self.tags
+    }
+    pub const fn budget_visibility(&self) -> BudgetVisibility {
+        self.budget_visibility
+    }
+    pub const fn version(&self) -> AnnotationVersion {
+        self.version
+    }
+    pub const fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+    pub const fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
+    pub fn audit_events(&self) -> &[AnnotationChanged] {
+        &self.audit_events
     }
 }
 

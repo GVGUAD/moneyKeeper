@@ -246,7 +246,7 @@ pub(crate) async fn update_annotation(
         || request.clear_note && request.note.is_some()
     {
         return Err(V2ApiError::bad_request(
-            "clear flags conflict with supplied values",
+            "clear flags conflict when values are present",
         ));
     }
     let category = if request.clear_category {

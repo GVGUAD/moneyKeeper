@@ -4,8 +4,10 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::shared_kernel::{CausationId, CorrelationId, CurrencyCode, EventId, IdempotencyKey, Money, UserId};
 use crate::contexts::classification::public::CategoryId;
+use crate::shared_kernel::{
+    CausationId, CorrelationId, CurrencyCode, EventId, IdempotencyKey, Money, UserId,
+};
 
 pub use super::application::accounts::LedgerFacade;
 
@@ -300,6 +302,7 @@ pub struct JournalView {
     pub user_id: UserId,
     pub ledger_sequence: i64,
     pub source: JournalSource,
+    pub actor: Actor,
     pub description: String,
     pub occurred_at: DateTime<Utc>,
     pub recorded_at: DateTime<Utc>,
@@ -307,6 +310,21 @@ pub struct JournalView {
     pub relations: JournalRelations,
     pub postings: Vec<PostingView>,
     pub annotation_version: Option<AnnotationVersion>,
+    pub correction: Option<CorrectionView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CorrectionView {
+    pub account_id: LedgerAccountId,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub before_display_balance: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub target_display_balance: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub display_delta: Decimal,
+    pub observed_balance_version: i64,
+    pub reason: String,
+    pub observed_at: DateTime<Utc>,
 }
 
 /// One exact difference between a balance projection and immutable postings.
@@ -411,21 +429,37 @@ pub struct InternalCommandMetadata {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlAccountRole {
-    ExternalReceivable, ExternalPayable, InterestReceivable, InterestPayable,
-    FeeReceivable, FeePayable, PortfolioCashClearing,
+    ExternalReceivable,
+    ExternalPayable,
+    InterestReceivable,
+    InterestPayable,
+    FeeReceivable,
+    FeePayable,
+    PortfolioCashClearing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ControlDirection { Receivable, Payable }
+pub enum ControlDirection {
+    Receivable,
+    Payable,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PrincipalOrAccrual { Principal, Interest, Fee }
+pub enum PrincipalOrAccrual {
+    Principal,
+    Interest,
+    Fee,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderTransactionState { Pending, Posted, Reversed }
+pub enum ProviderTransactionState {
+    Pending,
+    Posted,
+    Reversed,
+}
 
 #[derive(Clone, Debug)]
 pub struct EnsureTypedControlAccount {
@@ -599,21 +633,61 @@ pub struct LedgerEventMetadataV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LedgerEventFactV1 {
-    AccountLifecycleChanged { account_id: LedgerAccountId, lifecycle: AccountLifecycle },
-    EntryPosted { journal_entry_id: JournalEntryId, effects: Vec<LedgerMoneyV1> },
-    EntryReversed { journal_entry_id: JournalEntryId, original_journal_entry_id: JournalEntryId },
-    EntryReplaced { replacement_journal_entry_id: JournalEntryId, original_journal_entry_id: JournalEntryId },
-    AnnotationChanged { journal_entry_id: JournalEntryId, version: i64 },
-    BalanceChanged { account_id: LedgerAccountId, balance: LedgerMoneyV1, version: i64 },
-    ReconciliationObserved { case_id: ReconciliationCaseId },
-    ReconciliationMatched { case_id: ReconciliationCaseId },
-    ReconciliationSuperseded { case_id: ReconciliationCaseId },
-    ReconciliationIgnoredOlder { case_id: ReconciliationCaseId },
-    ReconciliationApproved { case_id: ReconciliationCaseId, journal_entry_id: JournalEntryId },
-    ReconciliationDismissed { case_id: ReconciliationCaseId },
-    ReconciliationStale { case_id: ReconciliationCaseId },
-    InternalAccountingCommandPosted { source: SourceReference, journal_entry_id: JournalEntryId },
-    InternalAccountingCommandFailed { source: SourceReference, error_code: String },
+    AccountLifecycleChanged {
+        account_id: LedgerAccountId,
+        lifecycle: AccountLifecycle,
+    },
+    EntryPosted {
+        journal_entry_id: JournalEntryId,
+        effects: Vec<LedgerMoneyV1>,
+    },
+    EntryReversed {
+        journal_entry_id: JournalEntryId,
+        original_journal_entry_id: JournalEntryId,
+    },
+    EntryReplaced {
+        replacement_journal_entry_id: JournalEntryId,
+        original_journal_entry_id: JournalEntryId,
+    },
+    AnnotationChanged {
+        journal_entry_id: JournalEntryId,
+        version: i64,
+    },
+    BalanceChanged {
+        account_id: LedgerAccountId,
+        balance: LedgerMoneyV1,
+        version: i64,
+    },
+    ReconciliationObserved {
+        case_id: ReconciliationCaseId,
+    },
+    ReconciliationMatched {
+        case_id: ReconciliationCaseId,
+    },
+    ReconciliationSuperseded {
+        case_id: ReconciliationCaseId,
+    },
+    ReconciliationIgnoredOlder {
+        case_id: ReconciliationCaseId,
+    },
+    ReconciliationApproved {
+        case_id: ReconciliationCaseId,
+        journal_entry_id: JournalEntryId,
+    },
+    ReconciliationDismissed {
+        case_id: ReconciliationCaseId,
+    },
+    ReconciliationStale {
+        case_id: ReconciliationCaseId,
+    },
+    InternalAccountingCommandPosted {
+        source: SourceReference,
+        journal_entry_id: JournalEntryId,
+    },
+    InternalAccountingCommandFailed {
+        source: SourceReference,
+        error_code: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

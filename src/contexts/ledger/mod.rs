@@ -1,9 +1,9 @@
 //! Immutable double-entry Ledger bounded context.
 
-mod domain;
-mod application;
-mod infrastructure;
 pub(crate) mod api;
+mod application;
+mod domain;
+mod infrastructure;
 
 pub mod public;
 

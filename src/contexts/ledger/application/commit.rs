@@ -1,10 +1,10 @@
 //! Shared immutable-journal commit pipeline.
 
+use super::super::domain::{JournalEntry, LedgerError, TransactionAnnotation};
 use super::{
     accounts::append_journal_facts,
     ports::{AnnotationStore, AuditStore, JournalStore, LedgerOutboxStore, ProjectionStore},
 };
-use super::super::domain::{JournalEntry, LedgerError, TransactionAnnotation};
 
 /// Persists a complete journal aggregate, optional metadata, projections,
 /// audit, and outbox facts without accepting a caller-mutated balance.

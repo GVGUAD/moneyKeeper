@@ -165,10 +165,10 @@ async fn account_transaction_annotation_and_correction_routes_preserve_history()
 
     let detail = server.get(&format!("/transactions/{journal_id}")).await;
     assert_eq!(detail.status_code(), StatusCode::OK);
-    assert_eq!(
-        detail.json::<Value>()["postings"].as_array().unwrap().len(),
-        2
-    );
+    let detail: Value = detail.json();
+    assert_eq!(detail["postings"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["source"], "manual");
+    assert_eq!(detail["actor"]["kind"], "user");
     let activity = server
         .get(&format!("/accounts/{account_id}/activity?limit=10"))
         .await;
@@ -313,7 +313,17 @@ async fn reconciliation_routes_require_versions_and_expose_only_tenant_cases() {
         .add_header("Idempotency-Key", "api-approve")
         .json(&json!({"expected_version":1,"expected_balance_version":pending.case.captured_balance_version.get(),"reason":"Statement","occurred_at":observed_at})).await;
     assert_eq!(approved.status_code(), StatusCode::OK);
-    assert_eq!(approved.json::<Value>()["case"]["status"], "approved");
+    let approved: Value = approved.json();
+    assert_eq!(approved["case"]["status"], "approved");
+    let correction_id = approved["journal_entry_id"].as_str().unwrap();
+    let correction: Value = server
+        .get(&format!("/transactions/{correction_id}"))
+        .await
+        .json();
+    assert_eq!(correction["source"], "reconciliation");
+    assert_eq!(correction["correction"]["before_display_balance"], "10.00");
+    assert_eq!(correction["correction"]["target_display_balance"], "12.00");
+    assert_eq!(correction["correction"]["display_delta"], "2.00");
 
     let mut stranger = TestServer::new(router).unwrap();
     stranger.add_header(AUTHORIZATION, format!("Bearer {}", jwt(Uuid::new_v4())));
@@ -323,5 +333,237 @@ async fn reconciliation_routes_require_versions_and_expose_only_tenant_cases() {
             .await
             .status_code(),
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn complete_visible_money_lifecycle_and_tamper_recovery() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let user_uuid = Uuid::new_v4();
+    let user = UserId::new(user_uuid);
+    let mut server = TestServer::new(moneykeeper::bootstrap::v2::router(
+        &verified,
+        Arc::new(test_jwks()),
+    ))
+    .unwrap();
+    server.add_header(AUTHORIZATION, format!("Bearer {}", jwt(user_uuid)));
+    let at = Utc.with_ymd_and_hms(2026, 8, 13, 16, 0, 0).unwrap();
+    let open = |name: &str, amount: &str| json!({"name":name,"currency":"UAH","kind":"cash","nature":"asset","opening_balance":amount,"occurred_at":at});
+    let cash: Value = server
+        .post("/accounts")
+        .add_header("Idempotency-Key", "life-cash")
+        .json(&open("Cash", "100.00"))
+        .await
+        .json();
+    let card: Value = server
+        .post("/accounts")
+        .add_header("Idempotency-Key", "life-card")
+        .json(&open("Debit card", "0"))
+        .await
+        .json();
+    let cash_id = cash["account"]["id"].as_str().unwrap();
+    let card_id = card["account"]["id"].as_str().unwrap();
+    let expense = |key: &str, account_id: &str, amount: &str| json!({"account_id":account_id,"kind":"expense","amount":{"amount":amount,"currency":"UAH"},"description":key,"occurred_at":at});
+    let first: Value = server
+        .post("/transactions")
+        .add_header("Idempotency-Key", "life-expense-1")
+        .json(&expense("First", cash_id, "10"))
+        .await
+        .json();
+    let second: Value = server
+        .post("/transactions")
+        .add_header("Idempotency-Key", "life-expense-2")
+        .json(&expense("Second", cash_id, "5"))
+        .await
+        .json();
+    let first_id = first["journal_entry_id"].as_str().unwrap();
+    let second_id = second["journal_entry_id"].as_str().unwrap();
+    assert_eq!(server.post("/transfers").add_header("Idempotency-Key", "life-transfer").json(&json!({
+        "source_account_id":cash_id,"target_account_id":card_id,
+        "source_amount":{"amount":"20","currency":"UAH"},"target_amount":{"amount":"20","currency":"UAH"},
+        "fee":{"amount":"2","currency":"UAH"},"description":"Fund card","occurred_at":at
+    })).await.status_code(), StatusCode::CREATED);
+    let card_before: Value = server.get(&format!("/accounts/{card_id}")).await.json();
+    let correction: Value = server
+        .post(&format!("/accounts/{card_id}/balance-corrections"))
+        .add_header("Idempotency-Key", "life-correct")
+        .json(&json!({
+            "target_display_balance":{"amount":"25","currency":"UAH"},
+            "expected_balance_version":card_before["balance_version"],"reason":"Counted card",
+            "observed_at":at,"occurred_at":at
+        }))
+        .await
+        .json();
+    assert_eq!(correction["effects"][0]["display_balance"], "25");
+    assert_eq!(
+        server
+            .post(&format!("/transactions/{first_id}/reversals"))
+            .add_header("Idempotency-Key", "life-reverse")
+            .json(&json!({"reason":"Duplicate","occurred_at":at}))
+            .await
+            .status_code(),
+        StatusCode::CREATED
+    );
+    let replacement: Value = server
+        .post(&format!("/transactions/{second_id}/replacements"))
+        .add_header("Idempotency-Key", "life-replace")
+        .json(&json!({
+            "account_id":cash_id,"kind":"expense","amount":{"amount":"7","currency":"UAH"},
+            "description":"Corrected second","occurred_at":at
+        }))
+        .await
+        .json();
+    let replacement_id = replacement["replacement_journal_entry_id"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        server
+            .patch(&format!("/transactions/{replacement_id}/annotation"))
+            .add_header("Idempotency-Key", "life-annotation")
+            .json(
+                &json!({"expected_version":1,"note":"reviewed","tags":["final"],"occurred_at":at})
+            )
+            .await
+            .status_code(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .post(&format!("/accounts/{card_id}/archive"))
+            .add_header("Idempotency-Key", "life-archive")
+            .json(&json!({"expected_version":1,"occurred_at":at}))
+            .await
+            .status_code(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        server
+            .post("/transactions")
+            .add_header("Idempotency-Key", "life-blocked")
+            .json(&expense("Blocked", card_id, "1"))
+            .await
+            .status_code(),
+        StatusCode::CONFLICT
+    );
+    let archived: Value = server.get(&format!("/accounts/{card_id}")).await.json();
+    assert_eq!(archived["lifecycle"], "archived");
+    assert_eq!(archived["display_balance"], "25");
+    assert_eq!(
+        server
+            .post(&format!("/accounts/{card_id}/restore"))
+            .add_header("Idempotency-Key", "life-restore")
+            .json(&json!({"expected_version":2,"occurred_at":at}))
+            .await
+            .status_code(),
+        StatusCode::OK
+    );
+
+    let card_account = moneykeeper::contexts::ledger::public::LedgerAccountId::new(
+        Uuid::parse_str(card_id).unwrap(),
+    );
+    let observe = |item: &str, amount: i64, sequence: i64, key: &str| ObserveProviderBalance {
+        user_id: user,
+        account_id: card_account,
+        observation_id: ObservationId::generate(),
+        source: SourceReference::new("banking", "lifecycle-card", item).unwrap(),
+        provider_reported: Money::new(
+            Decimal::new(amount, 2),
+            CurrencyCode::new("UAH").unwrap(),
+            2,
+        )
+        .unwrap(),
+        available: None,
+        observed_at: at + chrono::Duration::seconds(sequence),
+        source_sequence: sequence,
+        idempotency_key: IdempotencyKey::new(key).unwrap(),
+        correlation_id: CorrelationId::generate(),
+        causation_id: None,
+    };
+    let matched = contexts
+        .ledger
+        .observe_provider_balance(observe("matched", 2500, 1, "life-observe-matched"))
+        .await
+        .unwrap();
+    assert_eq!(
+        matched.case.status,
+        moneykeeper::contexts::ledger::public::ReconciliationStatus::Matched
+    );
+    assert!(matched.journal_entry_id.is_none());
+    let pending = contexts
+        .ledger
+        .observe_provider_balance(observe("pending", 3000, 2, "life-observe-pending"))
+        .await
+        .unwrap();
+    assert_eq!(server.post(&format!("/reconciliations/{}/approve", pending.case.id))
+        .add_header("Idempotency-Key", "life-approve").json(&json!({
+            "expected_version":1,"expected_balance_version":pending.case.captured_balance_version.get(),
+            "reason":"Provider statement","occurred_at":at
+        })).await.status_code(), StatusCode::OK);
+    let stale = contexts
+        .ledger
+        .observe_provider_balance(observe("stale", 3500, 3, "life-observe-stale"))
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .post("/transactions")
+            .add_header("Idempotency-Key", "life-intervening")
+            .json(&expense("Intervening", card_id, "1"))
+            .await
+            .status_code(),
+        StatusCode::CREATED
+    );
+    assert_eq!(server.post(&format!("/reconciliations/{}/approve", stale.case.id))
+        .add_header("Idempotency-Key", "life-stale-approve").json(&json!({
+            "expected_version":1,"expected_balance_version":stale.case.captured_balance_version.get(),
+            "reason":"Too late","occurred_at":at
+        })).await.status_code(), StatusCode::CONFLICT);
+    let activity: Value = server
+        .get(&format!("/accounts/{card_id}/activity?limit=50"))
+        .await
+        .json();
+    assert!(
+        activity
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["source"] == "reconciliation"
+                && entry["correction"]["display_delta"] == "5.00")
+    );
+    assert!(
+        activity
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["source"] == "manual")
+    );
+
+    sqlx::query("UPDATE ledger.account_balances SET signed_balance = signed_balance + 1 WHERE account_id = $1 AND user_id = $2")
+        .bind(card_account.into_uuid()).bind(user.into_uuid()).execute(&pool).await.unwrap();
+    assert_eq!(contexts.ledger.verify_projection().await.unwrap().len(), 1);
+    contexts.ledger.rebuild_projection().await.unwrap();
+    assert!(
+        contexts
+            .ledger
+            .verify_projection()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let journal_id = Uuid::parse_str(first_id).unwrap();
+    assert!(
+        sqlx::query("UPDATE ledger.journal_entries SET description = 'tampered' WHERE id = $1")
+            .bind(journal_id)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("DELETE FROM ledger.postings WHERE journal_entry_id = $1")
+            .bind(journal_id)
+            .execute(&pool)
+            .await
+            .is_err()
     );
 }

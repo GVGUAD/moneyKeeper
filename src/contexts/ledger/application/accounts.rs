@@ -7,17 +7,10 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::integration::IntegrationEvent;
 use crate::contexts::classification::public::CategoryCatalogFacade;
-use crate::shared_kernel::{
-    Clock, EventEnvelope, EventId, SystemClock,
-};
+use crate::integration::IntegrationEvent;
+use crate::shared_kernel::{Clock, EventEnvelope, EventId, SystemClock};
 
-use super::ports::{
-    AuditRecord, AuditStore, CommandReceiptStore, LedgerAccountStore,
-    LedgerOutboxStore, LedgerUnitOfWork, ProjectionStore, TransactionControl,
-};
-use super::commit::commit_journal;
 use super::super::{
     domain::{
         Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount,
@@ -27,6 +20,11 @@ use super::super::{
     public::{
         AccountResult, AccountView, ArchiveAccount, OpenAccount, RenameAccount, RestoreAccount,
     },
+};
+use super::commit::commit_journal;
+use super::ports::{
+    AuditRecord, AuditStore, CommandReceiptStore, LedgerAccountStore, LedgerOutboxStore,
+    LedgerUnitOfWork, ProjectionStore, TransactionControl,
 };
 
 /// Public command facade with private PostgreSQL composition.
@@ -45,7 +43,13 @@ impl LedgerFacade {
         queries: PgLedgerQueries,
         projection: PgLedgerProjection,
     ) -> Self {
-        Self { uow, clock: Arc::new(SystemClock), categories: None, queries, projection }
+        Self {
+            uow,
+            clock: Arc::new(SystemClock),
+            categories: None,
+            queries,
+            projection,
+        }
     }
 
     pub(crate) fn new_with_categories(
@@ -54,7 +58,13 @@ impl LedgerFacade {
         projection: PgLedgerProjection,
         categories: CategoryCatalogFacade,
     ) -> Self {
-        Self { uow, clock: Arc::new(SystemClock), categories: Some(categories), queries, projection }
+        Self {
+            uow,
+            clock: Arc::new(SystemClock),
+            categories: Some(categories),
+            queries,
+            projection,
+        }
     }
 
     /// Opens an account and records any non-zero opening balance as a journal.
@@ -63,18 +73,37 @@ impl LedgerFacade {
     }
 
     /// Renames account metadata using optimistic concurrency.
-    pub async fn rename_account(&self, command: RenameAccount) -> Result<AccountResult, LedgerError> {
+    pub async fn rename_account(
+        &self,
+        command: RenameAccount,
+    ) -> Result<AccountResult, LedgerError> {
         rename_account(&self.uow, self.clock.as_ref(), command).await
     }
 
     /// Archives an account without hiding history or balance.
-    pub async fn archive_account(&self, command: ArchiveAccount) -> Result<AccountResult, LedgerError> {
-        change_lifecycle(&self.uow, self.clock.as_ref(), LifecycleCommand::Archive(command)).await
+    pub async fn archive_account(
+        &self,
+        command: ArchiveAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        change_lifecycle(
+            &self.uow,
+            self.clock.as_ref(),
+            LifecycleCommand::Archive(command),
+        )
+        .await
     }
 
     /// Restores an archived account.
-    pub async fn restore_account(&self, command: RestoreAccount) -> Result<AccountResult, LedgerError> {
-        change_lifecycle(&self.uow, self.clock.as_ref(), LifecycleCommand::Restore(command)).await
+    pub async fn restore_account(
+        &self,
+        command: RestoreAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        change_lifecycle(
+            &self.uow,
+            self.clock.as_ref(),
+            LifecycleCommand::Restore(command),
+        )
+        .await
     }
 }
 
@@ -101,7 +130,9 @@ async fn open_account<U: LedgerUnitOfWork>(
         "open_account",
         &command.idempotency_key,
         &request_hash,
-    ).await? {
+    )
+    .await?
+    {
         tx.rollback().await?;
         return Ok(result);
     }
@@ -144,8 +175,7 @@ async fn open_account<U: LedgerUnitOfWork>(
                     account
                 }
             };
-            let signed = command.opening_balance.amount()
-                * Decimal::from(account.normal_sign());
+            let signed = command.opening_balance.amount() * Decimal::from(account.normal_sign());
             let journal = JournalEntry::post(
                 JournalEntryId::generate(),
                 command.user_id,
@@ -161,10 +191,16 @@ async fn open_account<U: LedgerUnitOfWork>(
                 JournalRelations::none(),
                 vec![
                     Posting::for_account(
-                        PostingId::generate(), &account, signed, PostingPurpose::Ordinary,
+                        PostingId::generate(),
+                        &account,
+                        signed,
+                        PostingPurpose::Ordinary,
                     )?,
                     Posting::for_account(
-                        PostingId::generate(), &system, -signed, PostingPurpose::Ordinary,
+                        PostingId::generate(),
+                        &system,
+                        -signed,
+                        PostingPurpose::Ordinary,
                     )?,
                 ],
             )?;
@@ -174,7 +210,8 @@ async fn open_account<U: LedgerUnitOfWork>(
                 &journal,
                 None,
                 "ledger.entry-posted.v1",
-            ).await?;
+            )
+            .await?;
             Some(journal.id())
         };
 
@@ -197,22 +234,38 @@ async fn open_account<U: LedgerUnitOfWork>(
             &request_hash,
             &result_json,
             now,
-        ).await?;
+        )
+        .await?;
         Ok::<_, LedgerError>(result)
-    }.await;
+    }
+    .await;
 
     match outcome {
         Ok(result) => match tx.commit().await {
             Ok(()) => Ok(result),
-            Err(error) => replay_after_failure(
-                uow, command.user_id, "open_account", &command.idempotency_key, &request_hash, error,
-            ).await,
+            Err(error) => {
+                replay_after_failure(
+                    uow,
+                    command.user_id,
+                    "open_account",
+                    &command.idempotency_key,
+                    &request_hash,
+                    error,
+                )
+                .await
+            }
         },
         Err(error) => {
             tx.rollback().await?;
             replay_after_failure(
-                uow, command.user_id, "open_account", &command.idempotency_key, &request_hash, error,
-            ).await
+                uow,
+                command.user_id,
+                "open_account",
+                &command.idempotency_key,
+                &request_hash,
+                error,
+            )
+            .await
         }
     }
 }
@@ -248,19 +301,31 @@ async fn change_lifecycle<U: LedgerUnitOfWork>(
 ) -> Result<AccountResult, LedgerError> {
     match command {
         LifecycleCommand::Archive(command) => mutate_account(
-            uow, clock, command.user_id, command.account_id, "archive_account",
+            uow,
+            clock,
+            command.user_id,
+            command.account_id,
+            "archive_account",
             command.idempotency_key,
             json!({"account_id": command.account_id, "expected_version": command.expected_version}),
-            command.correlation_id, command.occurred_at,
+            command.correlation_id,
+            command.occurred_at,
             |account, clock| account.archive(command.expected_version, clock),
-        ).await,
+        )
+        .await,
         LifecycleCommand::Restore(command) => mutate_account(
-            uow, clock, command.user_id, command.account_id, "restore_account",
+            uow,
+            clock,
+            command.user_id,
+            command.account_id,
+            "restore_account",
             command.idempotency_key,
             json!({"account_id": command.account_id, "expected_version": command.expected_version}),
-            command.correlation_id, command.occurred_at,
+            command.correlation_id,
+            command.occurred_at,
             |account, clock| account.restore(command.expected_version, clock),
-        ).await,
+        )
+        .await,
     }
 }
 
@@ -283,16 +348,28 @@ where
 {
     let request_hash = hash(&request)?;
     let mut tx = uow.begin().await?;
-    if let Some(result) = replay(&mut tx, user_id, command_name, &idempotency_key, &request_hash).await? {
+    if let Some(result) = replay(
+        &mut tx,
+        user_id,
+        command_name,
+        &idempotency_key,
+        &request_hash,
+    )
+    .await?
+    {
         tx.rollback().await?;
         return Ok(result);
     }
-    let mut account = tx.find_account(user_id, account_id, true).await?
+    let mut account = tx
+        .find_account(user_id, account_id, true)
+        .await?
         .ok_or_else(LedgerError::not_found)?;
     mutate(&mut account, clock)?;
     tx.save_account(&account).await?;
     let now = clock.now();
-    let (signed_balance, balance_version) = tx.signed_balance(user_id, account_id, false).await?
+    let (signed_balance, balance_version) = tx
+        .signed_balance(user_id, account_id, false)
+        .await?
         .ok_or_else(LedgerError::not_found)?;
     let result = AccountResult {
         account: view(&account, signed_balance, balance_version, now),
@@ -301,19 +378,42 @@ where
     };
     let event_id = EventId::generate();
     let audit = AuditRecord {
-        event_id, user_id, aggregate_kind: "account", aggregate_id: account_id.into_uuid(),
-        event_type: "ledger.account-lifecycle-changed.v1", actor_kind: "user",
-        actor_reference: Some(user_id.to_string()), correlation_id: correlation_id.into_uuid(),
+        event_id,
+        user_id,
+        aggregate_kind: "account",
+        aggregate_id: account_id.into_uuid(),
+        event_type: "ledger.account-lifecycle-changed.v1",
+        actor_kind: "user",
+        actor_reference: Some(user_id.to_string()),
+        correlation_id: correlation_id.into_uuid(),
         payload: json!({"account_id": account_id, "version": account.version(), "lifecycle": account.lifecycle(), "name": account.name()}),
-        occurred_at, recorded_at: now,
+        occurred_at,
+        recorded_at: now,
     };
     tx.append_audit(&audit).await?;
     tx.append_outbox(&integration_event(
-        event_id, user_id, account_id.to_string(), account.version().get() as u64,
-        audit.event_type, occurred_at, correlation_id, None, audit.payload.clone(),
-    )?).await?;
-    let result_json = serde_json::to_value(&result).map_err(|error| LedgerError::persistence(error.to_string()))?;
-    tx.insert_receipt(user_id, command_name, &idempotency_key, &request_hash, &result_json, now).await?;
+        event_id,
+        user_id,
+        account_id.to_string(),
+        account.version().get() as u64,
+        audit.event_type,
+        occurred_at,
+        correlation_id,
+        None,
+        audit.payload.clone(),
+    )?)
+    .await?;
+    let result_json = serde_json::to_value(&result)
+        .map_err(|error| LedgerError::persistence(error.to_string()))?;
+    tx.insert_receipt(
+        user_id,
+        command_name,
+        &idempotency_key,
+        &request_hash,
+        &result_json,
+        now,
+    )
+    .await?;
     tx.commit().await?;
     Ok(result)
 }
@@ -358,8 +458,8 @@ async fn replay_after_failure<U: LedgerUnitOfWork>(
 }
 
 fn hash(value: &Value) -> Result<[u8; 32], LedgerError> {
-    let canonical = serde_json::to_vec(value)
-        .map_err(|error| LedgerError::persistence(error.to_string()))?;
+    let canonical =
+        serde_json::to_vec(value).map_err(|error| LedgerError::persistence(error.to_string()))?;
     Ok(Sha256::digest(canonical).into())
 }
 
@@ -370,12 +470,22 @@ fn view(
     as_of: DateTime<Utc>,
 ) -> AccountView {
     AccountView {
-        id: account.id(), user_id: account.user_id(), name: account.name().to_owned(),
-        currency: account.currency().clone(), nature: account.nature(), kind: account.kind(),
-        authority: account.authority(), visibility: account.visibility(), lifecycle: account.lifecycle(),
-        version: account.version(), signed_balance,
+        id: account.id(),
+        user_id: account.user_id(),
+        name: account.name().to_owned(),
+        currency: account.currency().clone(),
+        nature: account.nature(),
+        kind: account.kind(),
+        authority: account.authority(),
+        visibility: account.visibility(),
+        lifecycle: account.lifecycle(),
+        version: account.version(),
+        signed_balance,
         display_balance: signed_balance * Decimal::from(account.normal_sign()),
-        balance_version, as_of, provider_reported: None, available: None,
+        balance_version,
+        as_of,
+        provider_reported: None,
+        available: None,
         reconciliation_difference: None,
     }
 }
@@ -395,17 +505,31 @@ where
         "kind": account.kind(), "lifecycle": account.lifecycle(), "version": account.version(),
     });
     tx.append_audit(&AuditRecord {
-        event_id, user_id: account.user_id(), aggregate_kind: "account",
-        aggregate_id: account.id().into_uuid(), event_type: "ledger.account-opened.v1",
-        actor_kind: "user", actor_reference: Some(account.user_id().to_string()),
-        correlation_id: command.correlation_id.into_uuid(), payload: payload.clone(),
-        occurred_at: command.occurred_at, recorded_at: now,
-    }).await?;
+        event_id,
+        user_id: account.user_id(),
+        aggregate_kind: "account",
+        aggregate_id: account.id().into_uuid(),
+        event_type: "ledger.account-opened.v1",
+        actor_kind: "user",
+        actor_reference: Some(account.user_id().to_string()),
+        correlation_id: command.correlation_id.into_uuid(),
+        payload: payload.clone(),
+        occurred_at: command.occurred_at,
+        recorded_at: now,
+    })
+    .await?;
     tx.append_outbox(&integration_event(
-        event_id, account.user_id(), account.id().to_string(), account.version().get() as u64,
-        "ledger.account-opened.v1", command.occurred_at, command.correlation_id,
-        command.causation_id, payload,
-    )?).await
+        event_id,
+        account.user_id(),
+        account.id().to_string(),
+        account.version().get() as u64,
+        "ledger.account-opened.v1",
+        command.occurred_at,
+        command.correlation_id,
+        command.causation_id,
+        payload,
+    )?)
+    .await
 }
 
 pub(super) async fn append_journal_facts<T>(
@@ -426,16 +550,31 @@ where
         })).collect::<Vec<_>>(),
     });
     tx.append_audit(&AuditRecord {
-        event_id, user_id: journal.user_id(), aggregate_kind: "journal_entry",
-        aggregate_id: journal.id().into_uuid(), event_type, actor_kind: "user",
+        event_id,
+        user_id: journal.user_id(),
+        aggregate_kind: "journal_entry",
+        aggregate_id: journal.id().into_uuid(),
+        event_type,
+        actor_kind: "user",
         actor_reference: Some(journal.user_id().to_string()),
-        correlation_id: journal.correlation_id().into_uuid(), payload: payload.clone(),
-        occurred_at: journal.occurred_at(), recorded_at: journal.recorded_at(),
-    }).await?;
+        correlation_id: journal.correlation_id().into_uuid(),
+        payload: payload.clone(),
+        occurred_at: journal.occurred_at(),
+        recorded_at: journal.recorded_at(),
+    })
+    .await?;
     tx.append_outbox(&integration_event(
-        event_id, journal.user_id(), journal.id().to_string(), 1, event_type,
-        journal.occurred_at(), journal.correlation_id(), journal.causation_id(), payload,
-    )?).await
+        event_id,
+        journal.user_id(),
+        journal.id().to_string(),
+        1,
+        event_type,
+        journal.occurred_at(),
+        journal.correlation_id(),
+        journal.causation_id(),
+        payload,
+    )?)
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -451,8 +590,17 @@ pub(super) fn integration_event(
     payload: Value,
 ) -> Result<IntegrationEvent, LedgerError> {
     let envelope = EventEnvelope::new(
-        event_id, "ledger", aggregate_id, aggregate_version, event_type, 1,
-        user_id, occurred_at, correlation_id, causation_id,
-    ).map_err(|error| LedgerError::persistence(error.to_string()))?;
+        event_id,
+        "ledger",
+        aggregate_id,
+        aggregate_version,
+        event_type,
+        1,
+        user_id,
+        occurred_at,
+        correlation_id,
+        causation_id,
+    )
+    .map_err(|error| LedgerError::persistence(error.to_string()))?;
     Ok(IntegrationEvent::new(envelope, payload))
 }

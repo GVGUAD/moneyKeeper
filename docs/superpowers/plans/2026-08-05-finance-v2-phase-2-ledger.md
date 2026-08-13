@@ -793,7 +793,7 @@ git commit -m "feat(ledger): freeze process-manager accounting contracts"
 - Modify: `tests/ledger_public_contracts.rs`
 - Read: all Phase 2 files
 
-- [ ] **Step 1 — Add the full money lifecycle test**
+- [x] **Step 1 — Add the full money lifecycle test**
 
 Through the isolated V2 router for user actions, plus the provider-neutral public facade for an external balance observation:
 
@@ -811,15 +811,15 @@ Through the isolated V2 router for user actions, plus the provider-neutral publi
 12. create an intervening entry for a second case and verify stale-balance approval is rejected; and
 13. list account activity and assert every effect, source, actor, relation, observation, and before/target/delta is visible.
 
-- [ ] **Step 2 — RED: prove tampering is detected**
+- [x] **Step 2 — RED: prove tampering is detected**
 
 Inside a test-only transaction, corrupt one projection, verify the operational check reports it, rebuild, and re-run the lifecycle assertions. Also attempt direct journal/posting update/delete and expect database rejection.
 
-- [ ] **Step 3 — GREEN: make only the minimum query/test support changes**
+- [x] **Step 3 — GREEN: make only the minimum query/test support changes**
 
 Do not weaken immutability triggers or expose rebuild over HTTP to make the test pass.
 
-- [ ] **Step 4 — Run full verification**
+- [x] **Step 4 — Run full verification**
 
 Run:
 
@@ -839,7 +839,7 @@ cargo test --test openapi_v2
 
 Expected: PASS.
 
-- [ ] **Step 5 — Run the forbidden-pattern audit**
+- [x] **Step 5 — Run the forbidden-pattern audit**
 
 Run:
 
@@ -850,7 +850,7 @@ rg -n "monobank|subscription|provider" src/contexts/ledger
 
 Expected: no prohibited mutation or provider coupling. The term `provider` may appear only in a neutral account-authority enum or comments/tests explaining the boundary; inspect every match.
 
-- [ ] **Step 6 — Commit only if the lifecycle test changed files**
+- [x] **Step 6 — Commit only if the lifecycle test changed files**
 
 ```bash
 git add tests/ledger_api_v2.rs tests/ledger_persistence.rs tests/ledger_public_contracts.rs <minimum-support-files>
@@ -899,23 +899,23 @@ Also run the forbidden-pattern audits in Task 13 and inspect every permitted neu
 
 ## Exit criteria
 
-- [ ] Every committed journal entry has at least two postings and balances to zero independently per currency in both Rust and PostgreSQL.
-- [ ] Journal entries, postings, correction details, and audit events cannot be updated or deleted.
-- [ ] Account balances are projections and equal the signed sum of postings after normal, replayed, failed, and concurrent commands.
-- [ ] Opening balances and target-balance corrections are explicit journals visible in account activity.
-- [ ] Transfers, fees, and FX legs share one UoW and lock accounts deterministically.
-- [ ] Reversal and replacement preserve originals; annotations are separately versioned/audited.
-- [ ] Category IDs are accepted only after same-user/active validation through `classification::public`; Ledger never queries Classification tables.
-- [ ] Zero-delta observations remain visible; non-zero reconciliation approval is an explicit correction and rejects stale balance versions.
-- [ ] Typed commands/results exist for external import/state/reversal, Sharing reclassification/settlement, loan accounting, and Portfolio cash/control-account settlement without reverse context imports.
-- [ ] Versioned Ledger command/result/query/event DTOs have golden serialization tests and are frozen for downstream phases.
-- [ ] Every financial POST is idempotent and payload-sensitive; stale aggregate mutation returns conflict.
-- [ ] Every tenant-owned lookup/write is scoped by authenticated `user_id`; cross-user rows appear not found.
-- [ ] The replacement API/OpenAPI use decimal strings, expose source/actor/timestamps/effects/relationships, and agree on every route/header/error schema.
-- [ ] No hard-delete or direct-balance financial API exists.
-- [ ] An explicit V2 test database migrates through `0003`; a legacy database is rejected by the parallel V2 helper.
-- [ ] The isolated replacement router passes, while runtime/default test migrators/legacy routes/Docker/environment remain byte-for-byte untouched for Phase 8.
-- [ ] Existing legacy migration checksums remain frozen for historical audit only.
+- [x] Every committed journal entry has at least two postings and balances to zero independently per currency in both Rust and PostgreSQL.
+- [x] Journal entries, postings, correction details, and audit events cannot be updated or deleted.
+- [x] Account balances are projections and equal the signed sum of postings after normal, replayed, failed, and concurrent commands.
+- [x] Opening balances and target-balance corrections are explicit journals visible in account activity.
+- [x] Transfers, fees, and FX legs share one UoW and lock accounts deterministically.
+- [x] Reversal and replacement preserve originals; annotations are separately versioned/audited.
+- [x] Category IDs are accepted only after same-user/active validation through `classification::public`; Ledger never queries Classification tables.
+- [x] Zero-delta observations remain visible; non-zero reconciliation approval is an explicit correction and rejects stale balance versions.
+- [x] Typed commands/results exist for external import/state/reversal, Sharing reclassification/settlement, loan accounting, and Portfolio cash/control-account settlement without reverse context imports.
+- [x] Versioned Ledger command/result/query/event DTOs have golden serialization tests and are frozen for downstream phases.
+- [x] Every financial POST is idempotent and payload-sensitive; stale aggregate mutation returns conflict.
+- [x] Every tenant-owned lookup/write is scoped by authenticated `user_id`; cross-user rows appear not found.
+- [x] The replacement API/OpenAPI use decimal strings, expose source/actor/timestamps/effects/relationships, and agree on every route/header/error schema.
+- [x] No hard-delete or direct-balance financial API exists.
+- [x] An explicit V2 test database migrates through `0003`; a legacy database is rejected by the parallel V2 helper.
+- [x] The isolated replacement router passes, while runtime/default test migrators/legacy routes/Docker/environment remain byte-for-byte untouched for Phase 8.
+- [x] Existing legacy migration checksums remain frozen for historical audit only.
 
 ## Explicitly out of scope
 
