@@ -11,7 +11,8 @@ use crate::shared_kernel::{CurrencyCode, EventId, IdempotencyKey, UserId};
 
 use super::super::domain::{
     JournalEntry, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError, Posting,
-    SystemAccountRole, TransactionAnnotation,
+    ReconciliationCase, ReconciliationCaseId, SourceReference, SystemAccountRole,
+    TransactionAnnotation,
 };
 
 /// Durable idempotency result read inside a command transaction.
@@ -44,6 +45,7 @@ pub(crate) trait LedgerUnitOfWork {
         + JournalStore
         + AnnotationStore
         + CorrectionStore
+        + ReconciliationStore
         + ProjectionStore
         + CommandReceiptStore
         + AuditStore
@@ -53,6 +55,32 @@ pub(crate) trait LedgerUnitOfWork {
         Self: 'a;
 
     async fn begin(&self) -> Result<Self::Tx<'_>, LedgerError>;
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ReconciliationStream {
+    pub latest_observed_at: DateTime<Utc>,
+    pub latest_source_sequence: i64,
+    pub latest_observation_id: super::super::domain::ObservationId,
+    pub active_case_id: Option<ReconciliationCaseId>,
+}
+
+pub(crate) trait ReconciliationStore {
+    async fn lock_reconciliation_stream(
+        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
+    ) -> Result<Option<ReconciliationStream>, LedgerError>;
+    async fn find_reconciliation_by_observation(
+        &mut self, user_id: UserId, observation_id: super::super::domain::ObservationId,
+    ) -> Result<Option<ReconciliationCase>, LedgerError>;
+    async fn find_reconciliation_case(
+        &mut self, user_id: UserId, case_id: ReconciliationCaseId, lock: bool,
+    ) -> Result<Option<ReconciliationCase>, LedgerError>;
+    async fn insert_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError>;
+    async fn save_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError>;
+    async fn save_reconciliation_stream(
+        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
+        stream: &ReconciliationStream, now: DateTime<Utc>,
+    ) -> Result<(), LedgerError>;
 }
 
 /// Versioned transaction-metadata persistence.

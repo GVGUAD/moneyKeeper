@@ -92,6 +92,10 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("POST", "/transactions/{id}/replacements"),
     ("POST", "/transfers"),
     ("POST", "/accounts/{id}/balance-corrections"),
+    ("GET", "/reconciliations"),
+    ("GET", "/reconciliations/{id}"),
+    ("POST", "/reconciliations/{id}/approve"),
+    ("POST", "/reconciliations/{id}/dismiss"),
 ];
 
 /// Authenticated tenant identity extracted from the existing auth boundary.

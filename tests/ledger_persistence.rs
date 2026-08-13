@@ -7,6 +7,8 @@ use moneykeeper::contexts::ledger::public::{
     RenameAccount, RestoreAccount, TransferFee, TransferFunds,
     CorrectBalance, ReverseTransaction, UpdateTransactionAnnotation, AnnotationChanges,
     ReplaceTransaction,
+    ApproveReconciliation, BalanceVersion, DismissReconciliation, ObserveProviderBalance,
+    ObservationId, ReconciliationStatus, ReconciliationVersion, SourceReference,
 };
 use moneykeeper::contexts::classification::public::{CategoryCatalog, CategoryCommand, CategoryKind};
 use moneykeeper::shared_kernel::{
@@ -31,6 +33,110 @@ async fn account(pool: &PgPool, user: Uuid, currency: &str) -> Uuid {
     .await
     .unwrap();
     id
+}
+
+#[tokio::test]
+async fn reconciliation_orders_observations_and_fences_approval_to_captured_balance() {
+    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let ledger = moneykeeper::contexts::ledger::build_with_categories(&verified, contexts.categories);
+    let user = UserId::generate();
+    let account = ledger.open_account(open_command(
+        user, "reconcile-open", "Bank", "10.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let source = |item: &str| SourceReference::new("banking", "account-stream", item).unwrap();
+    let observed_at = Utc.with_ymd_and_hms(2026, 8, 13, 12, 0, 0).unwrap();
+    let observe = |id, item: &str, amount: i64, sequence: i64, key: &str, at| ObserveProviderBalance {
+        user_id: user, account_id: account.account.id, observation_id: id, source: source(item),
+        provider_reported: Money::new(Decimal::new(amount, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        available: None, observed_at: at, source_sequence: sequence,
+        idempotency_key: IdempotencyKey::new(key).unwrap(), correlation_id: CorrelationId::generate(),
+        causation_id: None,
+    };
+
+    let matched_id = ObservationId::generate();
+    let matched = ledger.observe_provider_balance(observe(matched_id, "matched", 1000, 1, "obs-matched", observed_at)).await.unwrap();
+    assert_eq!(matched.case.status, ReconciliationStatus::Matched);
+    assert!(matched.journal_entry_id.is_none());
+    let duplicate = ledger.observe_provider_balance(observe(matched_id, "matched", 1000, 1, "obs-matched-duplicate", observed_at)).await.unwrap();
+    assert!(duplicate.replayed);
+
+    let pending = ledger.observe_provider_balance(observe(
+        ObservationId::generate(), "pending", 1200, 2, "obs-pending", observed_at + chrono::Duration::seconds(1),
+    )).await.unwrap();
+    assert_eq!(pending.case.status, ReconciliationStatus::Pending);
+    let approved = ledger.approve_reconciliation(ApproveReconciliation {
+        user_id: user, case_id: pending.case.id, expected_version: ReconciliationVersion::INITIAL,
+        expected_balance_version: pending.case.captured_balance_version, reason: "Statement".to_owned(),
+        idempotency_key: IdempotencyKey::new("approve-pending").unwrap(), correlation_id: CorrelationId::generate(),
+        causation_id: None, occurred_at: observed_at + chrono::Duration::seconds(2),
+    }).await.unwrap();
+    assert_eq!(approved.case.status, ReconciliationStatus::Approved);
+    assert_eq!(approved.effects[0].display_balance, Decimal::new(1200, 2));
+
+    let stale = ledger.observe_provider_balance(observe(
+        ObservationId::generate(), "stale", 1500, 3, "obs-stale", observed_at + chrono::Duration::seconds(3),
+    )).await.unwrap();
+    ledger.record_manual_transaction(manual_command(
+        user, account.account.id, "intervening-expense", Decimal::ONE, None,
+    )).await.unwrap();
+    let error = ledger.approve_reconciliation(ApproveReconciliation {
+        user_id: user, case_id: stale.case.id, expected_version: stale.case.version,
+        expected_balance_version: stale.case.captured_balance_version, reason: "Too late".to_owned(),
+        idempotency_key: IdempotencyKey::new("approve-stale").unwrap(), correlation_id: CorrelationId::generate(),
+        causation_id: None, occurred_at: observed_at + chrono::Duration::seconds(4),
+    }).await.unwrap_err();
+    assert!(error.is_stale_observed_balance());
+
+    let newer = ledger.observe_provider_balance(observe(
+        ObservationId::generate(), "newer", 1400, 4, "obs-newer", observed_at + chrono::Duration::seconds(5),
+    )).await.unwrap();
+    assert_eq!(ledger.get_reconciliation(user, stale.case.id).await.unwrap().status, ReconciliationStatus::Superseded);
+    let older = ledger.observe_provider_balance(observe(
+        ObservationId::generate(), "older", 1300, 99, "obs-older", observed_at + chrono::Duration::seconds(4),
+    )).await.unwrap();
+    assert_eq!(older.case.status, ReconciliationStatus::IgnoredOlder);
+    let dismissed = ledger.dismiss_reconciliation(DismissReconciliation {
+        user_id: user, case_id: newer.case.id, expected_version: newer.case.version,
+        reason: "Provider is wrong".to_owned(), idempotency_key: IdempotencyKey::new("dismiss-newer").unwrap(),
+        correlation_id: CorrelationId::generate(), occurred_at: observed_at + chrono::Duration::seconds(6),
+    }).await.unwrap();
+    assert_eq!(dismissed.case.status, ReconciliationStatus::Dismissed);
+    assert!(ledger.get_reconciliation(UserId::generate(), newer.case.id).await.unwrap_err().is_not_found());
+    assert!(ledger.list_reconciliations(user).await.unwrap().len() >= 5);
+    assert_eq!(BalanceVersion::new(1).unwrap().get(), 1);
+}
+
+#[tokio::test]
+async fn archived_account_accepts_only_explicit_reconciliation_correction() {
+    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let ledger = moneykeeper::contexts::ledger::build(&verified);
+    let user = UserId::generate();
+    let account = ledger.open_account(open_command(
+        user, "archived-reconcile-open", "Old bank", "10.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let observed_at = Utc::now();
+    let pending = ledger.observe_provider_balance(ObserveProviderBalance {
+        user_id: user, account_id: account.account.id, observation_id: ObservationId::generate(),
+        source: SourceReference::new("banking", "archived-stream", "final-statement").unwrap(),
+        provider_reported: Money::new(Decimal::new(1100, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        available: None, observed_at, source_sequence: 1,
+        idempotency_key: IdempotencyKey::new("archived-observe").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None,
+    }).await.unwrap();
+    ledger.archive_account(ArchiveAccount {
+        user_id: user, account_id: account.account.id, expected_version: account.account.version,
+        idempotency_key: IdempotencyKey::new("archive-before-approve").unwrap(),
+        correlation_id: CorrelationId::generate(), occurred_at: Utc::now(),
+    }).await.unwrap();
+    let approved = ledger.approve_reconciliation(ApproveReconciliation {
+        user_id: user, case_id: pending.case.id, expected_version: pending.case.version,
+        expected_balance_version: pending.case.captured_balance_version, reason: "Closing statement".to_owned(),
+        idempotency_key: IdempotencyKey::new("archived-approve").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(approved.effects[0].display_balance, Decimal::new(1100, 2));
+    assert_eq!(ledger.get_account(user, account.account.id).await.unwrap().lifecycle, AccountLifecycle::Archived);
 }
 
 async fn journal(tx: &mut Transaction<'_, Postgres>, user: Uuid, key: &str) -> Uuid {

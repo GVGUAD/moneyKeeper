@@ -5,15 +5,16 @@ use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
 use crate::infrastructure::v2_db::VerifiedV2Pool;
-use crate::shared_kernel::{CorrelationId, CurrencyCode, UserId};
+use crate::shared_kernel::{CorrelationId, CurrencyCode, Money, UserId};
 
 use super::rows::AccountRow;
 use super::super::{
     domain::{
         AccountNature, AnnotationVersion, JournalEntryId, JournalRelations, JournalSource,
-        LedgerAccountId, LedgerError, PostingId,
+        BalanceVersion, LedgerAccountId, LedgerError, ObservationId, PostingId,
+        ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion, SourceReference,
     },
-    public::{AccountView, ActivityCursor, JournalView, PostingView},
+    public::{AccountView, ActivityCursor, JournalView, PostingView, ReconciliationView},
 };
 
 /// SELECT-only accounting-fact queries.
@@ -135,6 +136,58 @@ impl PgLedgerQueries {
             description: row.description, occurred_at: row.occurred_at, recorded_at: row.recorded_at,
             correlation_id: CorrelationId::new(row.correlation_id), relations, postings,
             annotation_version: row.annotation_version.map(AnnotationVersion::new).transpose()?,
+        })
+    }
+
+    pub(crate) async fn list_reconciliations(&self, user_id: UserId) -> Result<Vec<ReconciliationView>, LedgerError> {
+        let rows = sqlx::query_as::<_, ReconciliationViewRow>(
+            "SELECT id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
+             observed_at, source_sequence, provider_reported_balance, available_balance, currency, \
+             captured_ledger_balance, captured_balance_version, delta, status, version, \
+             approval_journal_id, reason, created_at, updated_at FROM ledger.reconciliation_cases \
+             WHERE user_id = $1 ORDER BY observed_at DESC, source_sequence DESC, observation_id DESC",
+        ).bind(user_id.into_uuid()).fetch_all(&self.pool).await.map_err(LedgerError::database)?;
+        rows.into_iter().map(ReconciliationViewRow::into_view).collect()
+    }
+
+    pub(crate) async fn get_reconciliation(&self, user_id: UserId, id: ReconciliationCaseId) -> Result<ReconciliationView, LedgerError> {
+        sqlx::query_as::<_, ReconciliationViewRow>(
+            "SELECT id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
+             observed_at, source_sequence, provider_reported_balance, available_balance, currency, \
+             captured_ledger_balance, captured_balance_version, delta, status, version, \
+             approval_journal_id, reason, created_at, updated_at FROM ledger.reconciliation_cases \
+             WHERE user_id = $1 AND id = $2",
+        ).bind(user_id.into_uuid()).bind(id.into_uuid()).fetch_optional(&self.pool).await
+         .map_err(LedgerError::database)?.ok_or_else(LedgerError::not_found)?.into_view()
+    }
+}
+
+#[derive(FromRow)]
+struct ReconciliationViewRow {
+    id: Uuid, account_id: Uuid, observation_id: Uuid, source_kind: String,
+    source_stream_id: String, source_item_id: String, observed_at: chrono::DateTime<chrono::Utc>,
+    source_sequence: i64, provider_reported_balance: Decimal, available_balance: Option<Decimal>,
+    currency: String, captured_ledger_balance: Decimal, captured_balance_version: i64,
+    delta: Decimal, status: String, version: i64, approval_journal_id: Option<Uuid>,
+    reason: Option<String>, created_at: chrono::DateTime<chrono::Utc>, updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ReconciliationViewRow {
+    fn into_view(self) -> Result<ReconciliationView, LedgerError> {
+        let currency = CurrencyCode::new(self.currency).map_err(|_| LedgerError::persistence("stored currency invalid"))?;
+        let money = |amount| Money::new(amount, currency.clone(), 8).map_err(|error| LedgerError::persistence(error.to_string()));
+        Ok(ReconciliationView {
+            id: ReconciliationCaseId::new(self.id), account_id: LedgerAccountId::new(self.account_id),
+            observation_id: ObservationId::new(self.observation_id),
+            source: SourceReference::new(self.source_kind, self.source_stream_id, self.source_item_id)?,
+            observed_at: self.observed_at, source_sequence: self.source_sequence,
+            provider_reported: money(self.provider_reported_balance)?,
+            available: self.available_balance.map(money).transpose()?,
+            captured_ledger_balance: money(self.captured_ledger_balance)?,
+            captured_balance_version: BalanceVersion::new(self.captured_balance_version)?, delta: money(self.delta)?,
+            status: ReconciliationStatus::parse(&self.status)?, version: ReconciliationVersion::new(self.version)?,
+            approval_journal_id: self.approval_journal_id.map(JournalEntryId::new), reason: self.reason,
+            created_at: self.created_at, updated_at: self.updated_at,
         })
     }
 }

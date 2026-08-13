@@ -40,5 +40,15 @@ pub(crate) fn router(state: LedgerApiState) -> Router {
             "/accounts/{id}/balance-corrections",
             post(handlers::correct_balance),
         )
+        .route("/reconciliations", get(handlers::list_reconciliations))
+        .route("/reconciliations/{id}", get(handlers::get_reconciliation))
+        .route(
+            "/reconciliations/{id}/approve",
+            post(handlers::approve_reconciliation),
+        )
+        .route(
+            "/reconciliations/{id}/dismiss",
+            post(handlers::dismiss_reconciliation),
+        )
         .with_state(state)
 }

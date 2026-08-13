@@ -5,25 +5,77 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::integration::{IntegrationEvent, outbox::OutboxWriter, postgres::PgOutboxWriter};
-use crate::shared_kernel::{CurrencyCode, IdempotencyKey, UserId};
+use crate::shared_kernel::{CurrencyCode, IdempotencyKey, Money, UserId};
 
 use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
 use super::super::{
     application::ports::{
         AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, CorrectionDetail,
         CorrectionStore, JournalSnapshot, JournalStore, LedgerAccountStore, LedgerOutboxStore,
-        ProjectionStore, StoredReceipt,
+        ProjectionStore, ReconciliationStore, ReconciliationStream, StoredReceipt,
     },
     domain::{
         AccountNature, Actor, AnnotationId, AnnotationVersion, BudgetVisibility, CategoryReference,
         JournalEntry, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags,
-        Posting, PostingId, SystemAccountRole, TransactionAnnotation,
+        BalanceObservation, BalanceVersion, ObservationId, Posting, PostingId, ReconciliationCase,
+        ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion, SourceReference,
+        SystemAccountRole, TransactionAnnotation,
     },
 };
 
 const ACCOUNT_COLUMNS: &str =
     "id, user_id, name, currency, nature, kind, authority, visibility, lifecycle, \
      system_role, version, created_at, updated_at";
+
+#[derive(FromRow)]
+struct ReconciliationRow {
+    id: Uuid, user_id: Uuid, account_id: Uuid, observation_id: Uuid,
+    source_kind: String, source_stream_id: String, source_item_id: String,
+    observed_at: chrono::DateTime<chrono::Utc>, source_sequence: i64,
+    recorded_at: chrono::DateTime<chrono::Utc>, provider_reported_balance: Decimal,
+    available_balance: Option<Decimal>, currency: String, captured_ledger_balance: Decimal,
+    captured_balance_version: i64, delta: Decimal, status: String, version: i64,
+    approval_journal_id: Option<Uuid>, reason: Option<String>,
+    decision_actor_kind: Option<String>, decision_actor_reference: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>, updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ReconciliationRow {
+    fn into_domain(self) -> Result<ReconciliationCase, LedgerError> {
+        let currency = CurrencyCode::new(self.currency)
+            .map_err(|_| LedgerError::persistence("stored reconciliation currency is invalid"))?;
+        let source = SourceReference::new(self.source_kind, self.source_stream_id, self.source_item_id)?;
+        let observation = BalanceObservation::new(
+            ObservationId::new(self.observation_id), source,
+            Money::new(self.provider_reported_balance, currency.clone(), 8)
+                .map_err(|error| LedgerError::persistence(error.to_string()))?,
+            self.available_balance.map(|amount| Money::new(amount, currency.clone(), 8))
+                .transpose().map_err(|error| LedgerError::persistence(error.to_string()))?,
+            self.observed_at, self.source_sequence, self.recorded_at,
+        )?;
+        let actor = match self.decision_actor_kind.as_deref() {
+            Some("user") => self.decision_actor_reference.as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok()).map(UserId::new).map(Actor::User),
+            Some("system") => Some(Actor::System),
+            Some("external") => Some(Actor::External {
+                source_kind: observation.source().source_kind().to_owned(),
+                source_reference: self.decision_actor_reference.unwrap_or_default(),
+            }),
+            _ => None,
+        };
+        ReconciliationCase::rehydrate(
+            ReconciliationCaseId::new(self.id), UserId::new(self.user_id),
+            LedgerAccountId::new(self.account_id), observation,
+            Money::new(self.captured_ledger_balance, currency.clone(), 8)
+                .map_err(|error| LedgerError::persistence(error.to_string()))?,
+            BalanceVersion::new(self.captured_balance_version)?,
+            Money::new(self.delta, currency, 8).map_err(|error| LedgerError::persistence(error.to_string()))?,
+            ReconciliationStatus::parse(&self.status)?, ReconciliationVersion::new(self.version)?,
+            self.approval_journal_id.map(JournalEntryId::new), actor, self.reason,
+            self.created_at, self.updated_at,
+        )
+    }
+}
 
 impl LedgerAccountStore for PgLedgerTransaction<'_> {
     async fn find_account(
@@ -433,6 +485,114 @@ impl ProjectionStore for PgLedgerTransaction<'_> {
             .fetch_optional(&mut *self.transaction)
             .await
             .map_err(LedgerError::database)
+    }
+}
+
+const RECONCILIATION_COLUMNS: &str =
+    "id, user_id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
+     observed_at, source_sequence, recorded_at, provider_reported_balance, available_balance, \
+     currency, captured_ledger_balance, captured_balance_version, delta, status, version, \
+     approval_journal_id, reason, decision_actor_kind, decision_actor_reference, created_at, updated_at";
+
+impl ReconciliationStore for PgLedgerTransaction<'_> {
+    async fn lock_reconciliation_stream(
+        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
+    ) -> Result<Option<ReconciliationStream>, LedgerError> {
+        let identity = format!("{}:{}:{}:{}", user_id, account_id, source.source_kind(), source.stream_id());
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(identity).execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        #[derive(FromRow)]
+        struct Row { latest_observed_at: chrono::DateTime<chrono::Utc>, latest_source_sequence: i64, latest_observation_id: Uuid, active_case_id: Option<Uuid> }
+        sqlx::query_as::<_, Row>(
+            "SELECT latest_observed_at, latest_source_sequence, latest_observation_id, active_case_id \
+             FROM ledger.reconciliation_streams WHERE user_id = $1 AND account_id = $2 \
+             AND source_kind = $3 AND source_stream_id = $4 FOR UPDATE",
+        ).bind(user_id.into_uuid()).bind(account_id.into_uuid()).bind(source.source_kind())
+         .bind(source.stream_id()).fetch_optional(&mut *self.transaction).await
+         .map_err(LedgerError::database).map(|row| row.map(|row| ReconciliationStream {
+             latest_observed_at: row.latest_observed_at, latest_source_sequence: row.latest_source_sequence,
+             latest_observation_id: ObservationId::new(row.latest_observation_id),
+             active_case_id: row.active_case_id.map(ReconciliationCaseId::new),
+         }))
+    }
+
+    async fn find_reconciliation_by_observation(
+        &mut self, user_id: UserId, observation_id: ObservationId,
+    ) -> Result<Option<ReconciliationCase>, LedgerError> {
+        sqlx::query_as::<_, ReconciliationRow>(&format!(
+            "SELECT {RECONCILIATION_COLUMNS} FROM ledger.reconciliation_cases \
+             WHERE user_id = $1 AND observation_id = $2"
+        )).bind(user_id.into_uuid()).bind(observation_id.into_uuid())
+          .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?
+          .map(ReconciliationRow::into_domain).transpose()
+    }
+
+    async fn find_reconciliation_case(
+        &mut self, user_id: UserId, case_id: ReconciliationCaseId, lock: bool,
+    ) -> Result<Option<ReconciliationCase>, LedgerError> {
+        let suffix = if lock { " FOR UPDATE" } else { "" };
+        sqlx::query_as::<_, ReconciliationRow>(&format!(
+            "SELECT {RECONCILIATION_COLUMNS} FROM ledger.reconciliation_cases \
+             WHERE user_id = $1 AND id = $2{suffix}"
+        )).bind(user_id.into_uuid()).bind(case_id.into_uuid())
+          .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?
+          .map(ReconciliationRow::into_domain).transpose()
+    }
+
+    async fn insert_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError> {
+        let observation = case.observation();
+        let (actor_kind, actor_reference) = case.decision_actor().map(actor_columns).unwrap_or(("system", None));
+        sqlx::query(
+            "INSERT INTO ledger.reconciliation_cases \
+             (id, user_id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
+              observed_at, source_sequence, recorded_at, provider_reported_balance, available_balance, \
+              currency, captured_ledger_balance, captured_balance_version, delta, status, version, \
+              approval_journal_id, reason, decision_actor_kind, decision_actor_reference, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)",
+        ).bind(case.id().into_uuid()).bind(case.user_id().into_uuid()).bind(case.account_id().into_uuid())
+         .bind(observation.id().into_uuid()).bind(observation.source().source_kind())
+         .bind(observation.source().stream_id()).bind(observation.source().item_id())
+         .bind(observation.observed_at()).bind(observation.source_sequence()).bind(observation.recorded_at())
+         .bind(observation.provider_reported().amount()).bind(observation.available().map(Money::amount))
+         .bind(observation.provider_reported().currency().as_str()).bind(case.captured_ledger_balance().amount())
+         .bind(case.captured_balance_version().get()).bind(case.delta().amount()).bind(case.status().as_str())
+         .bind(case.version().get()).bind(case.approval_journal_id().map(JournalEntryId::into_uuid))
+         .bind(case.reason()).bind(actor_kind).bind(actor_reference).bind(case.created_at()).bind(case.updated_at())
+         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        Ok(())
+    }
+
+    async fn save_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError> {
+        let (actor_kind, actor_reference) = case.decision_actor().map(actor_columns).unwrap_or(("system", None));
+        let updated = sqlx::query(
+            "UPDATE ledger.reconciliation_cases SET status=$3, version=$4, approval_journal_id=$5, \
+             reason=$6, decision_actor_kind=$7, decision_actor_reference=$8, updated_at=$9 \
+             WHERE id=$1 AND user_id=$2 AND version=$10",
+        ).bind(case.id().into_uuid()).bind(case.user_id().into_uuid()).bind(case.status().as_str())
+         .bind(case.version().get()).bind(case.approval_journal_id().map(JournalEntryId::into_uuid))
+         .bind(case.reason()).bind(actor_kind).bind(actor_reference).bind(case.updated_at())
+         .bind(case.version().get() - 1).execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        if updated.rows_affected() != 1 { return Err(LedgerError::version_conflict()) }
+        Ok(())
+    }
+
+    async fn save_reconciliation_stream(
+        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
+        stream: &ReconciliationStream, now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO ledger.reconciliation_streams \
+             (user_id, account_id, source_kind, source_stream_id, latest_observed_at, \
+              latest_source_sequence, latest_observation_id, active_case_id, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
+             ON CONFLICT (user_id, account_id, source_kind, source_stream_id) DO UPDATE SET \
+              latest_observed_at=EXCLUDED.latest_observed_at, latest_source_sequence=EXCLUDED.latest_source_sequence, \
+              latest_observation_id=EXCLUDED.latest_observation_id, active_case_id=EXCLUDED.active_case_id, updated_at=EXCLUDED.updated_at",
+        ).bind(user_id.into_uuid()).bind(account_id.into_uuid()).bind(source.source_kind()).bind(source.stream_id())
+         .bind(stream.latest_observed_at).bind(stream.latest_source_sequence)
+         .bind(stream.latest_observation_id.into_uuid()).bind(stream.active_case_id.map(ReconciliationCaseId::into_uuid))
+         .bind(now).execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        Ok(())
     }
 }
 

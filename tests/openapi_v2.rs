@@ -38,6 +38,10 @@ fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
         "/transactions/{id}/replacements",
         "/transfers",
         "/accounts/{id}/balance-corrections",
+        "/reconciliations",
+        "/reconciliations/{id}",
+        "/reconciliations/{id}/approve",
+        "/reconciliations/{id}/dismiss",
     ]);
     assert_eq!(actual, expected);
     assert!(actual.iter().all(|path| !path.starts_with("/v2")));
@@ -81,7 +85,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 25);
+    assert_eq!(operation_count, 29);
 }
 
 #[test]
@@ -118,6 +122,8 @@ fn optimistic_concurrency_fields_are_required() {
         "RenameAccount",
         "ExpectedAccountVersion",
         "AnnotationUpdate",
+        "ApproveReconciliation",
+        "DismissReconciliation",
     ] {
         let required = document["components"]["schemas"][schema]["required"]
             .as_array()

@@ -665,23 +665,23 @@ git commit -m "feat(api): build isolated Finance V2 Ledger endpoints"
 - Modify: `tests/ledger_persistence.rs`
 - Modify: `tests/ledger_api_v2.rs`
 
-- [ ] **Step 1 — RED: write observation and approval tests**
+- [x] **Step 1 — RED: write observation and approval tests**
 
 Exercise the provider-neutral `ObserveProviderBalance` public command with a typed source-stream reference and total observation order `(observed_at, source_sequence, observation_id)`. A zero-delta observation must create a terminal `matched` reconciliation case plus audit/outbox facts and no journal entry. A non-zero observation creates `pending` with captured account balance/projection version. Approve must require body `expected_version` for the case and the captured balance version, then atomically post the visible balance-correction entry and mark the case approved.
 
 Post an intervening transaction between observe and approve; approval must return typed `StaleObservedBalance`, mark/recompute only through an explicit refreshed observation, and make no journal/projection change. Cover duplicate observation idempotency, a newer observation superseding/refreshing a pending case with a new case version/audit fact, an older observation delivered after the newer one, and concurrent older/newer delivery before approval. The older fact remains linkable/audited but returns `IgnoredOlderObservation` and cannot regress or become the approvable active case. Approval of a superseded case is rejected. Also cover archived-account corrective approval, cross-user invisibility, dismiss, and retry of already-approved cases.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_persistence reconciliation`
 
 Expected: FAIL because reconciliation commands do not exist.
 
-- [ ] **Step 3 — GREEN: implement observe/approve/dismiss in one UoW**
+- [x] **Step 3 — GREEN: implement observe/approve/dismiss in one UoW**
 
 Observation never mutates a balance. Lock a reconciliation-stream row keyed by `(user, account, source_kind, source_stream_id)` and advance its latest tuple only when the incoming `(observed_at, source_sequence, observation_id)` is greater. Persist older deliveries as ignored/link history without changing the active case; mark a prior pending case `superseded` when a newer fact replaces it. Approval re-locks both stream and projection, proves the case is still latest/active, and compares its captured balance version before constructing the same correction journal path used by manual corrections. Persist before/target/delta/reason/actor and source observation reference. Emit case-observed/matched/superseded/ignored/approved/dismissed events transactionally.
 
-- [ ] **Step 4 — Add and test the isolated API**
+- [x] **Step 4 — Add and test the isolated API**
 
 Add:
 
@@ -701,11 +701,11 @@ cargo test --test ledger_api_v2 reconciliation
 
 Expected: PASS, including stale-balance-version error mapping and zero-delta visibility.
 
-- [ ] **Step 5 — REFACTOR: keep provider observations outside Ledger storage**
+- [x] **Step 5 — REFACTOR: keep provider observations outside Ledger storage**
 
 Ledger stores only the typed source reference plus normalized reported/available `Money` needed for the reconciliation decision. Credit limits, statement-running balance, raw/provider-specific fields, and payload provenance remain in Banking. There is no provider token, resource metadata, or Banking foreign key in Ledger.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/reconciliation.rs src/contexts/ledger/application/mod.rs src/contexts/ledger/public.rs src/contexts/ledger/api static/openapi.v2.json tests/ledger_persistence.rs tests/ledger_api_v2.rs
