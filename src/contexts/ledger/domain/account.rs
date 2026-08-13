@@ -238,6 +238,15 @@ pub enum SystemAccountRole {
     OpeningBalanceEquity,
     BalanceAdjustmentEquity,
     FxClearing,
+    ExternalReceivable,
+    ExternalPayable,
+    InterestReceivable,
+    InterestPayable,
+    FeeReceivable,
+    FeePayable,
+    PortfolioCashClearing,
+    BadDebtExpense,
+    DebtForgivenessIncome,
 }
 
 impl SystemAccountRole {
@@ -245,9 +254,13 @@ impl SystemAccountRole {
         match self {
             Self::UncategorizedIncome => AccountNature::Income,
             Self::UncategorizedExpense => AccountNature::Expense,
-            Self::OpeningBalanceEquity | Self::BalanceAdjustmentEquity | Self::FxClearing => {
+            Self::OpeningBalanceEquity | Self::BalanceAdjustmentEquity | Self::FxClearing | Self::PortfolioCashClearing => {
                 AccountNature::Equity
             }
+            Self::ExternalReceivable | Self::InterestReceivable | Self::FeeReceivable => AccountNature::Asset,
+            Self::ExternalPayable | Self::InterestPayable | Self::FeePayable => AccountNature::Liability,
+            Self::BadDebtExpense => AccountNature::Expense,
+            Self::DebtForgivenessIncome => AccountNature::Income,
         }
     }
 
@@ -258,6 +271,15 @@ impl SystemAccountRole {
             Self::OpeningBalanceEquity => "opening_balance_equity",
             Self::BalanceAdjustmentEquity => "balance_adjustment_equity",
             Self::FxClearing => "fx_clearing",
+            Self::ExternalReceivable => "external_receivable",
+            Self::ExternalPayable => "external_payable",
+            Self::InterestReceivable => "interest_receivable",
+            Self::InterestPayable => "interest_payable",
+            Self::FeeReceivable => "fee_receivable",
+            Self::FeePayable => "fee_payable",
+            Self::PortfolioCashClearing => "portfolio_cash_clearing",
+            Self::BadDebtExpense => "bad_debt_expense",
+            Self::DebtForgivenessIncome => "debt_forgiveness_income",
         }
     }
 
@@ -268,6 +290,15 @@ impl SystemAccountRole {
             "opening_balance_equity" => Ok(Self::OpeningBalanceEquity),
             "balance_adjustment_equity" => Ok(Self::BalanceAdjustmentEquity),
             "fx_clearing" => Ok(Self::FxClearing),
+            "external_receivable" => Ok(Self::ExternalReceivable),
+            "external_payable" => Ok(Self::ExternalPayable),
+            "interest_receivable" => Ok(Self::InterestReceivable),
+            "interest_payable" => Ok(Self::InterestPayable),
+            "fee_receivable" => Ok(Self::FeeReceivable),
+            "fee_payable" => Ok(Self::FeePayable),
+            "portfolio_cash_clearing" => Ok(Self::PortfolioCashClearing),
+            "bad_debt_expense" => Ok(Self::BadDebtExpense),
+            "debt_forgiveness_income" => Ok(Self::DebtForgivenessIncome),
             _ => Err(LedgerError::persistence("stored system account role is invalid")),
         }
     }

@@ -165,6 +165,25 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         Ok(())
     }
 
+    async fn insert_system_account(&mut self, account: &LedgerAccount, subject_reference: &str) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO ledger.accounts \
+             (id, user_id, name, currency, nature, kind, authority, visibility, lifecycle, \
+              system_role, system_subject_reference, version, created_at, updated_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+        ).bind(account.id().into_uuid()).bind(account.user_id().into_uuid()).bind(account.name())
+         .bind(account.currency().as_str()).bind(account.nature().as_str()).bind(account.kind().as_str())
+         .bind(account.authority().as_str()).bind(account.visibility().as_str()).bind(account.lifecycle().as_str())
+         .bind(account.system_role().map(SystemAccountRole::as_str)).bind(subject_reference)
+         .bind(account.version().get()).bind(account.created_at()).bind(account.updated_at())
+         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        sqlx::query("INSERT INTO ledger.account_balances (account_id,user_id,currency,signed_balance,version,as_of) VALUES ($1,$2,$3,0,1,$4)")
+            .bind(account.id().into_uuid()).bind(account.user_id().into_uuid())
+            .bind(account.currency().as_str()).bind(account.created_at())
+            .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        Ok(())
+    }
+
     async fn save_account(&mut self, account: &LedgerAccount) -> Result<(), LedgerError> {
         let previous_version = account
             .version()

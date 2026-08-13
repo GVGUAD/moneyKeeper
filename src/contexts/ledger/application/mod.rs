@@ -9,3 +9,4 @@ pub(crate) mod transactions;
 pub(crate) mod transfers;
 pub(crate) mod queries;
 pub(crate) mod reconciliation;
+pub(crate) mod internal_commands;
