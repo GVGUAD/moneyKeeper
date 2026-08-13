@@ -1,4 +1,10 @@
-//! Public Ledger contracts are introduced in Phase 2.
+//! Stable Ledger contracts exposed to HTTP adapters and collaborating contexts.
 
-/// Identifies the Ledger bounded context before its contracts are introduced.
+pub use super::domain::{
+    AccountAuthority, AccountKind, AccountLifecycle, AccountNature, AccountVersion,
+    AccountVisibility, AnnotationId, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError,
+    ObservationId, PostingId, PostingPurpose, ReconciliationCaseId, SystemAccountRole,
+};
+
+/// Stable bounded-context name used in integration envelopes.
 pub const CONTEXT_NAME: &str = "ledger";

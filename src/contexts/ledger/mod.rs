@@ -1,3 +1,5 @@
-//! Ledger bounded-context boundary; behavior arrives in Phase 2.
+//! Immutable double-entry Ledger bounded context.
+
+mod domain;
 
 pub mod public;

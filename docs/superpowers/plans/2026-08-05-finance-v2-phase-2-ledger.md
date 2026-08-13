@@ -97,7 +97,7 @@ Legacy source files and runtime wiring remain untouched. No Phase 2 commit may r
 - Modify: `src/contexts/mod.rs`
 - Create: `tests/ledger_domain.rs`
 
-- [ ] **Step 1 — RED: write account aggregate tests**
+- [x] **Step 1 — RED: write account aggregate tests**
 
 Cover:
 
@@ -118,29 +118,29 @@ currency change rejected even before first posting
 
 Account construction accepts a `Clock`; it never calls `Utc::now()` internally.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_domain account`
 
 Expected: FAIL because the Ledger domain does not exist.
 
-- [ ] **Step 3 — GREEN: implement `LedgerAccount` and policy types**
+- [x] **Step 3 — GREEN: implement `LedgerAccount` and policy types**
 
 Model `AccountNature`, `AccountKind`, `AccountAuthority`, `AccountVisibility`, `AccountLifecycle`, and `AccountVersion` as enums/newtypes rather than arbitrary strings. Keep provider product metadata out of this aggregate.
 
 System accounts include uncategorized income, uncategorized expense, balance-adjustment equity, opening-balance equity, and per-currency FX clearing. They are created lazily by an internal application service in the same UoW that needs them.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run: `cargo test --test ledger_domain account`
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: constrain the public constructors**
+- [x] **Step 5 — REFACTOR: constrain the public constructors**
 
 Make invalid authority/nature/kind combinations unrepresentable through public APIs. There must be no `set_balance`, `adjust_balance`, `delete`, or provider name in `domain/account.rs`.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger src/contexts/mod.rs tests/ledger_domain.rs
