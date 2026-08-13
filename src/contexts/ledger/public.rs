@@ -266,3 +266,53 @@ pub struct AnnotationResult {
     pub version: AnnotationVersion,
     pub replayed: bool,
 }
+
+/// Stable activity pagination cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityCursor {
+    pub occurred_at: DateTime<Utc>,
+    pub ledger_sequence: i64,
+}
+
+/// Read-only posting detail.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostingView {
+    pub id: PostingId,
+    pub account_id: LedgerAccountId,
+    pub position: u16,
+    pub currency: CurrencyCode,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub signed_amount: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub display_effect: Decimal,
+}
+
+/// Auditable journal-entry read model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalView {
+    pub id: JournalEntryId,
+    pub user_id: UserId,
+    pub ledger_sequence: i64,
+    pub source: JournalSource,
+    pub description: String,
+    pub occurred_at: DateTime<Utc>,
+    pub recorded_at: DateTime<Utc>,
+    pub correlation_id: CorrelationId,
+    pub relations: JournalRelations,
+    pub postings: Vec<PostingView>,
+    pub annotation_version: Option<AnnotationVersion>,
+}
+
+/// One exact difference between a balance projection and immutable postings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionMismatch {
+    pub account_id: LedgerAccountId,
+    pub user_id: UserId,
+    pub currency: CurrencyCode,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub projected: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub posting_sum: Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub delta: Decimal,
+}

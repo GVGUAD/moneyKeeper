@@ -7,3 +7,4 @@ pub(crate) mod annotations;
 pub(crate) mod ports;
 pub(crate) mod transactions;
 pub(crate) mod transfers;
+pub(crate) mod queries;

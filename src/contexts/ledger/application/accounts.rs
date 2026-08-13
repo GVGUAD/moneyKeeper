@@ -23,7 +23,7 @@ use super::super::{
         Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount,
         LedgerAccountId, LedgerError, Posting, PostingId, PostingPurpose, SystemAccountRole,
     },
-    infrastructure::PgLedgerUnitOfWork,
+    infrastructure::{PgLedgerProjection, PgLedgerQueries, PgLedgerUnitOfWork},
     public::{
         AccountResult, AccountView, ArchiveAccount, OpenAccount, RenameAccount, RestoreAccount,
     },
@@ -35,23 +35,26 @@ pub struct LedgerFacade {
     pub(super) uow: PgLedgerUnitOfWork,
     pub(super) clock: Arc<dyn Clock>,
     pub(super) categories: Option<CategoryCatalogFacade>,
+    pub(super) queries: PgLedgerQueries,
+    pub(super) projection: PgLedgerProjection,
 }
 
 impl LedgerFacade {
-    pub(crate) fn new(uow: PgLedgerUnitOfWork) -> Self {
-        Self { uow, clock: Arc::new(SystemClock), categories: None }
+    pub(crate) fn new(
+        uow: PgLedgerUnitOfWork,
+        queries: PgLedgerQueries,
+        projection: PgLedgerProjection,
+    ) -> Self {
+        Self { uow, clock: Arc::new(SystemClock), categories: None, queries, projection }
     }
 
     pub(crate) fn new_with_categories(
         uow: PgLedgerUnitOfWork,
+        queries: PgLedgerQueries,
+        projection: PgLedgerProjection,
         categories: CategoryCatalogFacade,
     ) -> Self {
-        Self { uow, clock: Arc::new(SystemClock), categories: Some(categories) }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_clock(uow: PgLedgerUnitOfWork, clock: Arc<dyn Clock>) -> Self {
-        Self { uow, clock, categories: None }
+        Self { uow, clock: Arc::new(SystemClock), categories: Some(categories), queries, projection }
     }
 
     /// Opens an account and records any non-zero opening balance as a journal.
@@ -435,7 +438,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn integration_event(
+pub(super) fn integration_event(
     event_id: EventId,
     user_id: crate::shared_kernel::UserId,
     aggregate_id: String,
