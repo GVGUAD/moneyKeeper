@@ -219,6 +219,7 @@ pub struct JournalEntry {
     causation_id: Option<CausationId>,
     idempotency_key: IdempotencyKey,
     relations: JournalRelations,
+    fx_rate: Option<Decimal>,
     postings: Vec<Posting>,
 }
 
@@ -279,8 +280,18 @@ impl JournalEntry {
             causation_id,
             idempotency_key,
             relations,
+            fx_rate: None,
             postings,
         })
+    }
+
+    /// Consumes a newly built journal and records its supplied implied FX rate.
+    pub fn with_fx_rate(mut self, implied_rate: Decimal) -> Result<Self, LedgerError> {
+        if implied_rate <= Decimal::ZERO {
+            return Err(LedgerError::invalid_money("implied FX rate must be positive"));
+        }
+        self.fx_rate = Some(implied_rate);
+        Ok(self)
     }
 
     /// Builds the exact negating postings for a reversal command.
@@ -314,6 +325,7 @@ impl JournalEntry {
     pub const fn causation_id(&self) -> Option<CausationId> { self.causation_id }
     pub fn idempotency_key(&self) -> &IdempotencyKey { &self.idempotency_key }
     pub const fn relations(&self) -> JournalRelations { self.relations }
+    pub const fn fx_rate(&self) -> Option<Decimal> { self.fx_rate }
     pub fn postings(&self) -> &[Posting] { &self.postings }
 }
 

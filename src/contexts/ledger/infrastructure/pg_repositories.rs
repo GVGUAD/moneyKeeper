@@ -185,8 +185,8 @@ impl JournalStore for PgLedgerTransaction<'_> {
             "INSERT INTO ledger.journal_entries \
              (id, user_id, command_name, source, purpose, description, actor_kind, actor_reference, \
               occurred_at, recorded_at, correlation_id, causation_id, idempotency_key, \
-              reverses_transaction_id, corrects_transaction_id, replaces_transaction_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+              reverses_transaction_id, corrects_transaction_id, replaces_transaction_id, fx_rate) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
              RETURNING ledger_sequence",
         )
         .bind(journal.id().into_uuid())
@@ -205,6 +205,7 @@ impl JournalStore for PgLedgerTransaction<'_> {
         .bind(journal.relations().reverses().map(|id| id.into_uuid()))
         .bind(journal.relations().corrects().map(|id| id.into_uuid()))
         .bind(journal.relations().replaces().map(|id| id.into_uuid()))
+        .bind(journal.fx_rate())
         .fetch_one(&mut *self.transaction)
         .await
         .map_err(LedgerError::database)?;
