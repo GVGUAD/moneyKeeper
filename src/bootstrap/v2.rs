@@ -6,6 +6,7 @@ use axum::Router;
 use jsonwebtoken::jwk::JwkSet;
 
 use crate::contexts::classification::public::CategoryCatalogFacade;
+use crate::contexts::ledger::public::LedgerFacade;
 use crate::contexts::preferences::public::PreferencesFacade;
 use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 use crate::infrastructure::v2_db::VerifiedV2Pool;
@@ -17,14 +18,17 @@ pub struct SupportingContexts {
     pub currencies: CurrencyCatalogFacade,
     pub categories: CategoryCatalogFacade,
     pub preferences: PreferencesFacade,
+    pub ledger: LedgerFacade,
 }
 
 /// Builds all Phase 1 supporting capabilities from a verified database.
 pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
+    let categories = crate::contexts::classification::build(pool);
     SupportingContexts {
         currencies: crate::contexts::reference_data::build(pool),
-        categories: crate::contexts::classification::build(pool),
+        categories: categories.clone(),
         preferences: crate::contexts::preferences::build(pool),
+        ledger: crate::contexts::ledger::build_with_categories(pool, categories),
     }
 }
 

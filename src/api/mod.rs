@@ -6,3 +6,4 @@ pub mod middleware;
 pub mod routes;
 pub mod state;
 pub mod v2;
+pub(crate) mod v2_state;

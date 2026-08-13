@@ -67,6 +67,20 @@ impl PgLedgerQueries {
         Ok(views)
     }
 
+    pub(crate) async fn list_journals(&self, user_id: UserId, after: Option<ActivityCursor>, limit: u32) -> Result<Vec<JournalView>, LedgerError> {
+        if limit == 0 || limit > 200 { return Err(LedgerError::invalid_state("activity limit must be 1 to 200")) }
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM ledger.journal_entries WHERE user_id = $1 \
+             AND ($2::timestamptz IS NULL OR (occurred_at, ledger_sequence) < ($2, $3)) \
+             ORDER BY occurred_at DESC, ledger_sequence DESC LIMIT $4",
+        ).bind(user_id.into_uuid())
+         .bind(after.map(|cursor| cursor.occurred_at)).bind(after.map(|cursor| cursor.ledger_sequence))
+         .bind(i64::from(limit)).fetch_all(&self.pool).await.map_err(LedgerError::database)?;
+        let mut views = Vec::with_capacity(ids.len());
+        for id in ids { views.push(self.get_journal(user_id, JournalEntryId::new(id)).await?); }
+        Ok(views)
+    }
+
     pub(crate) async fn get_journal(&self, user_id: UserId, id: JournalEntryId) -> Result<JournalView, LedgerError> {
         #[derive(FromRow)]
         struct JournalRow {
@@ -149,6 +163,7 @@ impl AccountBalanceRow {
             version: account.version(), signed_balance,
             display_balance: signed_balance * Decimal::from(account.normal_sign()),
             balance_version: self.balance_version, as_of: self.as_of,
+            provider_reported: None, available: None, reconciliation_difference: None,
         })
     }
 }

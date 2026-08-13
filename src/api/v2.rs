@@ -21,6 +21,12 @@ use crate::shared_kernel::UserId;
 /// Composes the parallel supporting-context routes from a verified V2 pool.
 pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
     Router::new()
+        .merge(crate::contexts::ledger::api::routes::router(
+            crate::api::v2_state::LedgerApiState {
+                ledger: contexts.ledger,
+                currencies: contexts.currencies.clone(),
+            },
+        ))
         .merge(crate::contexts::reference_data::api::routes::router(
             contexts.currencies.clone(),
         ))
@@ -59,7 +65,7 @@ async fn authenticate(
     Ok(next.run(request).await)
 }
 
-/// The exact Phase 1 method/path manifest used to validate OpenAPI parity.
+/// The exact isolated Finance V2 method/path manifest used to validate OpenAPI parity.
 pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/currencies"),
     ("GET", "/currencies/{code}"),
@@ -71,6 +77,21 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("POST", "/categories/{id}/restore"),
     ("GET", "/preferences"),
     ("PATCH", "/preferences"),
+    ("POST", "/accounts"),
+    ("GET", "/accounts"),
+    ("GET", "/accounts/{id}"),
+    ("PATCH", "/accounts/{id}"),
+    ("POST", "/accounts/{id}/archive"),
+    ("POST", "/accounts/{id}/restore"),
+    ("GET", "/accounts/{id}/activity"),
+    ("POST", "/transactions"),
+    ("GET", "/transactions"),
+    ("GET", "/transactions/{id}"),
+    ("PATCH", "/transactions/{id}/annotation"),
+    ("POST", "/transactions/{id}/reversals"),
+    ("POST", "/transactions/{id}/replacements"),
+    ("POST", "/transfers"),
+    ("POST", "/accounts/{id}/balance-corrections"),
 ];
 
 /// Authenticated tenant identity extracted from the existing auth boundary.

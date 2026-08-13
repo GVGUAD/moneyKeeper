@@ -375,7 +375,8 @@ fn view(
         authority: account.authority(), visibility: account.visibility(), lifecycle: account.lifecycle(),
         version: account.version(), signed_balance,
         display_balance: signed_balance * Decimal::from(account.normal_sign()),
-        balance_version, as_of,
+        balance_version, as_of, provider_reported: None, available: None,
+        reconciliation_difference: None,
     }
 }
 
