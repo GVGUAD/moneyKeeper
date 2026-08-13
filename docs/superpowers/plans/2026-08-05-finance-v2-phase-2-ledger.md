@@ -286,17 +286,17 @@ git commit -m "feat(db): add strict double-entry Ledger schema"
 - Modify: `src/contexts/ledger/mod.rs`
 - Modify: `tests/ledger_persistence.rs`
 
-- [ ] **Step 1 — RED: test atomic success and rollback**
+- [x] **Step 1 — RED: test atomic success and rollback**
 
 Write integration tests that inject a failure after each stage: journal insert, postings, balance projection, command receipt, audit event, and outbox append. After rollback, assert none of those tables changed. Also prove an account row lock and its repositories use the exact same SQLx transaction.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_persistence unit_of_work`
 
 Expected: FAIL because no Ledger UoW exists.
 
-- [ ] **Step 3 — GREEN: implement one UoW per command**
+- [x] **Step 3 — GREEN: implement one UoW per command**
 
 Expose aggregate-specific ports, not a generic CRUD repository:
 
@@ -310,17 +310,17 @@ pub trait LedgerUnitOfWork {
 
 The concrete `PgLedgerUnitOfWork` owns `sqlx::Transaction<'_, Postgres>`. Stores created from it borrow that transaction. There is no pool-backed `adjust_balance`, `set_balance`, standalone posting insert, or journal delete.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run: `cargo test --test ledger_persistence unit_of_work`
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: separate writes from queries**
+- [x] **Step 5 — REFACTOR: separate writes from queries**
 
 Do not add list/report methods to aggregate stores. Task 9 creates a pool-backed query adapter that is incapable of mutation.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application src/contexts/ledger/infrastructure src/contexts/ledger/mod.rs tests/ledger_persistence.rs
@@ -337,31 +337,31 @@ git commit -m "feat(ledger): add transactional aggregate unit of work"
 - Modify: `src/contexts/ledger/application/mod.rs`
 - Modify: `tests/ledger_persistence.rs`
 
-- [ ] **Step 1 — RED: write command tests**
+- [x] **Step 1 — RED: write command tests**
 
 Cover open at zero; Asset and Liability accounts opened with positive and negative explicit display balances; same-key replay; same-key/different-payload conflict; cross-user invisibility; stale rename; archive/restore with optimistic version at zero and non-zero balance; retained activity after archive; and ordinary-post rejection while archived. An opening balance must create an immutable journal against system opening-balance equity; it must not seed the projection directly. In particular, a positive asset opening debits the asset, while a positive amount owed credits the liability, and both normalize to the requested display balance.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_persistence account_command`
 
 Expected: FAIL because account command handlers do not exist.
 
-- [ ] **Step 3 — GREEN: implement account command handlers**
+- [x] **Step 3 — GREEN: implement account command handlers**
 
 For non-zero opening balance, translate the requested display balance through account nature, create/lock the system equity account in the same currency, post the two legs, update projection, write an account-opened audit event and journal event, save the command receipt, then commit. Normalize no business values; fingerprint the canonical command payload to detect mismatched replay.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run: `cargo test --test ledger_persistence account_command`
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: publish a provider-neutral facade**
+- [x] **Step 5 — REFACTOR: publish a provider-neutral facade**
 
 `ledger/public.rs` exposes commands such as `OpenAccount`, `RenameAccount`, and `ArchiveAccount`, plus result DTOs. Provider-owned account creation is an authenticated internal capability, not a public HTTP DTO and not a Monobank-specific method.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/accounts.rs src/contexts/ledger/application/mod.rs src/contexts/ledger/public.rs tests/ledger_persistence.rs
