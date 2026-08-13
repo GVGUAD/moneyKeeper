@@ -118,6 +118,15 @@ impl AccountAuthority {
             Self::System => "system",
         }
     }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "manual" => Ok(Self::Manual),
+            "provider_observed" => Ok(Self::ProviderObserved),
+            "system" => Ok(Self::System),
+            _ => Err(LedgerError::persistence("stored account authority is invalid")),
+        }
+    }
 }
 
 /// Whether an account participates in normal user-facing lists.
@@ -135,6 +144,14 @@ impl AccountVisibility {
             Self::Hidden => "hidden",
         }
     }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "user_visible" => Ok(Self::UserVisible),
+            "hidden" => Ok(Self::Hidden),
+            _ => Err(LedgerError::persistence("stored account visibility is invalid")),
+        }
+    }
 }
 
 /// Account lifecycle. Archive preserves every accounting fact.
@@ -150,6 +167,14 @@ impl AccountLifecycle {
         match self {
             Self::Active => "active",
             Self::Archived => "archived",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "active" => Ok(Self::Active),
+            "archived" => Ok(Self::Archived),
+            _ => Err(LedgerError::persistence("stored account lifecycle is invalid")),
         }
     }
 }
@@ -193,6 +218,17 @@ pub enum PostingPurpose {
     ApprovedReconciliation,
 }
 
+impl PostingPurpose {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ordinary => "ordinary",
+            Self::Correction => "correction",
+            Self::Reversal => "reversal",
+            Self::ApprovedReconciliation => "approved_reconciliation",
+        }
+    }
+}
+
 /// Closed roles for system-controlled accounts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -222,6 +258,17 @@ impl SystemAccountRole {
             Self::OpeningBalanceEquity => "opening_balance_equity",
             Self::BalanceAdjustmentEquity => "balance_adjustment_equity",
             Self::FxClearing => "fx_clearing",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "uncategorized_income" => Ok(Self::UncategorizedIncome),
+            "uncategorized_expense" => Ok(Self::UncategorizedExpense),
+            "opening_balance_equity" => Ok(Self::OpeningBalanceEquity),
+            "balance_adjustment_equity" => Ok(Self::BalanceAdjustmentEquity),
+            "fx_clearing" => Ok(Self::FxClearing),
+            _ => Err(LedgerError::persistence("stored system account role is invalid")),
         }
     }
 }
@@ -254,7 +301,7 @@ impl LedgerAccount {
         currency: CurrencyCode,
         kind: AccountKind,
         nature: AccountNature,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Result<Self, LedgerError> {
         Self::open_user(
             id,
@@ -276,7 +323,7 @@ impl LedgerAccount {
         currency: CurrencyCode,
         kind: AccountKind,
         nature: AccountNature,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Result<Self, LedgerError> {
         Self::open_user(
             id,
@@ -299,7 +346,7 @@ impl LedgerAccount {
         kind: AccountKind,
         nature: AccountNature,
         authority: AccountAuthority,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Result<Self, LedgerError> {
         if !valid_user_kind(kind, nature) || authority == AccountAuthority::System {
             return Err(LedgerError::invalid_account_kind());
@@ -328,7 +375,7 @@ impl LedgerAccount {
         user_id: UserId,
         currency: CurrencyCode,
         role: SystemAccountRole,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Self {
         let now = clock.now();
         Self {
@@ -348,12 +395,45 @@ impl LedgerAccount {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rehydrate(
+        id: LedgerAccountId,
+        user_id: UserId,
+        name: String,
+        currency: CurrencyCode,
+        nature: AccountNature,
+        kind: AccountKind,
+        authority: AccountAuthority,
+        visibility: AccountVisibility,
+        lifecycle: AccountLifecycle,
+        system_role: Option<SystemAccountRole>,
+        version: AccountVersion,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> Result<Self, LedgerError> {
+        Ok(Self {
+            id,
+            user_id,
+            name: validate_name(name)?,
+            currency,
+            nature,
+            kind,
+            authority,
+            visibility,
+            lifecycle,
+            system_role,
+            version,
+            created_at,
+            updated_at,
+        })
+    }
+
     /// Renames a user-managed account with optimistic concurrency.
     pub fn rename(
         &mut self,
         name: impl Into<String>,
         expected_version: AccountVersion,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Result<bool, LedgerError> {
         self.require_user_managed()?;
         self.require_version(expected_version)?;
@@ -370,7 +450,7 @@ impl LedgerAccount {
     pub fn archive(
         &mut self,
         expected_version: AccountVersion,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Result<bool, LedgerError> {
         self.require_user_managed()?;
         self.require_version(expected_version)?;
@@ -386,7 +466,7 @@ impl LedgerAccount {
     pub fn restore(
         &mut self,
         expected_version: AccountVersion,
-        clock: &impl Clock,
+        clock: &(impl Clock + ?Sized),
     ) -> Result<bool, LedgerError> {
         self.require_user_managed()?;
         self.require_version(expected_version)?;
