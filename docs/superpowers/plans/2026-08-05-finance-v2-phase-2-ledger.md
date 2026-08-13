@@ -423,13 +423,13 @@ git commit -m "feat(ledger): post manual income and expense journals"
 - Modify: `tests/ledger_persistence.rs`
 - Create: `tests/ledger_concurrency.rs`
 
-- [ ] **Step 1 — RED: write transfer and deadlock tests**
+- [x] **Step 1 — RED: write transfer and deadlock tests**
 
 Cover same-account rejection, cross-user rejection, Asset→Asset transfer, Asset→Liability card payment, Liability→Asset cash advance, Liability→Liability balance transfer, source-currency fee, target-currency fee, cross-currency four-leg FX transfer, explicit source/target amounts, recorded implied rate, idempotent replay, and full rollback if any leg fails. Assert both raw posting signs and normalized display-balance effects for every account-nature pairing.
 
 Start simultaneous A→B and B→A transfers. The test must have a timeout and prove they complete without deadlock and without projection drift.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run:
 
@@ -440,11 +440,11 @@ cargo test --test ledger_concurrency opposing_transfers
 
 Expected: FAIL because transfer orchestration is absent.
 
-- [ ] **Step 3 — GREEN: build one journal and lock deterministically**
+- [x] **Step 3 — GREEN: build one journal and lock deterministically**
 
 Lock all affected account/projection rows in sorted `LedgerAccountId` order. For FX, use a system FX-clearing account in each currency so each currency sums to zero. Record both amounts and the implied rate as immutable transaction facts. Post fees to a system expense account in the fee currency.
 
-- [ ] **Step 4 — Run focused tests repeatedly**
+- [x] **Step 4 — Run focused tests repeatedly**
 
 Run:
 
@@ -455,11 +455,11 @@ for i in 1 2 3 4 5; do cargo test --test ledger_concurrency opposing_transfers |
 
 Expected: PASS five times without timeout, deadlock, or drift.
 
-- [ ] **Step 5 — REFACTOR: keep FX pricing out of Ledger**
+- [x] **Step 5 — REFACTOR: keep FX pricing out of Ledger**
 
 Ledger records the amounts/rate supplied and validates arithmetic; it does not fetch NBU/provider rates. Pricing policy belongs to a caller or future FX context.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/transfers.rs src/contexts/ledger/application/mod.rs src/contexts/ledger/public.rs tests/ledger_domain.rs tests/ledger_persistence.rs tests/ledger_concurrency.rs

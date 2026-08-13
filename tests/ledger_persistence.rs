@@ -4,7 +4,7 @@ use chrono::{TimeZone, Utc};
 use moneykeeper::contexts::ledger::public::{
     AccountKind, AccountLifecycle, AccountNature, AccountVersion, ArchiveAccount, OpenAccount,
     BudgetVisibility, ManualTransactionKind, NormalizedTags, RecordManualTransaction,
-    RenameAccount, RestoreAccount,
+    RenameAccount, RestoreAccount, TransferFee, TransferFunds,
 };
 use moneykeeper::contexts::classification::public::{CategoryCatalog, CategoryCommand, CategoryKind};
 use moneykeeper::shared_kernel::{
@@ -577,4 +577,96 @@ async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_repla
         "SELECT count(*) FROM ledger.journal_entries WHERE user_id = $1 AND command_name = 'record_expense'",
     ).bind(user.into_uuid()).fetch_one(&pool).await.unwrap();
     assert_eq!(journal_count, 1);
+}
+
+#[tokio::test]
+async fn transfer_posts_same_currency_fx_and_fees_atomically() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let ledger = moneykeeper::contexts::ledger::build(&verified);
+    let user = UserId::generate();
+    let source = ledger.open_account(open_command(
+        user, "transfer-source", "Source", "100.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let target = ledger.open_account(open_command(
+        user, "transfer-target", "Target", "0.00", AccountKind::Savings, AccountNature::Asset,
+    )).await.unwrap();
+
+    let moved = ledger.transfer(TransferFunds {
+        user_id: user, source_account_id: source.account.id, target_account_id: target.account.id,
+        source_amount: Money::new(Decimal::new(1000, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        target_amount: Money::new(Decimal::new(1000, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        fee: Some(TransferFee { amount: Money::new(Decimal::new(100, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap() }),
+        implied_rate: None, description: "Move".to_owned(),
+        idempotency_key: IdempotencyKey::new("same-transfer").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(moved.effects.iter().find(|e| e.account_id == source.account.id).unwrap().display_balance, Decimal::new(8900, 2));
+    assert_eq!(moved.effects.iter().find(|e| e.account_id == target.account.id).unwrap().display_balance, Decimal::new(1000, 2));
+
+    let usd = {
+        let currency = CurrencyCode::new("USD").unwrap();
+        ledger.open_account(OpenAccount {
+            user_id: user, name: "USD".to_owned(), currency: currency.clone(),
+            kind: AccountKind::Cash, nature: AccountNature::Asset,
+            opening_balance: Money::new(Decimal::ZERO, currency, 2).unwrap(),
+            idempotency_key: IdempotencyKey::new("usd-open").unwrap(),
+            correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+        }).await.unwrap()
+    };
+    let fx = ledger.transfer(TransferFunds {
+        user_id: user, source_account_id: source.account.id, target_account_id: usd.account.id,
+        source_amount: Money::new(Decimal::new(4000, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        target_amount: Money::new(Decimal::new(100, 2), CurrencyCode::new("USD").unwrap(), 2).unwrap(),
+        fee: Some(TransferFee { amount: Money::new(Decimal::new(5, 2), CurrencyCode::new("USD").unwrap(), 2).unwrap() }),
+        implied_rate: Some(Decimal::new(25, 3)), description: "FX".to_owned(),
+        idempotency_key: IdempotencyKey::new("fx-transfer").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(fx.implied_rate, Some(Decimal::new(25, 3)));
+
+    let per_currency_unbalanced: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT journal_entry_id, currency FROM ledger.postings \
+         GROUP BY journal_entry_id, currency HAVING SUM(signed_amount) <> 0) broken",
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(per_currency_unbalanced, 0);
+}
+
+#[tokio::test]
+async fn transfer_rejects_same_account_cross_tenant_and_preserves_nature_signs() {
+    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let ledger = moneykeeper::contexts::ledger::build(&verified);
+    let user = UserId::generate();
+    let other = UserId::generate();
+    let asset = ledger.open_account(open_command(
+        user, "pair-asset", "Asset", "20.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let liability = ledger.open_account(open_command(
+        user, "pair-liability", "Liability", "20.00", AccountKind::CreditCard, AccountNature::Liability,
+    )).await.unwrap();
+    let foreign = ledger.open_account(open_command(
+        other, "pair-foreign", "Foreign", "0.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let command = |source, target, key: &str| TransferFunds {
+        user_id: user, source_account_id: source, target_account_id: target,
+        source_amount: Money::new(Decimal::ONE, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        target_amount: Money::new(Decimal::ONE, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        fee: None, implied_rate: None, description: key.to_owned(),
+        idempotency_key: IdempotencyKey::new(key).unwrap(), correlation_id: CorrelationId::generate(),
+        causation_id: None, occurred_at: Utc::now(),
+    };
+
+    assert!(ledger.transfer(command(asset.account.id, asset.account.id, "same-account"))
+        .await.unwrap_err().is_invalid_state());
+    assert!(ledger.transfer(command(asset.account.id, foreign.account.id, "cross-user"))
+        .await.unwrap_err().is_not_found());
+
+    let payment = ledger.transfer(command(asset.account.id, liability.account.id, "asset-liability"))
+        .await.unwrap();
+    assert_eq!(payment.effects.iter().find(|effect| effect.account_id == asset.account.id).unwrap().display_effect, Decimal::NEGATIVE_ONE);
+    assert_eq!(payment.effects.iter().find(|effect| effect.account_id == liability.account.id).unwrap().display_effect, Decimal::NEGATIVE_ONE);
+
+    let advance = ledger.transfer(command(liability.account.id, asset.account.id, "liability-asset"))
+        .await.unwrap();
+    assert_eq!(advance.effects.iter().find(|effect| effect.account_id == liability.account.id).unwrap().display_effect, Decimal::ONE);
+    assert_eq!(advance.effects.iter().find(|effect| effect.account_id == asset.account.id).unwrap().display_effect, Decimal::ONE);
 }

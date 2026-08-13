@@ -150,3 +150,36 @@ pub struct TransactionResult {
     pub annotation_version: AnnotationVersion,
     pub replayed: bool,
 }
+
+/// Optional fee charged by a transfer in either represented currency.
+#[derive(Clone, Debug)]
+pub struct TransferFee {
+    pub amount: Money,
+}
+
+/// Atomically transfers exact amounts between two user accounts.
+#[derive(Clone, Debug)]
+pub struct TransferFunds {
+    pub user_id: UserId,
+    pub source_account_id: LedgerAccountId,
+    pub target_account_id: LedgerAccountId,
+    pub source_amount: Money,
+    pub target_amount: Money,
+    pub fee: Option<TransferFee>,
+    pub implied_rate: Option<Decimal>,
+    pub description: String,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Durable transfer result with both user-account effects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferResult {
+    pub journal_entry_id: JournalEntryId,
+    pub effects: Vec<AccountEffect>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub implied_rate: Option<Decimal>,
+    pub replayed: bool,
+}
