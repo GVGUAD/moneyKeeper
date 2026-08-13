@@ -1,0 +1,249 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Moneykeeper Finance V2",
+    "version": "0.1.0-foundation",
+    "description": "Parallel Finance V2 supporting-context contract. It is not mounted by the default runtime before cutover."
+  },
+  "paths": {
+    "/currencies": {
+      "get": {
+        "operationId": "listCurrencies",
+        "summary": "List enabled currencies",
+        "description": "Returns the enabled currencies recognized by Reference Data, ordered by currency code. This is a side-effect-free catalog query; disabled currencies are not included.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "Enabled currencies",
+            "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Currency"}}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/currencies/{code}": {
+      "get": {
+        "operationId": "getCurrency",
+        "summary": "Get an enabled currency",
+        "description": "Returns one enabled currency by its canonical three-letter uppercase code. Missing and disabled currencies are both reported as not found, and the query does not change catalog state.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "code", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[A-Z]{3}$"}}],
+        "responses": {
+          "200": {"description": "Enabled currency", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Currency"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories": {
+      "post": {
+        "operationId": "createCategory",
+        "summary": "Create a category",
+        "description": "Creates an active category for the authenticated user at version 1. The name is trimmed, must contain 1 to 100 characters, and must be unique among that user's active categories under case-insensitive comparison.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateCategory"}}}},
+        "responses": {
+          "201": {"description": "Created category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      },
+      "get": {
+        "operationId": "listCategories",
+        "summary": "List the user's categories",
+        "description": "Returns all active and archived categories owned by the authenticated user. Archived categories remain visible so historical classifications are never hidden or deleted.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "All active and archived user categories", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Category"}}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getCategory",
+        "summary": "Get a category",
+        "description": "Returns an active or archived category owned by the authenticated user. A missing category and a category owned by another user are both reported as not found.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      },
+      "patch": {
+        "operationId": "renameCategory",
+        "summary": "Rename a category",
+        "description": "Changes a category name when expected_version matches its current version. A real name change increments the version; replaying the same normalized name at the current version is idempotent. Stale versions and active-name collisions return a conflict.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameCategory"}}}},
+        "responses": {
+          "200": {"description": "Renamed category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories/{id}/archive": {
+      "post": {
+        "operationId": "archiveCategory",
+        "summary": "Archive a category",
+        "description": "Makes a category unavailable for new classifications while preserving its identity and historical use. The command requires the current expected_version and increments the version on the active-to-archived transition; repeating it against an already archived category at the current version is idempotent.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}},
+        "responses": {
+          "200": {"description": "Archived category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories/{id}/restore": {
+      "post": {
+        "operationId": "restoreCategory",
+        "summary": "Restore an archived category",
+        "description": "Makes an archived category active and available for new classifications again without losing its history or identity. The command requires the current expected_version and increments the version on the archived-to-active transition. It conflicts when the version is stale or another active category already has the same name under case-insensitive comparison; repeating it against an already active category at the current version is idempotent.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}},
+        "responses": {
+          "200": {"description": "Restored category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/preferences": {
+      "get": {
+        "operationId": "getPreferences",
+        "summary": "Get effective preferences",
+        "description": "Returns the authenticated user's effective preferences. If no row has been stored, the response uses base currency UAH with version 0 and persisted false without inserting data.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Effective user preferences", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Preferences"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      },
+      "patch": {
+        "operationId": "setBaseCurrency",
+        "summary": "Set the base currency",
+        "description": "Sets the authenticated user's base currency to an enabled catalog currency using optimistic concurrency. expected_version 0 creates the first persisted preference at version 1; later changes must provide the current version and increment it on success.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdatePreferences"}}}},
+        "responses": {
+          "200": {"description": "Updated preferences", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Preferences"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+    },
+    "responses": {
+      "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "Authentication required", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "NotFound": {"description": "Resource not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Conflict": {"description": "Optimistic version or uniqueness conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "InternalServerError": {"description": "Supporting context unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "Currency": {
+        "type": "object",
+        "required": ["code", "name", "minor_unit", "enabled", "as_of"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "numeric_code": {"type": ["string", "null"], "pattern": "^[0-9]{3}$"},
+          "name": {"type": "string"},
+          "minor_unit": {"type": "integer", "minimum": 0, "maximum": 8},
+          "enabled": {"type": "boolean"},
+          "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreateCategory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "kind": {"type": "string", "enum": ["income", "expense", "both"]}
+        }
+      },
+      "RenameCategory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "expected_version"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "expected_version": {"type": "integer", "minimum": 1}
+        }
+      },
+      "ExpectedVersion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_version"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}}
+      },
+      "Category": {
+        "type": "object",
+        "required": ["id", "name", "kind", "lifecycle", "version", "created_at", "as_of"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "kind": {"type": "string", "enum": ["income", "expense", "both"]},
+          "lifecycle": {"type": "string", "enum": ["active", "archived"]},
+          "version": {"type": "integer", "minimum": 1},
+          "created_at": {"type": "string", "format": "date-time"},
+          "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "UpdatePreferences": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["base_currency", "expected_version"],
+        "properties": {
+          "base_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "expected_version": {"type": "integer", "minimum": 0}
+        }
+      },
+      "Preferences": {
+        "type": "object",
+        "required": ["base_currency", "version", "persisted", "as_of"],
+        "properties": {
+          "base_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "version": {"type": "integer", "minimum": 0},
+          "persisted": {"type": "boolean"},
+          "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {"error": {"type": "string"}}
+      }
+    }
+  }
+}

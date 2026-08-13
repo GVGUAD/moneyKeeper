@@ -14,6 +14,9 @@ pub mod subscription_charge_repository;
 pub mod subscription_repository;
 pub mod transaction_repository;
 pub mod user_settings_repository;
+pub mod v2_db;
+#[doc(hidden)]
+pub mod v2_test_db;
 
 #[cfg(test)]
 pub mod test_db;
