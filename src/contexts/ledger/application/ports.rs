@@ -10,8 +10,8 @@ use crate::integration::IntegrationEvent;
 use crate::shared_kernel::{CurrencyCode, EventId, IdempotencyKey, UserId};
 
 use super::super::domain::{
-    JournalEntry, LedgerAccount, LedgerAccountId, LedgerError, SystemAccountRole,
-    TransactionAnnotation,
+    JournalEntry, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError, Posting,
+    SystemAccountRole, TransactionAnnotation,
 };
 
 /// Durable idempotency result read inside a command transaction.
@@ -43,6 +43,7 @@ pub(crate) trait LedgerUnitOfWork {
     type Tx<'a>: LedgerAccountStore
         + JournalStore
         + AnnotationStore
+        + CorrectionStore
         + ProjectionStore
         + CommandReceiptStore
         + AuditStore
@@ -56,10 +57,31 @@ pub(crate) trait LedgerUnitOfWork {
 
 /// Versioned transaction-metadata persistence.
 pub(crate) trait AnnotationStore {
+    async fn find_annotation(
+        &mut self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+        lock: bool,
+    ) -> Result<Option<TransactionAnnotation>, LedgerError>;
+
     async fn insert_annotation(
         &mut self,
         annotation: &TransactionAnnotation,
     ) -> Result<(), LedgerError>;
+
+    async fn save_annotation(
+        &mut self,
+        annotation: &TransactionAnnotation,
+    ) -> Result<(), LedgerError>;
+}
+
+/// Immutable journal facts sufficient to construct a reversal.
+#[derive(Clone, Debug)]
+pub(crate) struct JournalSnapshot {
+    pub id: JournalEntryId,
+    pub user_id: UserId,
+    pub description: String,
+    pub postings: Vec<Posting>,
 }
 
 /// Aggregate-shaped account persistence within the caller's transaction.
@@ -91,11 +113,40 @@ pub(crate) trait LedgerAccountStore {
 
 /// Immutable journal aggregate persistence.
 pub(crate) trait JournalStore {
+    async fn find_journal(
+        &mut self,
+        user_id: UserId,
+        id: JournalEntryId,
+        lock: bool,
+    ) -> Result<Option<JournalSnapshot>, LedgerError>;
+
     async fn insert_journal(
         &mut self,
         command_name: &str,
         journal: &JournalEntry,
     ) -> Result<i64, LedgerError>;
+}
+
+/// Immutable correction-detail persistence.
+pub(crate) struct CorrectionDetail<'a> {
+    pub journal_entry_id: JournalEntryId,
+    pub user_id: UserId,
+    pub account_id: LedgerAccountId,
+    pub currency: &'a CurrencyCode,
+    pub before_display_balance: Decimal,
+    pub target_display_balance: Decimal,
+    pub display_delta: Decimal,
+    pub observed_balance_version: i64,
+    pub reason: &'a str,
+    pub observed_at: DateTime<Utc>,
+    pub recorded_at: DateTime<Utc>,
+}
+
+pub(crate) trait CorrectionStore {
+    async fn insert_correction_detail(
+        &mut self,
+        detail: CorrectionDetail<'_>,
+    ) -> Result<(), LedgerError>;
 }
 
 /// Rebuildable balance-projection writes bound to the journal transaction.

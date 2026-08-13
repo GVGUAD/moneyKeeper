@@ -10,12 +10,14 @@ use crate::shared_kernel::{CurrencyCode, IdempotencyKey, UserId};
 use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
 use super::super::{
     application::ports::{
-        AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, JournalStore, LedgerAccountStore,
-        LedgerOutboxStore, ProjectionStore, StoredReceipt,
+        AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, CorrectionDetail,
+        CorrectionStore, JournalSnapshot, JournalStore, LedgerAccountStore, LedgerOutboxStore,
+        ProjectionStore, StoredReceipt,
     },
     domain::{
-        Actor, JournalEntry, LedgerAccount, LedgerAccountId, LedgerError, SystemAccountRole,
-        TransactionAnnotation,
+        AccountNature, Actor, AnnotationId, AnnotationVersion, BudgetVisibility, CategoryReference,
+        JournalEntry, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags,
+        Posting, PostingId, SystemAccountRole, TransactionAnnotation,
     },
 };
 
@@ -175,6 +177,44 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
 }
 
 impl JournalStore for PgLedgerTransaction<'_> {
+    async fn find_journal(
+        &mut self,
+        user_id: UserId,
+        id: JournalEntryId,
+        lock: bool,
+    ) -> Result<Option<JournalSnapshot>, LedgerError> {
+        let sql = if lock {
+            "SELECT description FROM ledger.journal_entries WHERE id = $1 AND user_id = $2 FOR UPDATE"
+        } else {
+            "SELECT description FROM ledger.journal_entries WHERE id = $1 AND user_id = $2"
+        };
+        let Some(description): Option<String> = sqlx::query_scalar(sql)
+            .bind(id.into_uuid()).bind(user_id.into_uuid())
+            .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?
+        else { return Ok(None) };
+        #[derive(FromRow)]
+        struct PostingRow {
+            id: Uuid, position: i16, account_id: Uuid, user_id: Uuid,
+            currency: String, account_nature: String, signed_amount: Decimal,
+        }
+        let rows = sqlx::query_as::<_, PostingRow>(
+            "SELECT id, position, account_id, user_id, currency, account_nature, signed_amount \
+             FROM ledger.postings WHERE journal_entry_id = $1 AND user_id = $2 ORDER BY position",
+        ).bind(id.into_uuid()).bind(user_id.into_uuid())
+          .fetch_all(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        let postings = rows.into_iter().map(|row| {
+            Ok(Posting::rehydrate(
+                PostingId::new(row.id), u16::try_from(row.position)
+                    .map_err(|_| LedgerError::persistence("stored posting position is invalid"))?,
+                LedgerAccountId::new(row.account_id), UserId::new(row.user_id),
+                CurrencyCode::new(row.currency)
+                    .map_err(|_| LedgerError::persistence("stored posting currency is invalid"))?,
+                AccountNature::parse(&row.account_nature)?, row.signed_amount,
+            ))
+        }).collect::<Result<Vec<_>, LedgerError>>()?;
+        Ok(Some(JournalSnapshot { id, user_id, description, postings }))
+    }
+
     async fn insert_journal(
         &mut self,
         command_name: &str,
@@ -233,6 +273,45 @@ impl JournalStore for PgLedgerTransaction<'_> {
 }
 
 impl AnnotationStore for PgLedgerTransaction<'_> {
+    async fn find_annotation(
+        &mut self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+        lock: bool,
+    ) -> Result<Option<TransactionAnnotation>, LedgerError> {
+        #[derive(FromRow)]
+        struct Row {
+            id: Uuid, journal_entry_id: Uuid, user_id: Uuid, description: String,
+            category_id: Option<Uuid>, note: Option<String>, tags: Vec<String>,
+            budget_visibility: String, version: i64,
+            created_at: chrono::DateTime<chrono::Utc>, updated_at: chrono::DateTime<chrono::Utc>,
+        }
+        let sql = if lock {
+            "SELECT id, journal_entry_id, user_id, description, category_id, note, tags, \
+                    budget_visibility, version, created_at, updated_at \
+             FROM ledger.transaction_annotations \
+             WHERE journal_entry_id = $1 AND user_id = $2 FOR UPDATE"
+        } else {
+            "SELECT id, journal_entry_id, user_id, description, category_id, note, tags, \
+                    budget_visibility, version, created_at, updated_at \
+             FROM ledger.transaction_annotations WHERE journal_entry_id = $1 AND user_id = $2"
+        };
+        let row = sqlx::query_as::<_, Row>(sql)
+            .bind(journal_entry_id.into_uuid()).bind(user_id.into_uuid())
+            .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        row.map(|row| TransactionAnnotation::rehydrate(
+            AnnotationId::new(row.id), JournalEntryId::new(row.journal_entry_id), UserId::new(row.user_id),
+            row.description, row.category_id.map(CategoryReference::new), row.note,
+            NormalizedTags::new(row.tags)?,
+            match row.budget_visibility.as_str() {
+                "included" => BudgetVisibility::Included,
+                "excluded" => BudgetVisibility::Excluded,
+                _ => return Err(LedgerError::persistence("stored budget visibility is invalid")),
+            },
+            AnnotationVersion::new(row.version)?, row.created_at, row.updated_at,
+        )).transpose()
+    }
+
     async fn insert_annotation(
         &mut self,
         annotation: &TransactionAnnotation,
@@ -258,6 +337,40 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
         .execute(&mut *self.transaction)
         .await
         .map_err(LedgerError::database)?;
+        Ok(())
+    }
+
+    async fn save_annotation(&mut self, annotation: &TransactionAnnotation) -> Result<(), LedgerError> {
+        let tags: Vec<&str> = annotation.tags().as_slice().iter().map(String::as_str).collect();
+        let result = sqlx::query(
+            "UPDATE ledger.transaction_annotations SET description = $3, category_id = $4, note = $5, \
+             tags = $6, budget_visibility = $7, version = $8, updated_at = $9 \
+             WHERE journal_entry_id = $1 AND user_id = $2 AND version = $10",
+        ).bind(annotation.journal_entry_id().into_uuid()).bind(annotation.user_id().into_uuid())
+         .bind(annotation.description()).bind(annotation.category().map(|id| id.into_uuid()))
+         .bind(annotation.note()).bind(&tags).bind(annotation.budget_visibility().as_str())
+         .bind(annotation.version().get()).bind(annotation.updated_at())
+         .bind(annotation.version().get() - 1)
+         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        if result.rows_affected() != 1 { return Err(LedgerError::version_conflict()) }
+        Ok(())
+    }
+}
+
+impl CorrectionStore for PgLedgerTransaction<'_> {
+    async fn insert_correction_detail(&mut self, detail: CorrectionDetail<'_>) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO ledger.balance_correction_details \
+             (journal_entry_id, user_id, account_id, currency, before_display_balance, \
+              target_display_balance, display_delta, observed_balance_version, reason, actor_kind, \
+              observed_at, recorded_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'user', $10, $11)",
+        ).bind(detail.journal_entry_id.into_uuid()).bind(detail.user_id.into_uuid())
+         .bind(detail.account_id.into_uuid()).bind(detail.currency.as_str())
+         .bind(detail.before_display_balance).bind(detail.target_display_balance)
+         .bind(detail.display_delta).bind(detail.observed_balance_version).bind(detail.reason)
+         .bind(detail.observed_at).bind(detail.recorded_at)
+         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
         Ok(())
     }
 }

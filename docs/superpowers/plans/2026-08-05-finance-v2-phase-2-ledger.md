@@ -477,29 +477,29 @@ git commit -m "feat(ledger): post atomic transfers with fees and FX"
 - Modify: `src/contexts/ledger/public.rs`
 - Modify: `tests/ledger_persistence.rs`
 
-- [ ] **Step 1 — RED: write immutable-change tests**
+- [x] **Step 1 — RED: write immutable-change tests**
 
 Test that balance correction requires the expected account-balance version, locks the account projection, reads current display balance, computes delta, and records before/target/delta/reason/actor/observation time in an immutable detail row. An intervening posting causes a stale-version conflict with no effect. A zero-delta manual correction is rejected rather than writing noise. Test positive and negative Asset/Liability corrections.
 
 Test exact negating reversal, one-reversal policy/idempotent replay, replacement as reversal plus replacement entry in one UoW, cross-user rejection, and unchanged original rows. Test description, note, normalized tags, budget visibility, and category annotation edits with expected version, audit visibility, and no posting/projection change. Category changes must revalidate same-user/active status through `classification::public`; archived and cross-user IDs are rejected without querying Classification SQL.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_persistence -- --nocapture`
 
 Expected: FAIL because these commands do not exist.
 
-- [ ] **Step 3 — GREEN: implement new-event-only changes**
+- [x] **Step 3 — GREEN: implement new-event-only changes**
 
 Correction computes `display_delta = target - current_display`, converts it to the raw debit-positive posting amount with `signed_posting_delta = display_delta * account.normal_sign()`, and posts that amount against balance-adjustment equity. This makes increasing displayed liability debt a credit and reducing it a debit. Reversal copies every original posting with the opposite sign and points `reverses_transaction_id` to the original. Replacement creates both the reversal and new balanced journal atomically, linked by correlation ID. Annotation mutation writes its own audit event and increments annotation version.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run: `cargo test --test ledger_persistence -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: remove all mutation shortcuts**
+- [x] **Step 5 — REFACTOR: remove all mutation shortcuts**
 
 Run:
 
@@ -509,7 +509,7 @@ rg -n "set_balance|adjust_balance|delete_transaction|UPDATE ledger\.journal|DELE
 
 Expected: no production matches.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/corrections.rs src/contexts/ledger/application/annotations.rs src/contexts/ledger/application/mod.rs src/contexts/ledger/public.rs tests/ledger_persistence.rs

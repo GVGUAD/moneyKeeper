@@ -183,3 +183,86 @@ pub struct TransferResult {
     pub implied_rate: Option<Decimal>,
     pub replayed: bool,
 }
+
+/// Corrects a projected display balance through an explicit adjustment journal.
+#[derive(Clone, Debug)]
+pub struct CorrectBalance {
+    pub user_id: UserId,
+    pub account_id: LedgerAccountId,
+    pub target_display_balance: Money,
+    pub expected_balance_version: i64,
+    pub reason: String,
+    pub observed_at: DateTime<Utc>,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Creates an exact inverse of an immutable original transaction.
+#[derive(Clone, Debug)]
+pub struct ReverseTransaction {
+    pub user_id: UserId,
+    pub journal_entry_id: JournalEntryId,
+    pub reason: String,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Atomically reverses an original and records a corrected manual replacement.
+#[derive(Clone, Debug)]
+pub struct ReplaceTransaction {
+    pub user_id: UserId,
+    pub original_journal_entry_id: JournalEntryId,
+    pub account_id: LedgerAccountId,
+    pub kind: ManualTransactionKind,
+    pub amount: Money,
+    pub description: String,
+    pub category_id: Option<CategoryId>,
+    pub note: Option<String>,
+    pub tags: NormalizedTags,
+    pub budget_visibility: BudgetVisibility,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Result linking an atomic reversal and replacement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacementResult {
+    pub reversal_journal_entry_id: JournalEntryId,
+    pub replacement_journal_entry_id: JournalEntryId,
+    pub effects: Vec<AccountEffect>,
+    pub replayed: bool,
+}
+
+/// Result of correction or reversal journal creation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinancialChangeResult {
+    pub journal_entry_id: JournalEntryId,
+    pub effects: Vec<AccountEffect>,
+    pub replayed: bool,
+}
+
+/// Version-fenced transaction annotation edit.
+#[derive(Clone, Debug)]
+pub struct UpdateTransactionAnnotation {
+    pub user_id: UserId,
+    pub journal_entry_id: JournalEntryId,
+    pub changes: AnnotationChanges,
+    pub expected_version: AnnotationVersion,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Result of a transaction annotation mutation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnotationResult {
+    pub journal_entry_id: JournalEntryId,
+    pub version: AnnotationVersion,
+    pub replayed: bool,
+}
