@@ -723,7 +723,7 @@ git commit -m "feat(ledger): add version-fenced balance reconciliation"
 - Create: `tests/ledger_public_contracts.rs`
 - Modify: `tests/ledger_persistence.rs`
 
-- [ ] **Step 1 — RED: write compile-time and accounting contract tests**
+- [x] **Step 1 — RED: write compile-time and accounting contract tests**
 
 Freeze provider-neutral typed commands/results needed by later process managers:
 
@@ -745,17 +745,17 @@ Tests must show commands carry `UserId`, a typed external/domain reference, corr
 
 Add golden JSON/round-trip tests for versioned `LedgerEventV1` facts consumed later: account lifecycle changed, entry posted/reversed/replaced, annotation changed, balance changed, reconciliation observed/matched/superseded/ignored-older/approved/dismissed/stale, and internal accounting command posted/failed. Every event includes schema version, user, sequence, correlation/causation, occurred/recorded time, and minimum typed IDs/money effects; it contains no raw provider payload.
 
-- [ ] **Step 2 — Run the contract tests to verify RED**
+- [x] **Step 2 — Run the contract tests to verify RED**
 
 Run: `cargo test --test ledger_public_contracts`
 
 Expected: FAIL because the internal command contracts/builders do not exist.
 
-- [ ] **Step 3 — GREEN: implement controlled journal builders**
+- [x] **Step 3 — GREEN: implement controlled journal builders**
 
 Translate each intent through the same validated journal/UoW pipeline. External import/state/reversal remains provider-neutral and idempotent by source/resource/event/revision. Receivable/payable reclassification, principal/interest, and cash-control settlement encode Ledger accounting intent without importing another context's domain or repository. `EnsureTypedControlAccount` is internal, system-authority-only, and deterministic per `(user, role, subject_reference, currency)`. Publish only the frozen `LedgerEventV1` DTOs through the Phase 1 outbox envelope.
 
-- [ ] **Step 4 — Run focused persistence and contract tests**
+- [x] **Step 4 — Run focused persistence and contract tests**
 
 Run:
 
@@ -766,7 +766,7 @@ cargo test --test ledger_persistence internal_command
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: enforce the dependency direction**
+- [x] **Step 5 — REFACTOR: enforce the dependency direction**
 
 Run:
 
@@ -776,7 +776,7 @@ rg -n "crate::contexts::(banking|sharing|loans|portfolio)::" src/contexts/ledger
 
 Expected: no matches. Later contexts import `ledger::public`; Ledger never imports them.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/internal_commands.rs src/contexts/ledger/application/mod.rs src/contexts/ledger/public.rs tests/ledger_public_contracts.rs tests/ledger_persistence.rs

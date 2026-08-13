@@ -9,6 +9,8 @@ use moneykeeper::contexts::ledger::public::{
     ReplaceTransaction,
     ApproveReconciliation, BalanceVersion, DismissReconciliation, ObserveProviderBalance,
     ObservationId, ReconciliationStatus, ReconciliationVersion, SourceReference,
+    CashContribution, ControlAccountRole, ControlAmount, EnsureTypedControlAccount,
+    InternalCommandMetadata, RecordExpenseAndControlBalances,
 };
 use moneykeeper::contexts::classification::public::{CategoryCatalog, CategoryCommand, CategoryKind};
 use moneykeeper::shared_kernel::{
@@ -33,6 +35,55 @@ async fn account(pool: &PgPool, user: Uuid, currency: &str) -> Uuid {
     .await
     .unwrap();
     id
+}
+
+#[tokio::test]
+async fn internal_command_control_accounts_and_expense_recipe_are_closed_and_balanced() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let ledger = moneykeeper::contexts::ledger::build(&verified);
+    let user = UserId::generate();
+    let currency = CurrencyCode::new("UAH").unwrap();
+    let cash = ledger.open_account(open_command(
+        user, "internal-cash-open", "Cash", "20.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let metadata = |item: &str, key: &str| InternalCommandMetadata {
+        user_id: user, source: SourceReference::new("sharing", "expense:1", item).unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None,
+        idempotency_key: IdempotencyKey::new(key).unwrap(), occurred_at: Utc::now(),
+    };
+    let payable = ledger.ensure_typed_control_account(EnsureTypedControlAccount {
+        metadata: metadata("ensure-payable", "ensure-payable"), role: ControlAccountRole::ExternalPayable,
+        subject_reference: "contact:7".to_owned(), currency: currency.clone(),
+    }).await.unwrap();
+    let replayed = ledger.ensure_typed_control_account(EnsureTypedControlAccount {
+        metadata: metadata("ensure-payable", "ensure-payable"), role: ControlAccountRole::ExternalPayable,
+        subject_reference: "contact:7".to_owned(), currency: currency.clone(),
+    }).await.unwrap();
+    assert_eq!(replayed.account_id, payable.account_id);
+    assert!(replayed.replayed);
+    let result = ledger.record_expense_and_control_balances(RecordExpenseAndControlBalances {
+        metadata: metadata("post-expense", "post-controlled-expense"),
+        cash_contributions: vec![CashContribution {
+            account_id: cash.account.id,
+            amount: Money::new(Decimal::new(600, 2), currency.clone(), 2).unwrap(),
+        }],
+        expense: Money::new(Decimal::new(1000, 2), currency.clone(), 2).unwrap(),
+        receivables: vec![], payables: vec![ControlAmount {
+            account_id: payable.account_id,
+            amount: Money::new(Decimal::new(400, 2), currency.clone(), 2).unwrap(),
+        }], description: "Shared dinner".to_owned(),
+    }).await.unwrap();
+    assert_eq!(result.effects.iter().find(|effect| effect.account_id == cash.account.id).unwrap().display_effect, Decimal::new(-600, 2));
+    assert_eq!(result.effects.iter().find(|effect| effect.account_id == payable.account_id).unwrap().display_effect, Decimal::new(400, 2));
+    let sum: Decimal = sqlx::query_scalar("SELECT SUM(signed_amount) FROM ledger.postings WHERE journal_entry_id = $1")
+        .bind(result.journal_entry_id.unwrap().into_uuid()).fetch_one(&pool).await.unwrap();
+    assert_eq!(sum, Decimal::ZERO);
+    let invalid = ledger.record_expense_and_control_balances(RecordExpenseAndControlBalances {
+        metadata: metadata("invalid", "invalid-controlled-expense"),
+        cash_contributions: vec![], expense: Money::new(Decimal::ONE, currency, 2).unwrap(),
+        receivables: vec![], payables: vec![], description: "Unbalanced".to_owned(),
+    }).await.unwrap_err();
+    assert!(invalid.is_unbalanced_journal());
 }
 
 #[tokio::test]

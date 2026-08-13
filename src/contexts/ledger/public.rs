@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::shared_kernel::{CausationId, CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
+use crate::shared_kernel::{CausationId, CorrelationId, CurrencyCode, EventId, IdempotencyKey, Money, UserId};
 use crate::contexts::classification::public::CategoryId;
 
 pub use super::application::accounts::LedgerFacade;
@@ -394,4 +394,230 @@ pub struct ReconciliationResult {
     pub journal_entry_id: Option<JournalEntryId>,
     pub effects: Vec<AccountEffect>,
     pub replayed: bool,
+}
+
+/// Common durable process-manager command metadata.
+#[derive(Clone, Debug)]
+pub struct InternalCommandMetadata {
+    pub user_id: UserId,
+    pub source: SourceReference,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub idempotency_key: IdempotencyKey,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Closed Ledger-owned system account roles available to other contexts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlAccountRole {
+    ExternalReceivable, ExternalPayable, InterestReceivable, InterestPayable,
+    FeeReceivable, FeePayable, PortfolioCashClearing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlDirection { Receivable, Payable }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalOrAccrual { Principal, Interest, Fee }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderTransactionState { Pending, Posted, Reversed }
+
+#[derive(Clone, Debug)]
+pub struct EnsureTypedControlAccount {
+    pub metadata: InternalCommandMetadata,
+    pub role: ControlAccountRole,
+    pub subject_reference: String,
+    pub currency: CurrencyCode,
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportProviderTransaction {
+    pub metadata: InternalCommandMetadata,
+    pub user_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub state: ProviderTransactionState,
+    pub description: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct TransitionProviderTransactionState {
+    pub metadata: InternalCommandMetadata,
+    pub imported_journal_entry_id: JournalEntryId,
+    pub from: ProviderTransactionState,
+    pub to: ProviderTransactionState,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReverseProviderTransaction {
+    pub metadata: InternalCommandMetadata,
+    pub imported_journal_entry_id: JournalEntryId,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReclassifyExpenseToReceivableOrPayable {
+    pub metadata: InternalCommandMetadata,
+    pub original_expense_journal_id: JournalEntryId,
+    pub control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub direction: ControlDirection,
+}
+
+#[derive(Clone, Debug)]
+pub struct SettleReceivableOrPayable {
+    pub metadata: InternalCommandMetadata,
+    pub user_account_id: LedgerAccountId,
+    pub control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub direction: ControlDirection,
+}
+
+#[derive(Clone, Debug)]
+pub struct CashContribution {
+    pub account_id: LedgerAccountId,
+    pub amount: Money,
+}
+
+#[derive(Clone, Debug)]
+pub struct ControlAmount {
+    pub account_id: LedgerAccountId,
+    pub amount: Money,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordExpenseAndControlBalances {
+    pub metadata: InternalCommandMetadata,
+    pub cash_contributions: Vec<CashContribution>,
+    pub expense: Money,
+    pub receivables: Vec<ControlAmount>,
+    pub payables: Vec<ControlAmount>,
+    pub description: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordPrincipalDisbursement {
+    pub metadata: InternalCommandMetadata,
+    pub cash_account_id: LedgerAccountId,
+    pub principal_control_account_id: LedgerAccountId,
+    pub amount: Money,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordPrincipalRepayment {
+    pub metadata: InternalCommandMetadata,
+    pub cash_account_id: LedgerAccountId,
+    pub principal_control_account_id: LedgerAccountId,
+    pub amount: Money,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordInterestAndFee {
+    pub metadata: InternalCommandMetadata,
+    pub cash_account_id: LedgerAccountId,
+    pub accrual_control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub component: PrincipalOrAccrual,
+    pub direction: ControlDirection,
+}
+
+#[derive(Clone, Debug)]
+pub struct WriteOffLiabilityOrReceivable {
+    pub metadata: InternalCommandMetadata,
+    pub control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub component: PrincipalOrAccrual,
+    pub direction: ControlDirection,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordCashControlSettlement {
+    pub metadata: InternalCommandMetadata,
+    pub cash_account_id: LedgerAccountId,
+    pub control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub source_operation_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CancelOrReverseCashControlSettlement {
+    pub metadata: InternalCommandMetadata,
+    pub source_operation_id: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionVersion {
+    pub account_id: LedgerAccountId,
+    pub version: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InternalAccountingResult {
+    pub journal_entry_id: Option<JournalEntryId>,
+    pub effects: Vec<AccountEffect>,
+    pub projection_versions: Vec<ProjectionVersion>,
+    pub replayed: bool,
+    pub cancelled: bool,
+    pub outbox_correlation_id: CorrelationId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlAccountResult {
+    pub account_id: LedgerAccountId,
+    pub role: ControlAccountRole,
+    pub subject_reference: String,
+    pub currency: CurrencyCode,
+    pub replayed: bool,
+}
+
+/// Data-minimal money value embedded in versioned integration facts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerMoneyV1 {
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    pub currency: CurrencyCode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerEventMetadataV1 {
+    pub schema_version: u32,
+    pub event_id: EventId,
+    pub user_id: UserId,
+    pub sequence: u64,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LedgerEventFactV1 {
+    AccountLifecycleChanged { account_id: LedgerAccountId, lifecycle: AccountLifecycle },
+    EntryPosted { journal_entry_id: JournalEntryId, effects: Vec<LedgerMoneyV1> },
+    EntryReversed { journal_entry_id: JournalEntryId, original_journal_entry_id: JournalEntryId },
+    EntryReplaced { replacement_journal_entry_id: JournalEntryId, original_journal_entry_id: JournalEntryId },
+    AnnotationChanged { journal_entry_id: JournalEntryId, version: i64 },
+    BalanceChanged { account_id: LedgerAccountId, balance: LedgerMoneyV1, version: i64 },
+    ReconciliationObserved { case_id: ReconciliationCaseId },
+    ReconciliationMatched { case_id: ReconciliationCaseId },
+    ReconciliationSuperseded { case_id: ReconciliationCaseId },
+    ReconciliationIgnoredOlder { case_id: ReconciliationCaseId },
+    ReconciliationApproved { case_id: ReconciliationCaseId, journal_entry_id: JournalEntryId },
+    ReconciliationDismissed { case_id: ReconciliationCaseId },
+    ReconciliationStale { case_id: ReconciliationCaseId },
+    InternalAccountingCommandPosted { source: SourceReference, journal_entry_id: JournalEntryId },
+    InternalAccountingCommandFailed { source: SourceReference, error_code: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerEventV1 {
+    pub metadata: LedgerEventMetadataV1,
+    pub fact: LedgerEventFactV1,
 }

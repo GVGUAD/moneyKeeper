@@ -128,6 +128,9 @@ pub(crate) trait LedgerAccountStore {
     ) -> Result<Vec<LedgerAccount>, LedgerError>;
 
     async fn insert_account(&mut self, account: &LedgerAccount) -> Result<(), LedgerError>;
+    async fn insert_system_account(
+        &mut self, account: &LedgerAccount, subject_reference: &str,
+    ) -> Result<(), LedgerError>;
     async fn save_account(&mut self, account: &LedgerAccount) -> Result<(), LedgerError>;
 
     async fn find_system_account(
