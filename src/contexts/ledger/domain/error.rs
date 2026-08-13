@@ -9,6 +9,18 @@ pub(crate) enum LedgerErrorKind {
     InvalidVersion,
     VersionConflict,
     AccountArchived,
+    TooFewPostings,
+    ZeroPosting,
+    UnbalancedJournal,
+    TenantMismatch,
+    CurrencyMismatch,
+    InvalidRelation,
+    InvalidAnnotation,
+    InvalidTags,
+    InvalidSourceReference,
+    InvalidObservation,
+    InvalidState,
+    StaleObservedBalance,
     NotFound,
     Persistence,
 }
@@ -51,6 +63,63 @@ impl LedgerError {
         Self::new(
             LedgerErrorKind::AccountArchived,
             "archived account does not accept ordinary activity",
+        )
+    }
+
+    pub(crate) fn too_few_postings() -> Self {
+        Self::new(LedgerErrorKind::TooFewPostings, "journal requires at least two postings")
+    }
+
+    pub(crate) fn zero_posting() -> Self {
+        Self::new(LedgerErrorKind::ZeroPosting, "posting amount cannot be zero")
+    }
+
+    pub(crate) fn unbalanced_journal() -> Self {
+        Self::new(
+            LedgerErrorKind::UnbalancedJournal,
+            "journal must balance to zero independently in every currency",
+        )
+    }
+
+    pub(crate) fn tenant_mismatch() -> Self {
+        Self::new(LedgerErrorKind::TenantMismatch, "ledger tenant mismatch")
+    }
+
+    pub(crate) fn currency_mismatch() -> Self {
+        Self::new(LedgerErrorKind::CurrencyMismatch, "ledger currency mismatch")
+    }
+
+    pub(crate) fn invalid_relation() -> Self {
+        Self::new(LedgerErrorKind::InvalidRelation, "journal relation is invalid")
+    }
+
+    pub(crate) fn invalid_annotation(message: impl Into<String>) -> Self {
+        Self::new(LedgerErrorKind::InvalidAnnotation, message)
+    }
+
+    pub(crate) fn invalid_tags() -> Self {
+        Self::new(LedgerErrorKind::InvalidTags, "transaction tags are invalid")
+    }
+
+    pub(crate) fn invalid_source_reference() -> Self {
+        Self::new(
+            LedgerErrorKind::InvalidSourceReference,
+            "source reference fields must contain bounded printable text",
+        )
+    }
+
+    pub(crate) fn invalid_observation(message: impl Into<String>) -> Self {
+        Self::new(LedgerErrorKind::InvalidObservation, message)
+    }
+
+    pub(crate) fn invalid_state(message: impl Into<String>) -> Self {
+        Self::new(LedgerErrorKind::InvalidState, message)
+    }
+
+    pub(crate) fn stale_observed_balance() -> Self {
+        Self::new(
+            LedgerErrorKind::StaleObservedBalance,
+            "ledger balance changed after the observation",
         )
     }
 
@@ -103,6 +172,54 @@ impl LedgerError {
     /// Returns whether ordinary activity targeted an archived account.
     pub fn is_account_archived(&self) -> bool {
         self.kind == LedgerErrorKind::AccountArchived
+    }
+
+    pub fn is_too_few_postings(&self) -> bool {
+        self.kind == LedgerErrorKind::TooFewPostings
+    }
+
+    pub fn is_zero_posting(&self) -> bool {
+        self.kind == LedgerErrorKind::ZeroPosting
+    }
+
+    pub fn is_unbalanced_journal(&self) -> bool {
+        self.kind == LedgerErrorKind::UnbalancedJournal
+    }
+
+    pub fn is_tenant_mismatch(&self) -> bool {
+        self.kind == LedgerErrorKind::TenantMismatch
+    }
+
+    pub fn is_currency_mismatch(&self) -> bool {
+        self.kind == LedgerErrorKind::CurrencyMismatch
+    }
+
+    pub fn is_invalid_relation(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidRelation
+    }
+
+    pub fn is_invalid_annotation(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidAnnotation
+    }
+
+    pub fn is_invalid_tags(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidTags
+    }
+
+    pub fn is_invalid_source_reference(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidSourceReference
+    }
+
+    pub fn is_invalid_observation(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidObservation
+    }
+
+    pub fn is_invalid_state(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidState
+    }
+
+    pub fn is_stale_observed_balance(&self) -> bool {
+        self.kind == LedgerErrorKind::StaleObservedBalance
     }
 
     /// Returns whether a tenant-scoped Ledger resource was absent.

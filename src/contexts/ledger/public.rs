@@ -2,8 +2,12 @@
 
 pub use super::domain::{
     AccountAuthority, AccountKind, AccountLifecycle, AccountNature, AccountVersion,
-    AccountVisibility, AnnotationId, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError,
-    ObservationId, PostingId, PostingPurpose, ReconciliationCaseId, SystemAccountRole,
+    AccountVisibility, Actor, AnnotationChanged, AnnotationChanges, AnnotationId,
+    AnnotationVersion, BalanceObservation, BalanceVersion, BudgetVisibility, CategoryReference,
+    JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount, LedgerAccountId,
+    LedgerError, NormalizedTags, ObservationId, Posting, PostingId, PostingPurpose,
+    ReconciliationCase, ReconciliationCaseId, ReconciliationEvent, ReconciliationStatus,
+    ReconciliationVersion, SourceReference, SystemAccountRole, TransactionAnnotation,
 };
 
 /// Stable bounded-context name used in integration envelopes.
