@@ -158,7 +158,7 @@ git commit -m "feat(ledger): model account aggregate and system policy"
 - Modify: `src/contexts/ledger/domain/mod.rs`
 - Modify: `tests/ledger_domain.rs`
 
-- [ ] **Step 1 — RED: write journal invariant tests**
+- [x] **Step 1 — RED: write journal invariant tests**
 
 Test rejection of zero/one posting, a zero posting, an unbalanced currency, mixed users, currency/account mismatch, and an archived account for an ordinary new financial purpose. Explicitly prove that a reversal, correction, or approved-reconciliation purpose may post to an archived account so historical truth can still be repaired without restoring it for ordinary spending. Test balanced two-posting income/expense, multi-posting fee, and two-currency FX journals. Verify posting order and IDs are deterministic inside the aggregate.
 
@@ -174,29 +174,29 @@ A relation is set at construction and never patched onto an existing journal. Te
 
 Test `ReconciliationCase` separately: a provider-neutral external balance observation captures source reference, observed/recorded timestamps, provider-reported and available balances, current Ledger display balance, current account-balance version, and delta. Zero delta creates a terminal `matched` case/audit fact; non-zero delta creates `pending`. Approval requires both expected case version and the captured balance version; dismissal is versioned; no domain method directly sets account balance.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_domain -- --nocapture`
 
 Expected: FAIL because journal, annotation, and reconciliation types are absent.
 
-- [ ] **Step 3 — GREEN: implement journal construction and validation**
+- [x] **Step 3 — GREEN: implement journal construction and validation**
 
 `JournalEntry::post` takes actor, source, correlation ID, idempotency key, occurred/recorded timestamps, relation fields, and at least two postings. Validate `SUM(signed_amount) == 0` independently for every `CurrencyCode`.
 
 Source is a provider-neutral enum/value such as `manual`, `import`, `system`, or `correction`; it is not `Monobank`.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run: `cargo test --test ledger_domain -- --nocapture`
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: remove mutable journal methods**
+- [x] **Step 5 — REFACTOR: remove mutable journal methods**
 
 The journal exposes no edit/delete/status-setter methods. Reversal and replacement builders return new journal commands. Annotation is the only mutable user-facing transaction metadata aggregate.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/domain tests/ledger_domain.rs
