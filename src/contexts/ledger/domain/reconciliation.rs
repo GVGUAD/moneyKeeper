@@ -136,6 +136,26 @@ pub enum ReconciliationStatus {
     Stale,
 }
 
+impl ReconciliationStatus {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Matched => "matched", Self::Pending => "pending", Self::Superseded => "superseded",
+            Self::IgnoredOlder => "ignored_older", Self::Approved => "approved",
+            Self::Dismissed => "dismissed", Self::Stale => "stale",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "matched" => Ok(Self::Matched), "pending" => Ok(Self::Pending),
+            "superseded" => Ok(Self::Superseded), "ignored_older" => Ok(Self::IgnoredOlder),
+            "approved" => Ok(Self::Approved), "dismissed" => Ok(Self::Dismissed),
+            "stale" => Ok(Self::Stale),
+            _ => Err(LedgerError::persistence("stored reconciliation status is invalid")),
+        }
+    }
+}
+
 /// Immutable audit fact emitted by reconciliation transitions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconciliationEvent {
@@ -210,6 +230,39 @@ impl ReconciliationCase {
             updated_at: now,
             events: vec![ReconciliationEvent::Observed { case_id: id, status }],
         })
+    }
+
+    /// Records an out-of-order fact without making it the active case.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_ignored(
+        id: ReconciliationCaseId, user_id: UserId, account_id: LedgerAccountId,
+        observation: BalanceObservation, captured_ledger_balance: Money,
+        captured_balance_version: BalanceVersion, actor: Actor, now: DateTime<Utc>,
+    ) -> Result<Self, LedgerError> {
+        let mut case = Self::observe(
+            id, user_id, account_id, observation, captured_ledger_balance,
+            captured_balance_version, actor, now,
+        )?;
+        case.status = ReconciliationStatus::IgnoredOlder;
+        case.events = vec![ReconciliationEvent::IgnoredOlder { case_id: id }];
+        Ok(case)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rehydrate(
+        id: ReconciliationCaseId, user_id: UserId, account_id: LedgerAccountId,
+        observation: BalanceObservation, captured_ledger_balance: Money,
+        captured_balance_version: BalanceVersion, delta: Money, status: ReconciliationStatus,
+        version: ReconciliationVersion, approval_journal_id: Option<JournalEntryId>,
+        decision_actor: Option<Actor>, reason: Option<String>, created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> Result<Self, LedgerError> {
+        if observation.provider_reported().currency() != captured_ledger_balance.currency()
+            || delta.currency() != captured_ledger_balance.currency()
+        { return Err(LedgerError::currency_mismatch()) }
+        Ok(Self { id, user_id, account_id, observation, captured_ledger_balance,
+            captured_balance_version, delta, status, version, approval_journal_id,
+            decision_actor, reason, created_at, updated_at, events: Vec::new() })
     }
 
     /// Approves a pending case only against the exact observed projection version.
@@ -295,6 +348,7 @@ impl ReconciliationCase {
     pub const fn status(&self) -> ReconciliationStatus { self.status }
     pub const fn version(&self) -> ReconciliationVersion { self.version }
     pub const fn approval_journal_id(&self) -> Option<JournalEntryId> { self.approval_journal_id }
+    pub const fn decision_actor(&self) -> Option<&Actor> { self.decision_actor.as_ref() }
     pub fn reason(&self) -> Option<&str> { self.reason.as_deref() }
     pub const fn created_at(&self) -> DateTime<Utc> { self.created_at }
     pub const fn updated_at(&self) -> DateTime<Utc> { self.updated_at }

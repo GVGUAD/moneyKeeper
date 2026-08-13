@@ -129,3 +129,20 @@ pub(crate) struct ActivityQuery {
     pub(crate) after_sequence: Option<i64>,
     pub(crate) limit: Option<u32>,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApproveReconciliationRequest {
+    pub(crate) expected_version: i64,
+    pub(crate) expected_balance_version: i64,
+    pub(crate) reason: String,
+    pub(crate) occurred_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DismissReconciliationRequest {
+    pub(crate) expected_version: i64,
+    pub(crate) reason: String,
+    pub(crate) occurred_at: Option<DateTime<Utc>>,
+}

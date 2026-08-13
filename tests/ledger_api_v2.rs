@@ -2,6 +2,12 @@ use std::sync::Arc;
 
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use axum_test::TestServer;
+use chrono::{TimeZone, Utc};
+use moneykeeper::contexts::ledger::public::{
+    AccountKind, AccountNature, ObservationId, ObserveProviderBalance, OpenAccount, SourceReference,
+};
+use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -233,5 +239,89 @@ async fn ledger_queries_hide_other_tenants() {
             .as_array()
             .unwrap()
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn reconciliation_routes_require_versions_and_expose_only_tenant_cases() {
+    let database = v2_test_support::fresh_v2_database().await;
+    let verified = database.initialize().await.unwrap();
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let user_uuid = Uuid::new_v4();
+    let user = UserId::new(user_uuid);
+    let currency = CurrencyCode::new("UAH").unwrap();
+    let account = contexts
+        .ledger
+        .open_account(OpenAccount {
+            user_id: user,
+            name: "API bank".to_owned(),
+            currency: currency.clone(),
+            kind: AccountKind::Cash,
+            nature: AccountNature::Asset,
+            opening_balance: Money::new(Decimal::new(1000, 2), currency.clone(), 2).unwrap(),
+            idempotency_key: IdempotencyKey::new("api-reconcile-open").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: Utc.with_ymd_and_hms(2026, 8, 13, 13, 0, 0).unwrap(),
+        })
+        .await
+        .unwrap();
+    let observed_at = Utc.with_ymd_and_hms(2026, 8, 13, 13, 1, 0).unwrap();
+    let pending = contexts
+        .ledger
+        .observe_provider_balance(ObserveProviderBalance {
+            user_id: user,
+            account_id: account.account.id,
+            observation_id: ObservationId::generate(),
+            source: SourceReference::new("banking", "api-stream", "balance-1").unwrap(),
+            provider_reported: Money::new(Decimal::new(1200, 2), currency, 2).unwrap(),
+            available: None,
+            observed_at,
+            source_sequence: 1,
+            idempotency_key: IdempotencyKey::new("api-observe").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+        })
+        .await
+        .unwrap();
+    let router = moneykeeper::bootstrap::v2::router(&verified, Arc::new(test_jwks()));
+    let mut server = TestServer::new(router.clone()).unwrap();
+    server.add_header(AUTHORIZATION, format!("Bearer {}", jwt(user_uuid)));
+
+    let listed = server.get("/reconciliations").await;
+    assert_eq!(listed.status_code(), StatusCode::OK);
+    assert_eq!(listed.json::<Value>().as_array().unwrap().len(), 1);
+    let case_id = pending.case.id.to_string();
+    assert_eq!(
+        server
+            .get(&format!("/reconciliations/{case_id}"))
+            .await
+            .status_code(),
+        StatusCode::OK
+    );
+    let missing = server
+        .post(&format!("/reconciliations/{case_id}/approve"))
+        .add_header("Idempotency-Key", "api-approve-missing")
+        .json(&json!({"reason":"Statement"}))
+        .await;
+    assert_eq!(missing.status_code(), StatusCode::BAD_REQUEST);
+    let stale = server.post(&format!("/reconciliations/{case_id}/approve"))
+        .add_header("Idempotency-Key", "api-approve-stale")
+        .json(&json!({"expected_version":1,"expected_balance_version":999,"reason":"Statement","occurred_at":observed_at})).await;
+    assert_eq!(stale.status_code(), StatusCode::CONFLICT);
+    let approved = server.post(&format!("/reconciliations/{case_id}/approve"))
+        .add_header("Idempotency-Key", "api-approve")
+        .json(&json!({"expected_version":1,"expected_balance_version":pending.case.captured_balance_version.get(),"reason":"Statement","occurred_at":observed_at})).await;
+    assert_eq!(approved.status_code(), StatusCode::OK);
+    assert_eq!(approved.json::<Value>()["case"]["status"], "approved");
+
+    let mut stranger = TestServer::new(router).unwrap();
+    stranger.add_header(AUTHORIZATION, format!("Bearer {}", jwt(Uuid::new_v4())));
+    assert_eq!(
+        stranger
+            .get(&format!("/reconciliations/{case_id}"))
+            .await
+            .status_code(),
+        StatusCode::NOT_FOUND
     );
 }

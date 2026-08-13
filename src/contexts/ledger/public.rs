@@ -322,3 +322,76 @@ pub struct ProjectionMismatch {
     #[serde(with = "rust_decimal::serde::str")]
     pub delta: Decimal,
 }
+
+/// Provider-neutral balance fact submitted by Banking or another adapter.
+#[derive(Clone, Debug)]
+pub struct ObserveProviderBalance {
+    pub user_id: UserId,
+    pub account_id: LedgerAccountId,
+    pub observation_id: ObservationId,
+    pub source: SourceReference,
+    pub provider_reported: Money,
+    pub available: Option<Money>,
+    pub observed_at: DateTime<Utc>,
+    pub source_sequence: i64,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+}
+
+/// Approves the exact version and captured projection observed by a case.
+#[derive(Clone, Debug)]
+pub struct ApproveReconciliation {
+    pub user_id: UserId,
+    pub case_id: ReconciliationCaseId,
+    pub expected_version: ReconciliationVersion,
+    pub expected_balance_version: BalanceVersion,
+    pub reason: String,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Dismisses one pending reconciliation without accounting effects.
+#[derive(Clone, Debug)]
+pub struct DismissReconciliation {
+    pub user_id: UserId,
+    pub case_id: ReconciliationCaseId,
+    pub expected_version: ReconciliationVersion,
+    pub reason: String,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Tenant-scoped reconciliation read model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReconciliationView {
+    pub id: ReconciliationCaseId,
+    pub account_id: LedgerAccountId,
+    pub observation_id: ObservationId,
+    pub source: SourceReference,
+    pub observed_at: DateTime<Utc>,
+    pub source_sequence: i64,
+    pub provider_reported: Money,
+    pub available: Option<Money>,
+    pub captured_ledger_balance: Money,
+    pub captured_balance_version: BalanceVersion,
+    pub delta: Money,
+    pub status: ReconciliationStatus,
+    pub version: ReconciliationVersion,
+    pub approval_journal_id: Option<JournalEntryId>,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Durable reconciliation command result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ReconciliationResult {
+    pub case: ReconciliationView,
+    pub journal_entry_id: Option<JournalEntryId>,
+    pub effects: Vec<AccountEffect>,
+    pub replayed: bool,
+}

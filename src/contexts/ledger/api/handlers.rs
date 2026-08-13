@@ -9,18 +9,21 @@ use crate::api::v2::{AuthenticatedUser, V2ApiError, V2Json};
 use crate::api::v2_state::LedgerApiState;
 use crate::contexts::classification::public::CategoryId;
 use crate::contexts::ledger::public::{
-    AccountVersion, ActivityCursor, AnnotationChanges, AnnotationVersion, ArchiveAccount,
-    CategoryReference, CorrectBalance, JournalEntryId, LedgerAccountId, LedgerError,
-    NormalizedTags, OpenAccount, RecordManualTransaction, RenameAccount, ReplaceTransaction,
-    RestoreAccount, ReverseTransaction, TransferFee, TransferFunds, UpdateTransactionAnnotation,
+    AccountVersion, ActivityCursor, AnnotationChanges, AnnotationVersion, ApproveReconciliation,
+    ArchiveAccount, BalanceVersion, CategoryReference, CorrectBalance, DismissReconciliation,
+    JournalEntryId, LedgerAccountId, LedgerError, NormalizedTags, OpenAccount,
+    ReconciliationCaseId, ReconciliationVersion, RecordManualTransaction, RenameAccount,
+    ReplaceTransaction, RestoreAccount, ReverseTransaction, TransferFee, TransferFunds,
+    UpdateTransactionAnnotation,
 };
 use crate::contexts::reference_data::public::{CurrencyCatalog, CurrencyError};
 use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money};
 
 use super::dto::{
-    ActivityQuery, AnnotationRequest, BalanceCorrectionRequest, ExpectedAccountVersionRequest,
-    MoneyRequest, OpenAccountRequest, RecordTransactionRequest, RenameAccountRequest,
-    ReplaceRequest, ReverseRequest, TransferRequest,
+    ActivityQuery, AnnotationRequest, ApproveReconciliationRequest, BalanceCorrectionRequest,
+    DismissReconciliationRequest, ExpectedAccountVersionRequest, MoneyRequest, OpenAccountRequest,
+    RecordTransactionRequest, RenameAccountRequest, ReplaceRequest, ReverseRequest,
+    TransferRequest,
 };
 
 pub(crate) async fn open_account(
@@ -431,6 +434,82 @@ pub(crate) async fn correct_balance(
         .await
         .map_err(map_ledger_error)?;
     Ok((StatusCode::CREATED, Json(result)))
+}
+
+pub(crate) async fn list_reconciliations(
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    State(state): State<LedgerApiState>,
+) -> Result<Json<Vec<crate::contexts::ledger::public::ReconciliationView>>, V2ApiError> {
+    state
+        .ledger
+        .list_reconciliations(user_id)
+        .await
+        .map(Json)
+        .map_err(map_ledger_error)
+}
+
+pub(crate) async fn get_reconciliation(
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    State(state): State<LedgerApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<crate::contexts::ledger::public::ReconciliationView>, V2ApiError> {
+    state
+        .ledger
+        .get_reconciliation(user_id, ReconciliationCaseId::new(id))
+        .await
+        .map(Json)
+        .map_err(map_ledger_error)
+}
+
+pub(crate) async fn approve_reconciliation(
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    State(state): State<LedgerApiState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    V2Json(request): V2Json<ApproveReconciliationRequest>,
+) -> Result<Json<crate::contexts::ledger::public::ReconciliationResult>, V2ApiError> {
+    state
+        .ledger
+        .approve_reconciliation(ApproveReconciliation {
+            user_id,
+            case_id: ReconciliationCaseId::new(id),
+            expected_version: ReconciliationVersion::new(request.expected_version)
+                .map_err(map_ledger_error)?,
+            expected_balance_version: BalanceVersion::new(request.expected_balance_version)
+                .map_err(map_ledger_error)?,
+            reason: request.reason,
+            idempotency_key: idempotency_key(&headers)?,
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
+        })
+        .await
+        .map(Json)
+        .map_err(map_ledger_error)
+}
+
+pub(crate) async fn dismiss_reconciliation(
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    State(state): State<LedgerApiState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    V2Json(request): V2Json<DismissReconciliationRequest>,
+) -> Result<Json<crate::contexts::ledger::public::ReconciliationResult>, V2ApiError> {
+    state
+        .ledger
+        .dismiss_reconciliation(DismissReconciliation {
+            user_id,
+            case_id: ReconciliationCaseId::new(id),
+            expected_version: ReconciliationVersion::new(request.expected_version)
+                .map_err(map_ledger_error)?,
+            reason: request.reason,
+            idempotency_key: idempotency_key(&headers)?,
+            correlation_id: CorrelationId::generate(),
+            occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
+        })
+        .await
+        .map(Json)
+        .map_err(map_ledger_error)
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, V2ApiError> {

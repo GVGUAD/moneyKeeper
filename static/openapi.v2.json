@@ -273,6 +273,39 @@
         "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BalanceCorrection"}}}},
         "responses": {"201": {"description": "Correction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
+    },
+    "/reconciliations": {
+      "get": {
+        "operationId": "listReconciliations", "summary": "List balance reconciliations",
+        "description": "Lists provider-neutral balance observations and their immutable decision state for the authenticated tenant.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Reconciliation cases"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getReconciliation", "summary": "Get a balance reconciliation",
+        "description": "Returns one tenant case including provider values, captured Ledger balance and version, delta, and status.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Reconciliation case"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations/{id}/approve": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "approveReconciliation", "summary": "Approve a balance reconciliation",
+        "description": "Posts a visible correction only when both case expected_version and captured expected_balance_version still match.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApproveReconciliation"}}}},
+        "responses": {"200": {"description": "Reconciliation approved"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations/{id}/dismiss": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "dismissReconciliation", "summary": "Dismiss a balance reconciliation",
+        "description": "Dismisses one pending case at expected_version without creating any journal or changing a balance.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DismissReconciliation"}}}},
+        "responses": {"200": {"description": "Reconciliation dismissed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
     }
   },
   "components": {
@@ -402,6 +435,15 @@
           "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"},
           "observed_at": {"type": "string", "format": "date-time"}
         }
+      },
+      "ApproveReconciliation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["expected_version", "expected_balance_version", "reason"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"}}
+      },
+      "DismissReconciliation": {
+        "type": "object", "additionalProperties": false, "required": ["expected_version", "reason"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"}}
       },
       "Error": {
         "type": "object",
