@@ -67,19 +67,37 @@ pub(crate) struct ReconciliationStream {
 
 pub(crate) trait ReconciliationStore {
     async fn lock_reconciliation_stream(
-        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
+        &mut self,
+        user_id: UserId,
+        account_id: LedgerAccountId,
+        source: &SourceReference,
     ) -> Result<Option<ReconciliationStream>, LedgerError>;
     async fn find_reconciliation_by_observation(
-        &mut self, user_id: UserId, observation_id: super::super::domain::ObservationId,
+        &mut self,
+        user_id: UserId,
+        observation_id: super::super::domain::ObservationId,
     ) -> Result<Option<ReconciliationCase>, LedgerError>;
     async fn find_reconciliation_case(
-        &mut self, user_id: UserId, case_id: ReconciliationCaseId, lock: bool,
+        &mut self,
+        user_id: UserId,
+        case_id: ReconciliationCaseId,
+        lock: bool,
     ) -> Result<Option<ReconciliationCase>, LedgerError>;
-    async fn insert_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError>;
-    async fn save_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError>;
+    async fn insert_reconciliation_case(
+        &mut self,
+        case: &ReconciliationCase,
+    ) -> Result<(), LedgerError>;
+    async fn save_reconciliation_case(
+        &mut self,
+        case: &ReconciliationCase,
+    ) -> Result<(), LedgerError>;
     async fn save_reconciliation_stream(
-        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
-        stream: &ReconciliationStream, now: DateTime<Utc>,
+        &mut self,
+        user_id: UserId,
+        account_id: LedgerAccountId,
+        source: &SourceReference,
+        stream: &ReconciliationStream,
+        now: DateTime<Utc>,
     ) -> Result<(), LedgerError>;
 }
 
@@ -107,8 +125,6 @@ pub(crate) trait AnnotationStore {
 #[derive(Clone, Debug)]
 pub(crate) struct JournalSnapshot {
     pub id: JournalEntryId,
-    pub user_id: UserId,
-    pub description: String,
     pub postings: Vec<Posting>,
 }
 
@@ -129,7 +145,9 @@ pub(crate) trait LedgerAccountStore {
 
     async fn insert_account(&mut self, account: &LedgerAccount) -> Result<(), LedgerError>;
     async fn insert_system_account(
-        &mut self, account: &LedgerAccount, subject_reference: &str,
+        &mut self,
+        account: &LedgerAccount,
+        subject_reference: &str,
     ) -> Result<(), LedgerError>;
     async fn save_account(&mut self, account: &LedgerAccount) -> Result<(), LedgerError>;
 

@@ -69,11 +69,17 @@ impl LedgerError {
     }
 
     pub(crate) fn too_few_postings() -> Self {
-        Self::new(LedgerErrorKind::TooFewPostings, "journal requires at least two postings")
+        Self::new(
+            LedgerErrorKind::TooFewPostings,
+            "journal requires at least two postings",
+        )
     }
 
     pub(crate) fn zero_posting() -> Self {
-        Self::new(LedgerErrorKind::ZeroPosting, "posting amount cannot be zero")
+        Self::new(
+            LedgerErrorKind::ZeroPosting,
+            "posting amount cannot be zero",
+        )
     }
 
     pub(crate) fn unbalanced_journal() -> Self {
@@ -88,11 +94,17 @@ impl LedgerError {
     }
 
     pub(crate) fn currency_mismatch() -> Self {
-        Self::new(LedgerErrorKind::CurrencyMismatch, "ledger currency mismatch")
+        Self::new(
+            LedgerErrorKind::CurrencyMismatch,
+            "ledger currency mismatch",
+        )
     }
 
     pub(crate) fn invalid_relation() -> Self {
-        Self::new(LedgerErrorKind::InvalidRelation, "journal relation is invalid")
+        Self::new(
+            LedgerErrorKind::InvalidRelation,
+            "journal relation is invalid",
+        )
     }
 
     pub(crate) fn invalid_annotation(message: impl Into<String>) -> Self {
@@ -141,8 +153,11 @@ impl LedgerError {
     }
 
     pub(crate) fn database(source: sqlx::Error) -> Self {
-        Self::new(LedgerErrorKind::Persistence, "ledger storage is unavailable")
-            .with_source(source)
+        Self::new(
+            LedgerErrorKind::Persistence,
+            "ledger storage is unavailable",
+        )
+        .with_source(source)
     }
 
     pub(crate) fn persistence(message: impl Into<String>) -> Self {

@@ -406,12 +406,11 @@ async fn third_migration_installs_the_strict_ledger_baseline() {
         "ledger.command_receipts",
         "ledger.audit_events",
     ] {
-        let installed: Option<String> =
-            sqlx::query_scalar("SELECT to_regclass($1)::text")
-                .bind(relation)
-                .fetch_one(&mut *connection)
-                .await
-                .unwrap();
+        let installed: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(relation)
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
         assert_eq!(installed.as_deref(), Some(relation));
     }
 }

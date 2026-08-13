@@ -16,8 +16,7 @@ use super::{
 };
 
 /// Actor responsible for a recorded accounting fact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Actor {
     /// Authenticated user action.
     User(UserId),
@@ -28,6 +27,69 @@ pub enum Actor {
         source_kind: String,
         source_reference: String,
     },
+}
+
+impl Serialize for Actor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Wire<'a> {
+            User {
+                user_id: UserId,
+            },
+            System,
+            External {
+                source_kind: &'a str,
+                source_reference: &'a str,
+            },
+        }
+        match self {
+            Self::User(user_id) => Wire::User { user_id: *user_id }.serialize(serializer),
+            Self::System => Wire::System.serialize(serializer),
+            Self::External {
+                source_kind,
+                source_reference,
+            } => Wire::External {
+                source_kind,
+                source_reference,
+            }
+            .serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Actor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Wire {
+            User {
+                user_id: UserId,
+            },
+            System,
+            External {
+                source_kind: String,
+                source_reference: String,
+            },
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::User { user_id } => Self::User(user_id),
+            Wire::System => Self::System,
+            Wire::External {
+                source_kind,
+                source_reference,
+            } => Self::External {
+                source_kind,
+                source_reference,
+            },
+        })
+    }
 }
 
 /// Provider-neutral origin of a journal entry.
@@ -151,8 +213,12 @@ impl Posting {
         if signed_amount.is_zero() {
             return Err(LedgerError::zero_posting());
         }
-        Money::new(signed_amount, account.currency().clone(), Money::DATABASE_SCALE)
-            .map_err(|error| LedgerError::invalid_observation(error.to_string()))?;
+        Money::new(
+            signed_amount,
+            account.currency().clone(),
+            Money::DATABASE_SCALE,
+        )
+        .map_err(|error| LedgerError::invalid_observation(error.to_string()))?;
         Ok(Self {
             id,
             position: 0,
@@ -185,19 +251,33 @@ impl Posting {
     }
 
     /// Returns the immutable posting identity.
-    pub const fn id(&self) -> PostingId { self.id }
+    pub const fn id(&self) -> PostingId {
+        self.id
+    }
     /// Returns the stable one-based order within the journal.
-    pub const fn position(&self) -> u16 { self.position }
+    pub const fn position(&self) -> u16 {
+        self.position
+    }
     /// Returns the referenced account identity.
-    pub const fn account_id(&self) -> LedgerAccountId { self.account_id }
+    pub const fn account_id(&self) -> LedgerAccountId {
+        self.account_id
+    }
     /// Returns the owning tenant.
-    pub const fn user_id(&self) -> UserId { self.user_id }
+    pub const fn user_id(&self) -> UserId {
+        self.user_id
+    }
     /// Returns the posting currency.
-    pub const fn currency(&self) -> &CurrencyCode { &self.currency }
+    pub const fn currency(&self) -> &CurrencyCode {
+        &self.currency
+    }
     /// Returns the account nature snapshot used for display effects.
-    pub const fn account_nature(&self) -> AccountNature { self.account_nature }
+    pub const fn account_nature(&self) -> AccountNature {
+        self.account_nature
+    }
     /// Returns the raw debit-positive amount.
-    pub const fn signed_amount(&self) -> Decimal { self.signed_amount }
+    pub const fn signed_amount(&self) -> Decimal {
+        self.signed_amount
+    }
     /// Returns the normalized display-balance effect.
     pub fn display_effect(&self) -> Decimal {
         self.signed_amount * Decimal::from(self.account_nature.normal_sign())
@@ -257,8 +337,8 @@ impl JournalEntry {
             if posting.signed_amount.is_zero() {
                 return Err(LedgerError::zero_posting());
             }
-            posting.position = u16::try_from(index + 1)
-                .map_err(|_| LedgerError::too_few_postings())?;
+            posting.position =
+                u16::try_from(index + 1).map_err(|_| LedgerError::too_few_postings())?;
             let total = totals.entry(posting.currency.clone()).or_default();
             *total = total
                 .checked_add(posting.signed_amount)
@@ -288,7 +368,9 @@ impl JournalEntry {
     /// Consumes a newly built journal and records its supplied implied FX rate.
     pub fn with_fx_rate(mut self, implied_rate: Decimal) -> Result<Self, LedgerError> {
         if implied_rate <= Decimal::ZERO {
-            return Err(LedgerError::invalid_money("implied FX rate must be positive"));
+            return Err(LedgerError::invalid_money(
+                "implied FX rate must be positive",
+            ));
         }
         self.fx_rate = Some(implied_rate);
         Ok(self)
@@ -313,20 +395,48 @@ impl JournalEntry {
             .collect()
     }
 
-    pub const fn id(&self) -> JournalEntryId { self.id }
-    pub const fn user_id(&self) -> UserId { self.user_id }
-    pub fn description(&self) -> &str { &self.description }
-    pub const fn purpose(&self) -> PostingPurpose { self.purpose }
-    pub const fn source(&self) -> JournalSource { self.source }
-    pub const fn actor(&self) -> &Actor { &self.actor }
-    pub const fn occurred_at(&self) -> DateTime<Utc> { self.occurred_at }
-    pub const fn recorded_at(&self) -> DateTime<Utc> { self.recorded_at }
-    pub const fn correlation_id(&self) -> CorrelationId { self.correlation_id }
-    pub const fn causation_id(&self) -> Option<CausationId> { self.causation_id }
-    pub fn idempotency_key(&self) -> &IdempotencyKey { &self.idempotency_key }
-    pub const fn relations(&self) -> JournalRelations { self.relations }
-    pub const fn fx_rate(&self) -> Option<Decimal> { self.fx_rate }
-    pub fn postings(&self) -> &[Posting] { &self.postings }
+    pub const fn id(&self) -> JournalEntryId {
+        self.id
+    }
+    pub const fn user_id(&self) -> UserId {
+        self.user_id
+    }
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+    pub const fn purpose(&self) -> PostingPurpose {
+        self.purpose
+    }
+    pub const fn source(&self) -> JournalSource {
+        self.source
+    }
+    pub const fn actor(&self) -> &Actor {
+        &self.actor
+    }
+    pub const fn occurred_at(&self) -> DateTime<Utc> {
+        self.occurred_at
+    }
+    pub const fn recorded_at(&self) -> DateTime<Utc> {
+        self.recorded_at
+    }
+    pub const fn correlation_id(&self) -> CorrelationId {
+        self.correlation_id
+    }
+    pub const fn causation_id(&self) -> Option<CausationId> {
+        self.causation_id
+    }
+    pub fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
+    }
+    pub const fn relations(&self) -> JournalRelations {
+        self.relations
+    }
+    pub const fn fx_rate(&self) -> Option<Decimal> {
+        self.fx_rate
+    }
+    pub fn postings(&self) -> &[Posting] {
+        &self.postings
+    }
 }
 
 fn validate_description(value: String) -> Result<String, LedgerError> {

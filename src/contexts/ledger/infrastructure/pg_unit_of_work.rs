@@ -17,7 +17,9 @@ pub(crate) struct PgLedgerUnitOfWork {
 
 impl PgLedgerUnitOfWork {
     pub(crate) fn new(pool: &VerifiedV2Pool) -> Self {
-        Self { pool: pool.pool().clone() }
+        Self {
+            pool: pool.pool().clone(),
+        }
     }
 }
 
@@ -38,10 +40,16 @@ impl LedgerUnitOfWork for PgLedgerUnitOfWork {
 
 impl TransactionControl for PgLedgerTransaction<'_> {
     async fn commit(self) -> Result<(), LedgerError> {
-        self.transaction.commit().await.map_err(LedgerError::database)
+        self.transaction
+            .commit()
+            .await
+            .map_err(LedgerError::database)
     }
 
     async fn rollback(self) -> Result<(), LedgerError> {
-        self.transaction.rollback().await.map_err(LedgerError::database)
+        self.transaction
+            .rollback()
+            .await
+            .map_err(LedgerError::database)
     }
 }

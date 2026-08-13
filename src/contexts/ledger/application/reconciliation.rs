@@ -160,25 +160,23 @@ async fn observe<U: LedgerUnitOfWork>(
     };
     let case_id = super::super::domain::ReconciliationCaseId::generate();
     let case = if is_newer {
-        if let Some(active_id) = stream.as_ref().and_then(|value| value.active_case_id) {
-            if let Some(mut previous) = tx
+        if let Some(active_id) = stream.as_ref().and_then(|value| value.active_case_id)
+            && let Some(mut previous) = tx
                 .find_reconciliation_case(command.user_id, active_id, true)
                 .await?
-            {
-                if previous.status() == ReconciliationStatus::Pending {
-                    previous.mark_superseded(clock.now())?;
-                    tx.save_reconciliation_case(&previous).await?;
-                    append_fact(
-                        &mut tx,
-                        &previous,
-                        "ledger.reconciliation-superseded.v1",
-                        command.correlation_id,
-                        command.observed_at,
-                        clock.now(),
-                    )
-                    .await?;
-                }
-            }
+            && previous.status() == ReconciliationStatus::Pending
+        {
+            previous.mark_superseded(clock.now())?;
+            tx.save_reconciliation_case(&previous).await?;
+            append_fact(
+                &mut tx,
+                &previous,
+                "ledger.reconciliation-superseded.v1",
+                command.correlation_id,
+                command.observed_at,
+                clock.now(),
+            )
+            .await?;
         }
         ReconciliationCase::observe(
             case_id,

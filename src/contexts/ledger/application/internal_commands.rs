@@ -599,6 +599,7 @@ async fn import_provider(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn post_by_control_nature<U: LedgerUnitOfWork>(
     uow: &U,
     clock: &dyn Clock,

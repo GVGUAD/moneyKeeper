@@ -7,7 +7,6 @@ use uuid::Uuid;
 use crate::integration::{IntegrationEvent, outbox::OutboxWriter, postgres::PgOutboxWriter};
 use crate::shared_kernel::{CurrencyCode, IdempotencyKey, Money, UserId};
 
-use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
 use super::super::{
     application::ports::{
         AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, CorrectionDetail,
@@ -15,47 +14,72 @@ use super::super::{
         ProjectionStore, ReconciliationStore, ReconciliationStream, StoredReceipt,
     },
     domain::{
-        AccountNature, Actor, AnnotationId, AnnotationVersion, BudgetVisibility, CategoryReference,
-        JournalEntry, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags,
-        BalanceObservation, BalanceVersion, ObservationId, Posting, PostingId, ReconciliationCase,
-        ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion, SourceReference,
-        SystemAccountRole, TransactionAnnotation,
+        AccountNature, Actor, AnnotationId, AnnotationVersion, BalanceObservation, BalanceVersion,
+        BudgetVisibility, CategoryReference, JournalEntry, JournalEntryId, LedgerAccount,
+        LedgerAccountId, LedgerError, NormalizedTags, ObservationId, Posting, PostingId,
+        ReconciliationCase, ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion,
+        SourceReference, SystemAccountRole, TransactionAnnotation,
     },
 };
+use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
 
-const ACCOUNT_COLUMNS: &str =
-    "id, user_id, name, currency, nature, kind, authority, visibility, lifecycle, \
+const ACCOUNT_COLUMNS: &str = "id, user_id, name, currency, nature, kind, authority, visibility, lifecycle, \
      system_role, version, created_at, updated_at";
 
 #[derive(FromRow)]
 struct ReconciliationRow {
-    id: Uuid, user_id: Uuid, account_id: Uuid, observation_id: Uuid,
-    source_kind: String, source_stream_id: String, source_item_id: String,
-    observed_at: chrono::DateTime<chrono::Utc>, source_sequence: i64,
-    recorded_at: chrono::DateTime<chrono::Utc>, provider_reported_balance: Decimal,
-    available_balance: Option<Decimal>, currency: String, captured_ledger_balance: Decimal,
-    captured_balance_version: i64, delta: Decimal, status: String, version: i64,
-    approval_journal_id: Option<Uuid>, reason: Option<String>,
-    decision_actor_kind: Option<String>, decision_actor_reference: Option<String>,
-    created_at: chrono::DateTime<chrono::Utc>, updated_at: chrono::DateTime<chrono::Utc>,
+    id: Uuid,
+    user_id: Uuid,
+    account_id: Uuid,
+    observation_id: Uuid,
+    source_kind: String,
+    source_stream_id: String,
+    source_item_id: String,
+    observed_at: chrono::DateTime<chrono::Utc>,
+    source_sequence: i64,
+    recorded_at: chrono::DateTime<chrono::Utc>,
+    provider_reported_balance: Decimal,
+    available_balance: Option<Decimal>,
+    currency: String,
+    captured_ledger_balance: Decimal,
+    captured_balance_version: i64,
+    delta: Decimal,
+    status: String,
+    version: i64,
+    approval_journal_id: Option<Uuid>,
+    reason: Option<String>,
+    decision_actor_kind: Option<String>,
+    decision_actor_reference: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl ReconciliationRow {
     fn into_domain(self) -> Result<ReconciliationCase, LedgerError> {
         let currency = CurrencyCode::new(self.currency)
             .map_err(|_| LedgerError::persistence("stored reconciliation currency is invalid"))?;
-        let source = SourceReference::new(self.source_kind, self.source_stream_id, self.source_item_id)?;
+        let source =
+            SourceReference::new(self.source_kind, self.source_stream_id, self.source_item_id)?;
         let observation = BalanceObservation::new(
-            ObservationId::new(self.observation_id), source,
+            ObservationId::new(self.observation_id),
+            source,
             Money::new(self.provider_reported_balance, currency.clone(), 8)
                 .map_err(|error| LedgerError::persistence(error.to_string()))?,
-            self.available_balance.map(|amount| Money::new(amount, currency.clone(), 8))
-                .transpose().map_err(|error| LedgerError::persistence(error.to_string()))?,
-            self.observed_at, self.source_sequence, self.recorded_at,
+            self.available_balance
+                .map(|amount| Money::new(amount, currency.clone(), 8))
+                .transpose()
+                .map_err(|error| LedgerError::persistence(error.to_string()))?,
+            self.observed_at,
+            self.source_sequence,
+            self.recorded_at,
         )?;
         let actor = match self.decision_actor_kind.as_deref() {
-            Some("user") => self.decision_actor_reference.as_deref()
-                .and_then(|value| Uuid::parse_str(value).ok()).map(UserId::new).map(Actor::User),
+            Some("user") => self
+                .decision_actor_reference
+                .as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .map(UserId::new)
+                .map(Actor::User),
             Some("system") => Some(Actor::System),
             Some("external") => Some(Actor::External {
                 source_kind: observation.source().source_kind().to_owned(),
@@ -64,15 +88,22 @@ impl ReconciliationRow {
             _ => None,
         };
         ReconciliationCase::rehydrate(
-            ReconciliationCaseId::new(self.id), UserId::new(self.user_id),
-            LedgerAccountId::new(self.account_id), observation,
+            ReconciliationCaseId::new(self.id),
+            UserId::new(self.user_id),
+            LedgerAccountId::new(self.account_id),
+            observation,
             Money::new(self.captured_ledger_balance, currency.clone(), 8)
                 .map_err(|error| LedgerError::persistence(error.to_string()))?,
             BalanceVersion::new(self.captured_balance_version)?,
-            Money::new(self.delta, currency, 8).map_err(|error| LedgerError::persistence(error.to_string()))?,
-            ReconciliationStatus::parse(&self.status)?, ReconciliationVersion::new(self.version)?,
-            self.approval_journal_id.map(JournalEntryId::new), actor, self.reason,
-            self.created_at, self.updated_at,
+            Money::new(self.delta, currency, 8)
+                .map_err(|error| LedgerError::persistence(error.to_string()))?,
+            ReconciliationStatus::parse(&self.status)?,
+            ReconciliationVersion::new(self.version)?,
+            self.approval_journal_id.map(JournalEntryId::new),
+            actor,
+            self.reason,
+            self.created_at,
+            self.updated_at,
         )
     }
 }
@@ -165,18 +196,34 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         Ok(())
     }
 
-    async fn insert_system_account(&mut self, account: &LedgerAccount, subject_reference: &str) -> Result<(), LedgerError> {
+    async fn insert_system_account(
+        &mut self,
+        account: &LedgerAccount,
+        subject_reference: &str,
+    ) -> Result<(), LedgerError> {
         sqlx::query(
             "INSERT INTO ledger.accounts \
              (id, user_id, name, currency, nature, kind, authority, visibility, lifecycle, \
               system_role, system_subject_reference, version, created_at, updated_at) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
-        ).bind(account.id().into_uuid()).bind(account.user_id().into_uuid()).bind(account.name())
-         .bind(account.currency().as_str()).bind(account.nature().as_str()).bind(account.kind().as_str())
-         .bind(account.authority().as_str()).bind(account.visibility().as_str()).bind(account.lifecycle().as_str())
-         .bind(account.system_role().map(SystemAccountRole::as_str)).bind(subject_reference)
-         .bind(account.version().get()).bind(account.created_at()).bind(account.updated_at())
-         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        )
+        .bind(account.id().into_uuid())
+        .bind(account.user_id().into_uuid())
+        .bind(account.name())
+        .bind(account.currency().as_str())
+        .bind(account.nature().as_str())
+        .bind(account.kind().as_str())
+        .bind(account.authority().as_str())
+        .bind(account.visibility().as_str())
+        .bind(account.lifecycle().as_str())
+        .bind(account.system_role().map(SystemAccountRole::as_str))
+        .bind(subject_reference)
+        .bind(account.version().get())
+        .bind(account.created_at())
+        .bind(account.updated_at())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
         sqlx::query("INSERT INTO ledger.account_balances (account_id,user_id,currency,signed_balance,version,as_of) VALUES ($1,$2,$3,0,1,$4)")
             .bind(account.id().into_uuid()).bind(account.user_id().into_uuid())
             .bind(account.currency().as_str()).bind(account.created_at())
@@ -255,35 +302,57 @@ impl JournalStore for PgLedgerTransaction<'_> {
         lock: bool,
     ) -> Result<Option<JournalSnapshot>, LedgerError> {
         let sql = if lock {
-            "SELECT description FROM ledger.journal_entries WHERE id = $1 AND user_id = $2 FOR UPDATE"
+            "SELECT id FROM ledger.journal_entries WHERE id = $1 AND user_id = $2 FOR UPDATE"
         } else {
-            "SELECT description FROM ledger.journal_entries WHERE id = $1 AND user_id = $2"
+            "SELECT id FROM ledger.journal_entries WHERE id = $1 AND user_id = $2"
         };
-        let Some(description): Option<String> = sqlx::query_scalar(sql)
-            .bind(id.into_uuid()).bind(user_id.into_uuid())
-            .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?
-        else { return Ok(None) };
+        let Some(_stored_id): Option<Uuid> = sqlx::query_scalar(sql)
+            .bind(id.into_uuid())
+            .bind(user_id.into_uuid())
+            .fetch_optional(&mut *self.transaction)
+            .await
+            .map_err(LedgerError::database)?
+        else {
+            return Ok(None);
+        };
         #[derive(FromRow)]
         struct PostingRow {
-            id: Uuid, position: i16, account_id: Uuid, user_id: Uuid,
-            currency: String, account_nature: String, signed_amount: Decimal,
+            id: Uuid,
+            position: i16,
+            account_id: Uuid,
+            user_id: Uuid,
+            currency: String,
+            account_nature: String,
+            signed_amount: Decimal,
         }
         let rows = sqlx::query_as::<_, PostingRow>(
             "SELECT id, position, account_id, user_id, currency, account_nature, signed_amount \
              FROM ledger.postings WHERE journal_entry_id = $1 AND user_id = $2 ORDER BY position",
-        ).bind(id.into_uuid()).bind(user_id.into_uuid())
-          .fetch_all(&mut *self.transaction).await.map_err(LedgerError::database)?;
-        let postings = rows.into_iter().map(|row| {
-            Ok(Posting::rehydrate(
-                PostingId::new(row.id), u16::try_from(row.position)
-                    .map_err(|_| LedgerError::persistence("stored posting position is invalid"))?,
-                LedgerAccountId::new(row.account_id), UserId::new(row.user_id),
-                CurrencyCode::new(row.currency)
-                    .map_err(|_| LedgerError::persistence("stored posting currency is invalid"))?,
-                AccountNature::parse(&row.account_nature)?, row.signed_amount,
-            ))
-        }).collect::<Result<Vec<_>, LedgerError>>()?;
-        Ok(Some(JournalSnapshot { id, user_id, description, postings }))
+        )
+        .bind(id.into_uuid())
+        .bind(user_id.into_uuid())
+        .fetch_all(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
+        let postings = rows
+            .into_iter()
+            .map(|row| {
+                Ok(Posting::rehydrate(
+                    PostingId::new(row.id),
+                    u16::try_from(row.position).map_err(|_| {
+                        LedgerError::persistence("stored posting position is invalid")
+                    })?,
+                    LedgerAccountId::new(row.account_id),
+                    UserId::new(row.user_id),
+                    CurrencyCode::new(row.currency).map_err(|_| {
+                        LedgerError::persistence("stored posting currency is invalid")
+                    })?,
+                    AccountNature::parse(&row.account_nature)?,
+                    row.signed_amount,
+                ))
+            })
+            .collect::<Result<Vec<_>, LedgerError>>()?;
+        Ok(Some(JournalSnapshot { id, postings }))
     }
 
     async fn insert_journal(
@@ -352,10 +421,17 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
     ) -> Result<Option<TransactionAnnotation>, LedgerError> {
         #[derive(FromRow)]
         struct Row {
-            id: Uuid, journal_entry_id: Uuid, user_id: Uuid, description: String,
-            category_id: Option<Uuid>, note: Option<String>, tags: Vec<String>,
-            budget_visibility: String, version: i64,
-            created_at: chrono::DateTime<chrono::Utc>, updated_at: chrono::DateTime<chrono::Utc>,
+            id: Uuid,
+            journal_entry_id: Uuid,
+            user_id: Uuid,
+            description: String,
+            category_id: Option<Uuid>,
+            note: Option<String>,
+            tags: Vec<String>,
+            budget_visibility: String,
+            version: i64,
+            created_at: chrono::DateTime<chrono::Utc>,
+            updated_at: chrono::DateTime<chrono::Utc>,
         }
         let sql = if lock {
             "SELECT id, journal_entry_id, user_id, description, category_id, note, tags, \
@@ -368,26 +444,47 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
              FROM ledger.transaction_annotations WHERE journal_entry_id = $1 AND user_id = $2"
         };
         let row = sqlx::query_as::<_, Row>(sql)
-            .bind(journal_entry_id.into_uuid()).bind(user_id.into_uuid())
-            .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?;
-        row.map(|row| TransactionAnnotation::rehydrate(
-            AnnotationId::new(row.id), JournalEntryId::new(row.journal_entry_id), UserId::new(row.user_id),
-            row.description, row.category_id.map(CategoryReference::new), row.note,
-            NormalizedTags::new(row.tags)?,
-            match row.budget_visibility.as_str() {
-                "included" => BudgetVisibility::Included,
-                "excluded" => BudgetVisibility::Excluded,
-                _ => return Err(LedgerError::persistence("stored budget visibility is invalid")),
-            },
-            AnnotationVersion::new(row.version)?, row.created_at, row.updated_at,
-        )).transpose()
+            .bind(journal_entry_id.into_uuid())
+            .bind(user_id.into_uuid())
+            .fetch_optional(&mut *self.transaction)
+            .await
+            .map_err(LedgerError::database)?;
+        row.map(|row| {
+            TransactionAnnotation::rehydrate(
+                AnnotationId::new(row.id),
+                JournalEntryId::new(row.journal_entry_id),
+                UserId::new(row.user_id),
+                row.description,
+                row.category_id.map(CategoryReference::new),
+                row.note,
+                NormalizedTags::new(row.tags)?,
+                match row.budget_visibility.as_str() {
+                    "included" => BudgetVisibility::Included,
+                    "excluded" => BudgetVisibility::Excluded,
+                    _ => {
+                        return Err(LedgerError::persistence(
+                            "stored budget visibility is invalid",
+                        ));
+                    }
+                },
+                AnnotationVersion::new(row.version)?,
+                row.created_at,
+                row.updated_at,
+            )
+        })
+        .transpose()
     }
 
     async fn insert_annotation(
         &mut self,
         annotation: &TransactionAnnotation,
     ) -> Result<(), LedgerError> {
-        let tags: Vec<&str> = annotation.tags().as_slice().iter().map(String::as_str).collect();
+        let tags: Vec<&str> = annotation
+            .tags()
+            .as_slice()
+            .iter()
+            .map(String::as_str)
+            .collect();
         sqlx::query(
             "INSERT INTO ledger.transaction_annotations \
              (id, journal_entry_id, user_id, description, category_id, note, tags, \
@@ -411,8 +508,16 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
         Ok(())
     }
 
-    async fn save_annotation(&mut self, annotation: &TransactionAnnotation) -> Result<(), LedgerError> {
-        let tags: Vec<&str> = annotation.tags().as_slice().iter().map(String::as_str).collect();
+    async fn save_annotation(
+        &mut self,
+        annotation: &TransactionAnnotation,
+    ) -> Result<(), LedgerError> {
+        let tags: Vec<&str> = annotation
+            .tags()
+            .as_slice()
+            .iter()
+            .map(String::as_str)
+            .collect();
         let result = sqlx::query(
             "UPDATE ledger.transaction_annotations SET description = $3, category_id = $4, note = $5, \
              tags = $6, budget_visibility = $7, version = $8, updated_at = $9 \
@@ -423,25 +528,39 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
          .bind(annotation.version().get()).bind(annotation.updated_at())
          .bind(annotation.version().get() - 1)
          .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
-        if result.rows_affected() != 1 { return Err(LedgerError::version_conflict()) }
+        if result.rows_affected() != 1 {
+            return Err(LedgerError::version_conflict());
+        }
         Ok(())
     }
 }
 
 impl CorrectionStore for PgLedgerTransaction<'_> {
-    async fn insert_correction_detail(&mut self, detail: CorrectionDetail<'_>) -> Result<(), LedgerError> {
+    async fn insert_correction_detail(
+        &mut self,
+        detail: CorrectionDetail<'_>,
+    ) -> Result<(), LedgerError> {
         sqlx::query(
             "INSERT INTO ledger.balance_correction_details \
              (journal_entry_id, user_id, account_id, currency, before_display_balance, \
               target_display_balance, display_delta, observed_balance_version, reason, actor_kind, \
               observed_at, recorded_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'user', $10, $11)",
-        ).bind(detail.journal_entry_id.into_uuid()).bind(detail.user_id.into_uuid())
-         .bind(detail.account_id.into_uuid()).bind(detail.currency.as_str())
-         .bind(detail.before_display_balance).bind(detail.target_display_balance)
-         .bind(detail.display_delta).bind(detail.observed_balance_version).bind(detail.reason)
-         .bind(detail.observed_at).bind(detail.recorded_at)
-         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+        )
+        .bind(detail.journal_entry_id.into_uuid())
+        .bind(detail.user_id.into_uuid())
+        .bind(detail.account_id.into_uuid())
+        .bind(detail.currency.as_str())
+        .bind(detail.before_display_balance)
+        .bind(detail.target_display_balance)
+        .bind(detail.display_delta)
+        .bind(detail.observed_balance_version)
+        .bind(detail.reason)
+        .bind(detail.observed_at)
+        .bind(detail.recorded_at)
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
         Ok(())
     }
 }
@@ -507,21 +626,37 @@ impl ProjectionStore for PgLedgerTransaction<'_> {
     }
 }
 
-const RECONCILIATION_COLUMNS: &str =
-    "id, user_id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
+const RECONCILIATION_COLUMNS: &str = "id, user_id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
      observed_at, source_sequence, recorded_at, provider_reported_balance, available_balance, \
      currency, captured_ledger_balance, captured_balance_version, delta, status, version, \
      approval_journal_id, reason, decision_actor_kind, decision_actor_reference, created_at, updated_at";
 
 impl ReconciliationStore for PgLedgerTransaction<'_> {
     async fn lock_reconciliation_stream(
-        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
+        &mut self,
+        user_id: UserId,
+        account_id: LedgerAccountId,
+        source: &SourceReference,
     ) -> Result<Option<ReconciliationStream>, LedgerError> {
-        let identity = format!("{}:{}:{}:{}", user_id, account_id, source.source_kind(), source.stream_id());
+        let identity = format!(
+            "{}:{}:{}:{}",
+            user_id,
+            account_id,
+            source.source_kind(),
+            source.stream_id()
+        );
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(identity).execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+            .bind(identity)
+            .execute(&mut *self.transaction)
+            .await
+            .map_err(LedgerError::database)?;
         #[derive(FromRow)]
-        struct Row { latest_observed_at: chrono::DateTime<chrono::Utc>, latest_source_sequence: i64, latest_observation_id: Uuid, active_case_id: Option<Uuid> }
+        struct Row {
+            latest_observed_at: chrono::DateTime<chrono::Utc>,
+            latest_source_sequence: i64,
+            latest_observation_id: Uuid,
+            active_case_id: Option<Uuid>,
+        }
         sqlx::query_as::<_, Row>(
             "SELECT latest_observed_at, latest_source_sequence, latest_observation_id, active_case_id \
              FROM ledger.reconciliation_streams WHERE user_id = $1 AND account_id = $2 \
@@ -536,31 +671,52 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
     }
 
     async fn find_reconciliation_by_observation(
-        &mut self, user_id: UserId, observation_id: ObservationId,
+        &mut self,
+        user_id: UserId,
+        observation_id: ObservationId,
     ) -> Result<Option<ReconciliationCase>, LedgerError> {
         sqlx::query_as::<_, ReconciliationRow>(&format!(
             "SELECT {RECONCILIATION_COLUMNS} FROM ledger.reconciliation_cases \
              WHERE user_id = $1 AND observation_id = $2"
-        )).bind(user_id.into_uuid()).bind(observation_id.into_uuid())
-          .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?
-          .map(ReconciliationRow::into_domain).transpose()
+        ))
+        .bind(user_id.into_uuid())
+        .bind(observation_id.into_uuid())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?
+        .map(ReconciliationRow::into_domain)
+        .transpose()
     }
 
     async fn find_reconciliation_case(
-        &mut self, user_id: UserId, case_id: ReconciliationCaseId, lock: bool,
+        &mut self,
+        user_id: UserId,
+        case_id: ReconciliationCaseId,
+        lock: bool,
     ) -> Result<Option<ReconciliationCase>, LedgerError> {
         let suffix = if lock { " FOR UPDATE" } else { "" };
         sqlx::query_as::<_, ReconciliationRow>(&format!(
             "SELECT {RECONCILIATION_COLUMNS} FROM ledger.reconciliation_cases \
              WHERE user_id = $1 AND id = $2{suffix}"
-        )).bind(user_id.into_uuid()).bind(case_id.into_uuid())
-          .fetch_optional(&mut *self.transaction).await.map_err(LedgerError::database)?
-          .map(ReconciliationRow::into_domain).transpose()
+        ))
+        .bind(user_id.into_uuid())
+        .bind(case_id.into_uuid())
+        .fetch_optional(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?
+        .map(ReconciliationRow::into_domain)
+        .transpose()
     }
 
-    async fn insert_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError> {
+    async fn insert_reconciliation_case(
+        &mut self,
+        case: &ReconciliationCase,
+    ) -> Result<(), LedgerError> {
         let observation = case.observation();
-        let (actor_kind, actor_reference) = case.decision_actor().map(actor_columns).unwrap_or(("system", None));
+        let (actor_kind, actor_reference) = case
+            .decision_actor()
+            .map(actor_columns)
+            .unwrap_or(("system", None));
         sqlx::query(
             "INSERT INTO ledger.reconciliation_cases \
              (id, user_id, account_id, observation_id, source_kind, source_stream_id, source_item_id, \
@@ -581,23 +737,45 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
         Ok(())
     }
 
-    async fn save_reconciliation_case(&mut self, case: &ReconciliationCase) -> Result<(), LedgerError> {
-        let (actor_kind, actor_reference) = case.decision_actor().map(actor_columns).unwrap_or(("system", None));
+    async fn save_reconciliation_case(
+        &mut self,
+        case: &ReconciliationCase,
+    ) -> Result<(), LedgerError> {
+        let (actor_kind, actor_reference) = case
+            .decision_actor()
+            .map(actor_columns)
+            .unwrap_or(("system", None));
         let updated = sqlx::query(
             "UPDATE ledger.reconciliation_cases SET status=$3, version=$4, approval_journal_id=$5, \
              reason=$6, decision_actor_kind=$7, decision_actor_reference=$8, updated_at=$9 \
              WHERE id=$1 AND user_id=$2 AND version=$10",
-        ).bind(case.id().into_uuid()).bind(case.user_id().into_uuid()).bind(case.status().as_str())
-         .bind(case.version().get()).bind(case.approval_journal_id().map(JournalEntryId::into_uuid))
-         .bind(case.reason()).bind(actor_kind).bind(actor_reference).bind(case.updated_at())
-         .bind(case.version().get() - 1).execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
-        if updated.rows_affected() != 1 { return Err(LedgerError::version_conflict()) }
+        )
+        .bind(case.id().into_uuid())
+        .bind(case.user_id().into_uuid())
+        .bind(case.status().as_str())
+        .bind(case.version().get())
+        .bind(case.approval_journal_id().map(JournalEntryId::into_uuid))
+        .bind(case.reason())
+        .bind(actor_kind)
+        .bind(actor_reference)
+        .bind(case.updated_at())
+        .bind(case.version().get() - 1)
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
+        if updated.rows_affected() != 1 {
+            return Err(LedgerError::version_conflict());
+        }
         Ok(())
     }
 
     async fn save_reconciliation_stream(
-        &mut self, user_id: UserId, account_id: LedgerAccountId, source: &SourceReference,
-        stream: &ReconciliationStream, now: chrono::DateTime<chrono::Utc>,
+        &mut self,
+        user_id: UserId,
+        account_id: LedgerAccountId,
+        source: &SourceReference,
+        stream: &ReconciliationStream,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), LedgerError> {
         sqlx::query(
             "INSERT INTO ledger.reconciliation_streams \
@@ -624,7 +802,11 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         lock: bool,
     ) -> Result<Option<StoredReceipt>, LedgerError> {
         #[derive(FromRow)]
-        struct ReceiptRow { request_hash: Vec<u8>, status: String, result: serde_json::Value }
+        struct ReceiptRow {
+            request_hash: Vec<u8>,
+            status: String,
+            result: serde_json::Value,
+        }
         let sql = if lock {
             "SELECT request_hash, status, result FROM ledger.command_receipts \
              WHERE user_id = $1 AND command_name = $2 AND idempotency_key = $3 FOR UPDATE"
@@ -642,8 +824,13 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         row.map(|row| {
             let request_hash = <[u8; 32]>::try_from(row.request_hash)
                 .map_err(|_| LedgerError::persistence("stored receipt hash is invalid"))?;
-            Ok(StoredReceipt { request_hash, status: row.status, result: row.result })
-        }).transpose()
+            Ok(StoredReceipt {
+                request_hash,
+                status: row.status,
+                result: row.result,
+            })
+        })
+        .transpose()
     }
 
     async fn insert_receipt(
@@ -712,8 +899,12 @@ fn actor_columns(actor: &Actor) -> (&'static str, Option<String>) {
     match actor {
         Actor::User(user_id) => ("user", Some(user_id.to_string())),
         Actor::System => ("system", None),
-        Actor::External { source_kind, source_reference } => {
-            ("external", Some(format!("{source_kind}:{source_reference}")))
-        }
+        Actor::External {
+            source_kind,
+            source_reference,
+        } => (
+            "external",
+            Some(format!("{source_kind}:{source_reference}")),
+        ),
     }
 }

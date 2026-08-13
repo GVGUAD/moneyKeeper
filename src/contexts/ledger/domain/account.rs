@@ -124,7 +124,9 @@ impl AccountAuthority {
             "manual" => Ok(Self::Manual),
             "provider_observed" => Ok(Self::ProviderObserved),
             "system" => Ok(Self::System),
-            _ => Err(LedgerError::persistence("stored account authority is invalid")),
+            _ => Err(LedgerError::persistence(
+                "stored account authority is invalid",
+            )),
         }
     }
 }
@@ -149,7 +151,9 @@ impl AccountVisibility {
         match value {
             "user_visible" => Ok(Self::UserVisible),
             "hidden" => Ok(Self::Hidden),
-            _ => Err(LedgerError::persistence("stored account visibility is invalid")),
+            _ => Err(LedgerError::persistence(
+                "stored account visibility is invalid",
+            )),
         }
     }
 }
@@ -174,7 +178,9 @@ impl AccountLifecycle {
         match value {
             "active" => Ok(Self::Active),
             "archived" => Ok(Self::Archived),
-            _ => Err(LedgerError::persistence("stored account lifecycle is invalid")),
+            _ => Err(LedgerError::persistence(
+                "stored account lifecycle is invalid",
+            )),
         }
     }
 }
@@ -254,11 +260,16 @@ impl SystemAccountRole {
         match self {
             Self::UncategorizedIncome => AccountNature::Income,
             Self::UncategorizedExpense => AccountNature::Expense,
-            Self::OpeningBalanceEquity | Self::BalanceAdjustmentEquity | Self::FxClearing | Self::PortfolioCashClearing => {
-                AccountNature::Equity
+            Self::OpeningBalanceEquity
+            | Self::BalanceAdjustmentEquity
+            | Self::FxClearing
+            | Self::PortfolioCashClearing => AccountNature::Equity,
+            Self::ExternalReceivable | Self::InterestReceivable | Self::FeeReceivable => {
+                AccountNature::Asset
             }
-            Self::ExternalReceivable | Self::InterestReceivable | Self::FeeReceivable => AccountNature::Asset,
-            Self::ExternalPayable | Self::InterestPayable | Self::FeePayable => AccountNature::Liability,
+            Self::ExternalPayable | Self::InterestPayable | Self::FeePayable => {
+                AccountNature::Liability
+            }
             Self::BadDebtExpense => AccountNature::Expense,
             Self::DebtForgivenessIncome => AccountNature::Income,
         }
@@ -299,7 +310,9 @@ impl SystemAccountRole {
             "portfolio_cash_clearing" => Ok(Self::PortfolioCashClearing),
             "bad_debt_expense" => Ok(Self::BadDebtExpense),
             "debt_forgiveness_income" => Ok(Self::DebtForgivenessIncome),
-            _ => Err(LedgerError::persistence("stored system account role is invalid")),
+            _ => Err(LedgerError::persistence(
+                "stored system account role is invalid",
+            )),
         }
     }
 }
@@ -342,28 +355,6 @@ impl LedgerAccount {
             kind,
             nature,
             AccountAuthority::Manual,
-            clock,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn open_provider_observed(
-        id: LedgerAccountId,
-        user_id: UserId,
-        name: impl Into<String>,
-        currency: CurrencyCode,
-        kind: AccountKind,
-        nature: AccountNature,
-        clock: &(impl Clock + ?Sized),
-    ) -> Result<Self, LedgerError> {
-        Self::open_user(
-            id,
-            user_id,
-            name,
-            currency,
-            kind,
-            nature,
-            AccountAuthority::ProviderObserved,
             clock,
         )
     }
@@ -538,35 +529,65 @@ impl LedgerAccount {
     }
 
     /// Returns the account identity.
-    pub const fn id(&self) -> LedgerAccountId { self.id }
+    pub const fn id(&self) -> LedgerAccountId {
+        self.id
+    }
     /// Returns the owning tenant.
-    pub const fn user_id(&self) -> UserId { self.user_id }
+    pub const fn user_id(&self) -> UserId {
+        self.user_id
+    }
     /// Returns the account name.
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
     /// Returns the immutable currency.
-    pub const fn currency(&self) -> &CurrencyCode { &self.currency }
+    pub const fn currency(&self) -> &CurrencyCode {
+        &self.currency
+    }
     /// Returns the accounting nature.
-    pub const fn nature(&self) -> AccountNature { self.nature }
+    pub const fn nature(&self) -> AccountNature {
+        self.nature
+    }
     /// Returns the closed kind.
-    pub const fn kind(&self) -> AccountKind { self.kind }
+    pub const fn kind(&self) -> AccountKind {
+        self.kind
+    }
     /// Returns the account authority.
-    pub const fn authority(&self) -> AccountAuthority { self.authority }
+    pub const fn authority(&self) -> AccountAuthority {
+        self.authority
+    }
     /// Returns account visibility.
-    pub const fn visibility(&self) -> AccountVisibility { self.visibility }
+    pub const fn visibility(&self) -> AccountVisibility {
+        self.visibility
+    }
     /// Returns whether this account is user visible.
-    pub const fn is_user_visible(&self) -> bool { matches!(self.visibility, AccountVisibility::UserVisible) }
+    pub const fn is_user_visible(&self) -> bool {
+        matches!(self.visibility, AccountVisibility::UserVisible)
+    }
     /// Returns the lifecycle.
-    pub const fn lifecycle(&self) -> AccountLifecycle { self.lifecycle }
+    pub const fn lifecycle(&self) -> AccountLifecycle {
+        self.lifecycle
+    }
     /// Returns the system role, if any.
-    pub const fn system_role(&self) -> Option<SystemAccountRole> { self.system_role }
+    pub const fn system_role(&self) -> Option<SystemAccountRole> {
+        self.system_role
+    }
     /// Returns the optimistic version.
-    pub const fn version(&self) -> AccountVersion { self.version }
+    pub const fn version(&self) -> AccountVersion {
+        self.version
+    }
     /// Returns the creation time.
-    pub const fn created_at(&self) -> DateTime<Utc> { self.created_at }
+    pub const fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
     /// Returns the last metadata-change time.
-    pub const fn updated_at(&self) -> DateTime<Utc> { self.updated_at }
+    pub const fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
     /// Returns the display-balance normal sign.
-    pub const fn normal_sign(&self) -> i8 { self.nature.normal_sign() }
+    pub const fn normal_sign(&self) -> i8 {
+        self.nature.normal_sign()
+    }
 }
 
 fn valid_user_kind(kind: AccountKind, nature: AccountNature) -> bool {
