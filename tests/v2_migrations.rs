@@ -384,3 +384,34 @@ async fn database_lineage_cannot_be_updated_or_deleted() {
     assert!(update.is_err());
     assert!(delete.is_err());
 }
+
+#[tokio::test]
+async fn third_migration_installs_the_strict_ledger_baseline() {
+    let database = fresh_database().await;
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+
+    let applied: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(applied, vec![1, 2, 3]);
+
+    for relation in [
+        "ledger.accounts",
+        "ledger.journal_entries",
+        "ledger.postings",
+        "ledger.account_balances",
+        "ledger.command_receipts",
+        "ledger.audit_events",
+    ] {
+        let installed: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass($1)::text")
+                .bind(relation)
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
+        assert_eq!(installed.as_deref(), Some(relation));
+    }
+}

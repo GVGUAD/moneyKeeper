@@ -212,7 +212,7 @@ git commit -m "feat(ledger): enforce immutable balanced journals"
 - Modify: `tests/v2_migrations.rs`
 - Create: `tests/ledger_persistence.rs`
 
-- [ ] **Step 1 — RED: write database invariant tests before SQL**
+- [x] **Step 1 — RED: write database invariant tests before SQL**
 
 Test direct SQL attempts for:
 
@@ -228,13 +228,13 @@ Test direct SQL attempts for:
 - tenant-safe reconciliation cases, legal status transitions, and positive balance-projection versions;
 - `NUMERIC(28,8)` overflow/scale constraints.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_persistence schema`
 
 Expected: FAIL because migration `0003` is absent.
 
-- [ ] **Step 3 — GREEN: create schema in dependency order**
+- [x] **Step 3 — GREEN: create schema in dependency order**
 
 Create, in this order:
 
@@ -254,7 +254,7 @@ Use `UNIQUE (id, user_id)` and, where needed, `UNIQUE (id, user_id, currency)` s
 
 Add DEFERRABLE constraint triggers that verify at least two postings and a zero sum per `(journal_entry_id, currency)` at commit. Add guards that reject UPDATE/DELETE on journal entries, postings, correction details, and audit events. Add normal indexes during this blank-database migration; do not use `CONCURRENTLY` or staged validation.
 
-- [ ] **Step 4 — Run migration and persistence tests**
+- [x] **Step 4 — Run migration and persistence tests**
 
 Run:
 
@@ -265,11 +265,11 @@ cargo test --test ledger_persistence schema
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: inspect every foreign key and trigger**
+- [x] **Step 5 — REFACTOR: inspect every foreign key and trigger**
 
 Verify no Ledger DDL references `banking`, `mail`, `subscriptions`, or a provider. The only cross-schema references allowed are immutable currency codes/reference IDs and integration outbox written by the UoW.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/infrastructure/migrations_v2/0003_ledger.sql tests/v2_migrations.rs tests/ledger_persistence.rs
