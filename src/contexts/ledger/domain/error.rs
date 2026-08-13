@@ -21,6 +21,8 @@ pub(crate) enum LedgerErrorKind {
     InvalidObservation,
     InvalidState,
     StaleObservedBalance,
+    IdempotencyConflict,
+    InvalidMoney,
     NotFound,
     Persistence,
 }
@@ -123,6 +125,17 @@ impl LedgerError {
         )
     }
 
+    pub(crate) fn idempotency_conflict() -> Self {
+        Self::new(
+            LedgerErrorKind::IdempotencyConflict,
+            "idempotency key was already used with a different request",
+        )
+    }
+
+    pub(crate) fn invalid_money(message: impl Into<String>) -> Self {
+        Self::new(LedgerErrorKind::InvalidMoney, message)
+    }
+
     pub(crate) fn not_found() -> Self {
         Self::new(LedgerErrorKind::NotFound, "ledger resource was not found")
     }
@@ -220,6 +233,14 @@ impl LedgerError {
 
     pub fn is_stale_observed_balance(&self) -> bool {
         self.kind == LedgerErrorKind::StaleObservedBalance
+    }
+
+    pub fn is_idempotency_conflict(&self) -> bool {
+        self.kind == LedgerErrorKind::IdempotencyConflict
+    }
+
+    pub fn is_invalid_money(&self) -> bool {
+        self.kind == LedgerErrorKind::InvalidMoney
     }
 
     /// Returns whether a tenant-scoped Ledger resource was absent.
