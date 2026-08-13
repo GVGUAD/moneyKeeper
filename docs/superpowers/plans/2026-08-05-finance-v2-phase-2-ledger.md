@@ -593,7 +593,7 @@ git commit -m "feat(ledger): add auditable queries and projection verification"
 - Create: `tests/ledger_api_v2.rs`
 - Modify: `tests/openapi_v2.rs`
 
-- [ ] **Step 1 — RED: write the HTTP contract tests**
+- [x] **Step 1 — RED: write the HTTP contract tests**
 
 Cover authenticated tenant isolation, decimal-string parsing/serialization, unknown/inactive currency rejection, over-minor-unit-scale rejection without rounding, currency mismatch validation, missing/oversized idempotency key, same-key replay, mismatched replay conflict, missing/stale `expected_version`, error-code stability, and no financial `DELETE` routes. Prove canonical validated Money—not raw JSON spelling—is used consistently for command hashing and execution.
 
@@ -619,17 +619,17 @@ POST   /accounts/{id}/balance-corrections
 
 Responses expose source, occurred/recorded timestamps, actor, correlation, idempotent replay flag, postings/effect, reversal/correction/replacement relations, signed/display balances, and annotation version. Account reads reserve `provider_reported`, `available`, and `reconciliation_difference` as nullable fields alongside Ledger balance, currency, version, and `as_of`; Phase 2 always returns those provider fields as `null`, never copies the Ledger value into them.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_api_v2`
 
 Expected: FAIL/404 because the isolated replacement routes do not exist.
 
-- [ ] **Step 3 — GREEN: implement thin handlers and exact DTOs**
+- [x] **Step 3 — GREEN: implement thin handlers and exact DTOs**
 
 Handlers derive `UserId` only from authenticated JWT state, parse `Idempotency-Key` and body `expected_version`, validate/canonicalize every monetary input through `reference_data::public::CurrencyCatalog`, call the Ledger public facade, and map typed errors. They contain no SQL, balance arithmetic, or implicit rounding. Amounts are JSON strings plus explicit currency codes. `bootstrap::v2` constructs the V2 Ledger, Reference Data, Classification, Preferences, auth, and isolated router only from Phase 1's `VerifiedV2Pool`; it starts no workers and is never called by `main.rs` in this phase.
 
-- [ ] **Step 4 — Run focused API and OpenAPI checks**
+- [x] **Step 4 — Run focused API and OpenAPI checks**
 
 Run:
 
@@ -641,11 +641,11 @@ jq empty static/openapi.v2.json
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: compare route tests to OpenAPI**
+- [x] **Step 5 — REFACTOR: compare route tests to OpenAPI**
 
 Every route, status, required header, enum, and decimal-string schema must agree. OpenAPI must not advertise legacy account deletion, transaction deletion, direct balance update, or unauthenticated financial endpoints.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/api src/api/v2.rs src/api/v2_state.rs src/api/mod.rs src/bootstrap src/lib.rs tests/ledger_api_v2.rs tests/openapi_v2.rs static/openapi.v2.json

@@ -3,6 +3,7 @@
 mod domain;
 mod application;
 mod infrastructure;
+pub(crate) mod api;
 
 pub mod public;
 

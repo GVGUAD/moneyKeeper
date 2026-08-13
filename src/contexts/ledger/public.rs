@@ -90,6 +90,12 @@ pub struct AccountView {
     pub display_balance: Decimal,
     pub balance_version: i64,
     pub as_of: DateTime<Utc>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub provider_reported: Option<Decimal>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub available: Option<Decimal>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub reconciliation_difference: Option<Decimal>,
 }
 
 /// Durable account-command result.

@@ -29,6 +29,16 @@ impl LedgerFacade {
         self.queries.account_activity(user_id, account_id, after, limit).await
     }
 
+    /// Lists tenant journal facts in stable reverse chronological order.
+    pub async fn list_journals(
+        &self,
+        user_id: UserId,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        self.queries.list_journals(user_id, after, limit).await
+    }
+
     /// Gets one fully detailed immutable journal.
     pub async fn get_journal(&self, user_id: UserId, id: JournalEntryId) -> Result<JournalView, LedgerError> {
         self.queries.get_journal(user_id, id).await

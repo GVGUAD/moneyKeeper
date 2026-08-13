@@ -9,7 +9,7 @@ fn contract() -> Value {
 }
 
 #[test]
-fn openapi_v2_is_unversioned_and_has_exact_foundation_routes() {
+fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
     let document = contract();
     assert_eq!(document["openapi"], "3.1.0");
     let actual: BTreeSet<&str> = document["paths"]
@@ -26,13 +26,25 @@ fn openapi_v2_is_unversioned_and_has_exact_foundation_routes() {
         "/categories/{id}/archive",
         "/categories/{id}/restore",
         "/preferences",
+        "/accounts",
+        "/accounts/{id}",
+        "/accounts/{id}/archive",
+        "/accounts/{id}/restore",
+        "/accounts/{id}/activity",
+        "/transactions",
+        "/transactions/{id}",
+        "/transactions/{id}/annotation",
+        "/transactions/{id}/reversals",
+        "/transactions/{id}/replacements",
+        "/transfers",
+        "/accounts/{id}/balance-corrections",
     ]);
     assert_eq!(actual, expected);
     assert!(actual.iter().all(|path| !path.starts_with("/v2")));
 }
 
 #[test]
-fn every_foundation_operation_is_authenticated_and_uniquely_named() {
+fn every_finance_operation_is_authenticated_and_uniquely_named() {
     let document = contract();
     let mut operation_ids = BTreeSet::new();
     let mut operation_count = 0;
@@ -69,7 +81,7 @@ fn every_foundation_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 10);
+    assert_eq!(operation_count, 25);
 }
 
 #[test]
@@ -99,7 +111,14 @@ fn openapi_operations_match_the_isolated_router_manifest() {
 #[test]
 fn optimistic_concurrency_fields_are_required() {
     let document = contract();
-    for schema in ["RenameCategory", "ExpectedVersion", "UpdatePreferences"] {
+    for schema in [
+        "RenameCategory",
+        "ExpectedVersion",
+        "UpdatePreferences",
+        "RenameAccount",
+        "ExpectedAccountVersion",
+        "AnnotationUpdate",
+    ] {
         let required = document["components"]["schemas"][schema]["required"]
             .as_array()
             .unwrap();

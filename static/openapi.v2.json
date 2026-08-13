@@ -157,6 +157,122 @@
           "500": {"$ref": "#/components/responses/InternalServerError"}
         }
       }
+    },
+    "/accounts": {
+      "post": {
+        "operationId": "openLedgerAccount", "summary": "Open a Ledger account",
+        "description": "Opens a tenant-owned manual account and records a non-zero opening balance through an immutable balanced journal. Requires Idempotency-Key.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OpenAccount"}}}},
+        "responses": {"201": {"description": "Account opened"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      },
+      "get": {
+        "operationId": "listLedgerAccounts", "summary": "List Ledger accounts",
+        "description": "Lists the authenticated user's visible active and archived accounts with exact signed and display balances.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger accounts"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getLedgerAccount", "summary": "Get a Ledger account",
+        "description": "Returns one tenant-owned account; another user's identity is indistinguishable from a missing account.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger account"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      },
+      "patch": {
+        "operationId": "renameLedgerAccount", "summary": "Rename a Ledger account",
+        "description": "Renames account metadata using expected_version and an Idempotency-Key without changing its currency or accounting facts.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameAccount"}}}},
+        "responses": {"200": {"description": "Account renamed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/archive": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "archiveLedgerAccount", "summary": "Archive a Ledger account",
+        "description": "Archives an account at expected_version while preserving its full balance and immutable journal history.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
+        "responses": {"200": {"description": "Account archived"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/restore": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "restoreLedgerAccount", "summary": "Restore a Ledger account",
+        "description": "Restores an archived account at expected_version without rewriting any historical accounting facts.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
+        "responses": {"200": {"description": "Account restored"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/activity": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "listLedgerAccountActivity", "summary": "List account activity",
+        "description": "Lists immutable journal details with stable occurred-at and ledger-sequence cursor ordering.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Account activity"}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions": {
+      "post": {
+        "operationId": "recordManualTransaction", "summary": "Record income or expense",
+        "description": "Records positive catalog-validated Money through the closed manual income or expense journal recipe.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualTransaction"}}}},
+        "responses": {"201": {"description": "Transaction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      },
+      "get": {
+        "operationId": "listLedgerTransactions", "summary": "List transactions",
+        "description": "Lists tenant journal facts with stable reverse chronological cursor pagination.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transactions"}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getLedgerTransaction", "summary": "Get a transaction",
+        "description": "Returns immutable postings, source, relations, timing, sequence, and annotation version for one tenant journal.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transaction detail"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/{id}/annotation": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "patch": {
+        "operationId": "updateTransactionAnnotation", "summary": "Update transaction annotation",
+        "description": "Updates mutable transaction metadata at expected_version while keeping the journal and postings immutable.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnnotationUpdate"}}}},
+        "responses": {"200": {"description": "Annotation updated"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/{id}/reversals": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "reverseLedgerTransaction", "summary": "Reverse a transaction",
+        "description": "Creates exactly one immutable inverse journal linked to the original; the original is never modified.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Reversal posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/{id}/replacements": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "replaceLedgerTransaction", "summary": "Replace a transaction",
+        "description": "Atomically records an exact reversal and a controlled corrected manual transaction linked to the original.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Replacement posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transfers": {
+      "post": {
+        "operationId": "transferLedgerFunds", "summary": "Transfer funds",
+        "description": "Atomically posts a same-currency or FX transfer, optional fee, exact implied rate, and all clearing legs.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Transfer posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/balance-corrections": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "correctLedgerBalance", "summary": "Correct an account balance",
+        "description": "Posts the explicit delta to an observed target display balance under a balance-version fence; zero deltas are rejected.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BalanceCorrection"}}}},
+        "responses": {"201": {"description": "Correction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
     }
   },
   "components": {
@@ -237,6 +353,54 @@
           "version": {"type": "integer", "minimum": 0},
           "persisted": {"type": "boolean"},
           "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "MoneyInput": {
+        "type": "object", "additionalProperties": false, "required": ["amount", "currency"],
+        "properties": {
+          "amount": {"type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+          "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
+        }
+      },
+      "OpenAccount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "currency", "kind", "nature", "opening_balance"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "kind": {"type": "string", "enum": ["cash", "debit_card", "credit_card", "current", "savings", "jar", "loan_payable", "loan_receivable"]},
+          "nature": {"type": "string", "enum": ["asset", "liability"]},
+          "opening_balance": {"type": "string"}, "occurred_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "RenameAccount": {
+        "type": "object", "additionalProperties": false, "required": ["name", "expected_version"],
+        "properties": {"name": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 1}, "occurred_at": {"type": "string", "format": "date-time"}}
+      },
+      "ExpectedAccountVersion": {
+        "type": "object", "additionalProperties": false, "required": ["expected_version"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "occurred_at": {"type": "string", "format": "date-time"}}
+      },
+      "ManualTransaction": {
+        "type": "object", "additionalProperties": false,
+        "required": ["account_id", "kind", "amount", "description"],
+        "properties": {
+          "account_id": {"type": "string", "format": "uuid"}, "kind": {"type": "string", "enum": ["income", "expense"]},
+          "amount": {"$ref": "#/components/schemas/MoneyInput"}, "description": {"type": "string"},
+          "category_id": {"type": ["string", "null"], "format": "uuid"}, "tags": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "AnnotationUpdate": {
+        "type": "object", "additionalProperties": false, "required": ["expected_version"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "description": {"type": "string"}, "category_id": {"type": ["string", "null"], "format": "uuid"}}
+      },
+      "BalanceCorrection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["target_display_balance", "expected_balance_version", "reason", "observed_at"],
+        "properties": {
+          "target_display_balance": {"$ref": "#/components/schemas/MoneyInput"},
+          "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"},
+          "observed_at": {"type": "string", "format": "date-time"}
         }
       },
       "Error": {
