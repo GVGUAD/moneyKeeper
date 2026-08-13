@@ -12,3 +12,14 @@ use crate::infrastructure::v2_db::VerifiedV2Pool;
 pub fn build(pool: &VerifiedV2Pool) -> public::LedgerFacade {
     public::LedgerFacade::new(infrastructure::PgLedgerUnitOfWork::new(pool))
 }
+
+/// Builds Ledger with Classification's public validation contract.
+pub fn build_with_categories(
+    pool: &VerifiedV2Pool,
+    categories: crate::contexts::classification::public::CategoryCatalogFacade,
+) -> public::LedgerFacade {
+    public::LedgerFacade::new_with_categories(
+        infrastructure::PgLedgerUnitOfWork::new(pool),
+        categories,
+    )
+}

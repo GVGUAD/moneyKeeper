@@ -10,11 +10,12 @@ use crate::shared_kernel::{CurrencyCode, IdempotencyKey, UserId};
 use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
 use super::super::{
     application::ports::{
-        AuditRecord, AuditStore, CommandReceiptStore, JournalStore, LedgerAccountStore,
+        AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, JournalStore, LedgerAccountStore,
         LedgerOutboxStore, ProjectionStore, StoredReceipt,
     },
     domain::{
         Actor, JournalEntry, LedgerAccount, LedgerAccountId, LedgerError, SystemAccountRole,
+        TransactionAnnotation,
     },
 };
 
@@ -227,6 +228,36 @@ impl JournalStore for PgLedgerTransaction<'_> {
             .map_err(LedgerError::database)?;
         }
         Ok(sequence)
+    }
+}
+
+impl AnnotationStore for PgLedgerTransaction<'_> {
+    async fn insert_annotation(
+        &mut self,
+        annotation: &TransactionAnnotation,
+    ) -> Result<(), LedgerError> {
+        let tags: Vec<&str> = annotation.tags().as_slice().iter().map(String::as_str).collect();
+        sqlx::query(
+            "INSERT INTO ledger.transaction_annotations \
+             (id, journal_entry_id, user_id, description, category_id, note, tags, \
+              budget_visibility, version, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(annotation.id().into_uuid())
+        .bind(annotation.journal_entry_id().into_uuid())
+        .bind(annotation.user_id().into_uuid())
+        .bind(annotation.description())
+        .bind(annotation.category().map(|id| id.into_uuid()))
+        .bind(annotation.note())
+        .bind(&tags)
+        .bind(annotation.budget_visibility().as_str())
+        .bind(annotation.version().get())
+        .bind(annotation.created_at())
+        .bind(annotation.updated_at())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
+        Ok(())
     }
 }
 

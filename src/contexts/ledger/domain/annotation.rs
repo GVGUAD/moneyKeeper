@@ -55,6 +55,15 @@ pub enum BudgetVisibility {
     Excluded,
 }
 
+impl BudgetVisibility {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Included => "included",
+            Self::Excluded => "excluded",
+        }
+    }
+}
+
 /// Bounded, normalized, sorted, duplicate-free transaction tags.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]

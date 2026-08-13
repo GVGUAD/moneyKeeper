@@ -3,8 +3,10 @@ use uuid::Uuid;
 use chrono::{TimeZone, Utc};
 use moneykeeper::contexts::ledger::public::{
     AccountKind, AccountLifecycle, AccountNature, AccountVersion, ArchiveAccount, OpenAccount,
+    BudgetVisibility, ManualTransactionKind, NormalizedTags, RecordManualTransaction,
     RenameAccount, RestoreAccount,
 };
+use moneykeeper::contexts::classification::public::{CategoryCatalog, CategoryCommand, CategoryKind};
 use moneykeeper::shared_kernel::{
     CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId,
 };
@@ -318,7 +320,7 @@ async fn account_command_versions_and_tenant_scope_metadata_changes() {
         expected_version: AccountVersion::INITIAL,
         idempotency_key: IdempotencyKey::new("rename-stale").unwrap(),
         correlation_id: CorrelationId::generate(),
-        occurred_at: Utc::now(),
+        occurred_at: Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap(),
     }).await.unwrap_err();
     assert!(stale.is_version_conflict());
 
@@ -395,4 +397,184 @@ async fn unit_of_work_rolls_back_every_financial_stage() {
             assert_eq!(count, 0, "{relation} survived failure at {table}/{operation}");
         }
     }
+}
+
+#[tokio::test]
+async fn manual_transaction_posts_income_and_expense_for_asset_and_liability() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let ledger = moneykeeper::contexts::ledger::build_with_categories(
+        &verified,
+        contexts.categories.clone(),
+    );
+    let user = UserId::generate();
+    let category = contexts.categories.create(
+        CategoryCommand { user_id: user, name: "Food".to_owned(), kind: CategoryKind::Both },
+        Utc::now(),
+    ).await.unwrap();
+    let asset = ledger.open_account(open_command(
+        user, "manual-asset", "Cash", "100.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let liability = ledger.open_account(open_command(
+        user, "manual-liability", "Card", "20.00", AccountKind::CreditCard, AccountNature::Liability,
+    )).await.unwrap();
+
+    let expense = ledger.record_manual_transaction(RecordManualTransaction {
+        user_id: user, account_id: asset.account.id, kind: ManualTransactionKind::Expense,
+        amount: Money::new(Decimal::new(1250, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        description: "Lunch".to_owned(), category_id: Some(category.id), note: None,
+        tags: NormalizedTags::new(["food"]).unwrap(), budget_visibility: BudgetVisibility::Included,
+        idempotency_key: IdempotencyKey::new("expense-asset").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(expense.effects[0].display_balance, Decimal::new(8750, 2));
+
+    let card_expense = ledger.record_manual_transaction(RecordManualTransaction {
+        user_id: user, account_id: liability.account.id, kind: ManualTransactionKind::Expense,
+        amount: Money::new(Decimal::new(500, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        description: "Card lunch".to_owned(), category_id: Some(category.id), note: None,
+        tags: NormalizedTags::empty(), budget_visibility: BudgetVisibility::Included,
+        idempotency_key: IdempotencyKey::new("expense-liability").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(card_expense.effects[0].display_balance, Decimal::new(2500, 2));
+
+    let income = ledger.record_manual_transaction(RecordManualTransaction {
+        user_id: user, account_id: liability.account.id, kind: ManualTransactionKind::Income,
+        amount: Money::new(Decimal::new(700, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        description: "Card payment".to_owned(), category_id: None, note: None,
+        tags: NormalizedTags::empty(), budget_visibility: BudgetVisibility::Excluded,
+        idempotency_key: IdempotencyKey::new("income-liability").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(income.effects[0].display_balance, Decimal::new(1800, 2));
+
+    let mismatches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ledger.account_balances b WHERE b.user_id = $1 \
+         AND b.signed_balance <> COALESCE((SELECT SUM(p.signed_amount) FROM ledger.postings p \
+         WHERE p.user_id = b.user_id AND p.account_id = b.account_id), 0)",
+    ).bind(user.into_uuid()).fetch_one(&pool).await.unwrap();
+    assert_eq!(mismatches, 0);
+}
+
+fn manual_command(
+    user_id: UserId,
+    account_id: moneykeeper::contexts::ledger::public::LedgerAccountId,
+    key: &str,
+    amount: Decimal,
+    category_id: Option<moneykeeper::contexts::classification::public::CategoryId>,
+) -> RecordManualTransaction {
+    RecordManualTransaction {
+        user_id,
+        account_id,
+        kind: ManualTransactionKind::Expense,
+        amount: Money::new(amount, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        description: "Expense".to_owned(),
+        category_id,
+        note: None,
+        tags: NormalizedTags::empty(),
+        budget_visibility: BudgetVisibility::Included,
+        idempotency_key: IdempotencyKey::new(key).unwrap(),
+        correlation_id: CorrelationId::generate(),
+        causation_id: None,
+        occurred_at: Utc.with_ymd_and_hms(2026, 8, 5, 12, 0, 0).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_replay() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let ledger = moneykeeper::contexts::ledger::build_with_categories(
+        &verified,
+        contexts.categories.clone(),
+    );
+    let user = UserId::generate();
+    let other = UserId::generate();
+    let category = contexts.categories.create(
+        CategoryCommand { user_id: user, name: "Food".to_owned(), kind: CategoryKind::Expense },
+        Utc::now(),
+    ).await.unwrap();
+    let other_category = contexts.categories.create(
+        CategoryCommand { user_id: other, name: "Other".to_owned(), kind: CategoryKind::Expense },
+        Utc::now(),
+    ).await.unwrap();
+    let opened = ledger.open_account(open_command(
+        user, "validation-open", "Cash", "50.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+
+    let posted = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "validated-expense", Decimal::new(100, 2), Some(category.id),
+    )).await.unwrap();
+    let replayed = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "validated-expense", Decimal::new(100, 2), Some(category.id),
+    )).await.unwrap();
+    assert_eq!(replayed.journal_entry_id, posted.journal_entry_id);
+    assert!(replayed.replayed);
+
+    let conflict = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "validated-expense", Decimal::new(200, 2), Some(category.id),
+    )).await.unwrap_err();
+    assert!(conflict.is_idempotency_conflict());
+
+    let cross_category = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "cross-category", Decimal::ONE, Some(other_category.id),
+    )).await.unwrap_err();
+    assert!(cross_category.is_invalid_annotation());
+
+    contexts.categories.archive(user, category.id, category.version, Utc::now()).await.unwrap();
+    let archived_category = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "archived-category", Decimal::ONE, Some(category.id),
+    )).await.unwrap_err();
+    assert!(archived_category.is_invalid_annotation());
+
+    let zero = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "zero-expense", Decimal::ZERO, None,
+    )).await.unwrap_err();
+    assert!(zero.is_invalid_money());
+    let negative = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "negative-expense", Decimal::NEGATIVE_ONE, None,
+    )).await.unwrap_err();
+    assert!(negative.is_invalid_money());
+
+    let foreign = ledger.record_manual_transaction(manual_command(
+        other, opened.account.id, "foreign-account", Decimal::ONE, None,
+    )).await.unwrap_err();
+    assert!(foreign.is_not_found());
+
+    sqlx::query(
+        "CREATE FUNCTION ledger.fail_manual_outbox() RETURNS TRIGGER LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'outbox unavailable'; END; $$",
+    ).execute(&pool).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_manual_outbox BEFORE INSERT ON integration.outbox_messages \
+         FOR EACH ROW EXECUTE FUNCTION ledger.fail_manual_outbox()",
+    ).execute(&pool).await.unwrap();
+    let rolled_back = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "outbox-failure", Decimal::ONE, None,
+    )).await.unwrap_err();
+    assert!(rolled_back.is_persistence());
+    sqlx::query("DROP TRIGGER fail_manual_outbox ON integration.outbox_messages")
+        .execute(&pool).await.unwrap();
+    sqlx::query("DROP FUNCTION ledger.fail_manual_outbox()")
+        .execute(&pool).await.unwrap();
+
+    let archived = ledger.archive_account(ArchiveAccount {
+        user_id: user,
+        account_id: opened.account.id,
+        expected_version: AccountVersion::INITIAL,
+        idempotency_key: IdempotencyKey::new("archive-before-expense").unwrap(),
+        correlation_id: CorrelationId::generate(),
+        occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(archived.account.lifecycle, AccountLifecycle::Archived);
+    let blocked = ledger.record_manual_transaction(manual_command(
+        user, opened.account.id, "archived-account-expense", Decimal::ONE, None,
+    )).await.unwrap_err();
+    assert!(blocked.is_account_archived());
+
+    let journal_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ledger.journal_entries WHERE user_id = $1 AND command_name = 'record_expense'",
+    ).bind(user.into_uuid()).fetch_one(&pool).await.unwrap();
+    assert_eq!(journal_count, 1);
 }

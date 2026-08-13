@@ -11,6 +11,7 @@ use crate::shared_kernel::{CurrencyCode, EventId, IdempotencyKey, UserId};
 
 use super::super::domain::{
     JournalEntry, LedgerAccount, LedgerAccountId, LedgerError, SystemAccountRole,
+    TransactionAnnotation,
 };
 
 /// Durable idempotency result read inside a command transaction.
@@ -41,6 +42,7 @@ pub(crate) struct AuditRecord {
 pub(crate) trait LedgerUnitOfWork {
     type Tx<'a>: LedgerAccountStore
         + JournalStore
+        + AnnotationStore
         + ProjectionStore
         + CommandReceiptStore
         + AuditStore
@@ -50,6 +52,14 @@ pub(crate) trait LedgerUnitOfWork {
         Self: 'a;
 
     async fn begin(&self) -> Result<Self::Tx<'_>, LedgerError>;
+}
+
+/// Versioned transaction-metadata persistence.
+pub(crate) trait AnnotationStore {
+    async fn insert_annotation(
+        &mut self,
+        annotation: &TransactionAnnotation,
+    ) -> Result<(), LedgerError>;
 }
 
 /// Aggregate-shaped account persistence within the caller's transaction.

@@ -378,33 +378,33 @@ git commit -m "feat(ledger): implement idempotent account commands"
 - Modify: `src/contexts/ledger/public.rs`
 - Modify: `tests/ledger_persistence.rs`
 
-- [ ] **Step 1 — RED: write transaction command tests**
+- [x] **Step 1 — RED: write transaction command tests**
 
 Test income and expense against both Asset and Liability user accounts, the correct system counter-account, exact decimal amounts, category annotation IDs, occurred-at versus recorded-at, archived/wrong-user account rejection, idempotent replay, rollback on outbox failure, and projection equality after each post. Charging an expense to a credit-card liability must increase displayed debt; recording income against that liability must reduce it. A merchant refund is represented by reversal/replacement or a separately typed reclassification, never silently relabeled as income. Inject `classification::public` and prove an active same-user category succeeds while an archived, missing, or other-user category is rejected before the UoW commits.
 
 Amounts in public commands are positive `Money`; direction determines journal signs. Reject zero/negative request amounts at the boundary instead of relying on sign tricks.
 
-- [ ] **Step 2 — Run the tests to verify RED**
+- [x] **Step 2 — Run the tests to verify RED**
 
 Run: `cargo test --test ledger_persistence manual_transaction`
 
 Expected: FAIL because the use case does not exist.
 
-- [ ] **Step 3 — GREEN: translate intent to a balanced journal**
+- [x] **Step 3 — GREEN: translate intent to a balanced journal**
 
 Expense posts debit to the system expense account and credit to the selected Asset or Liability account; the shared sign-normalization rule makes this reduce an asset or increase a liability. Income posts debit to the selected Asset or Liability account and credit to system income; it increases an asset or reduces a liability. Validate category ownership/active lifecycle through `classification::public::CategoryCatalog`, then persist only its typed ID/snapshot in the annotation aggregate; Ledger never imports Classification internals or queries its tables.
 
-- [ ] **Step 4 — Run focused tests**
+- [x] **Step 4 — Run focused tests**
 
 Run: `cargo test --test ledger_persistence manual_transaction`
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: centralize journal commit orchestration**
+- [x] **Step 5 — REFACTOR: centralize journal commit orchestration**
 
 Extract one internal commit pipeline used by manual transactions, transfers, corrections, and future provider imports. The pipeline must not accept an already-mutated projection.
 
-- [ ] **Step 6 — Commit boundary**
+- [x] **Step 6 — Commit boundary**
 
 ```bash
 git add src/contexts/ledger/application/transactions.rs src/contexts/ledger/application/mod.rs src/contexts/ledger/public.rs tests/ledger_persistence.rs
