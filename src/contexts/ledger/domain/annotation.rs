@@ -171,6 +171,27 @@ impl TransactionAnnotation {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rehydrate(
+        id: AnnotationId,
+        journal_entry_id: JournalEntryId,
+        user_id: UserId,
+        description: String,
+        category: Option<CategoryReference>,
+        note: Option<String>,
+        tags: NormalizedTags,
+        budget_visibility: BudgetVisibility,
+        version: AnnotationVersion,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    ) -> Result<Self, LedgerError> {
+        Ok(Self {
+            id, journal_entry_id, user_id, description: validate_description(description)?,
+            category, note: validate_note(note)?, tags, budget_visibility, version,
+            created_at, updated_at, audit_events: Vec::new(),
+        })
+    }
+
     /// Applies a compare-and-swap metadata edit and records its audit fact.
     pub fn update(
         &mut self,

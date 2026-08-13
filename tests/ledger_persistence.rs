@@ -5,6 +5,8 @@ use moneykeeper::contexts::ledger::public::{
     AccountKind, AccountLifecycle, AccountNature, AccountVersion, ArchiveAccount, OpenAccount,
     BudgetVisibility, ManualTransactionKind, NormalizedTags, RecordManualTransaction,
     RenameAccount, RestoreAccount, TransferFee, TransferFunds,
+    CorrectBalance, ReverseTransaction, UpdateTransactionAnnotation, AnnotationChanges,
+    ReplaceTransaction,
 };
 use moneykeeper::contexts::classification::public::{CategoryCatalog, CategoryCommand, CategoryKind};
 use moneykeeper::shared_kernel::{
@@ -669,4 +671,120 @@ async fn transfer_rejects_same_account_cross_tenant_and_preserves_nature_signs()
         .await.unwrap();
     assert_eq!(advance.effects.iter().find(|effect| effect.account_id == liability.account.id).unwrap().display_effect, Decimal::ONE);
     assert_eq!(advance.effects.iter().find(|effect| effect.account_id == asset.account.id).unwrap().display_effect, Decimal::ONE);
+}
+
+#[tokio::test]
+async fn immutable_correction_reversal_and_annotation_changes_preserve_history() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let ledger = moneykeeper::contexts::ledger::build_with_categories(&verified, contexts.categories.clone());
+    let user = UserId::generate();
+    let account = ledger.open_account(open_command(
+        user, "immutable-open", "Cash", "10.00", AccountKind::Cash, AccountNature::Asset,
+    )).await.unwrap();
+    let correction = ledger.correct_balance(CorrectBalance {
+        user_id: user, account_id: account.account.id,
+        target_display_balance: Money::new(Decimal::new(2500, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        expected_balance_version: account.account.balance_version,
+        reason: "Counted cash".to_owned(), observed_at: Utc::now(),
+        idempotency_key: IdempotencyKey::new("correction-1").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(correction.effects[0].display_balance, Decimal::new(2500, 2));
+
+    let stale = ledger.correct_balance(CorrectBalance {
+        user_id: user, account_id: account.account.id,
+        target_display_balance: Money::new(Decimal::new(3000, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        expected_balance_version: account.account.balance_version,
+        reason: "Stale".to_owned(), observed_at: Utc::now(),
+        idempotency_key: IdempotencyKey::new("correction-stale").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap_err();
+    assert!(stale.is_version_conflict());
+
+    let original = ledger.record_manual_transaction(manual_command(
+        user, account.account.id, "reverse-original", Decimal::new(500, 2), None,
+    )).await.unwrap();
+    let before_postings: Vec<(Uuid, Decimal)> = sqlx::query_as(
+        "SELECT id, signed_amount FROM ledger.postings WHERE journal_entry_id = $1 ORDER BY position",
+    ).bind(original.journal_entry_id.into_uuid()).fetch_all(&pool).await.unwrap();
+    let reversed = ledger.reverse_transaction(ReverseTransaction {
+        user_id: user, journal_entry_id: original.journal_entry_id,
+        reason: "Duplicate".to_owned(), idempotency_key: IdempotencyKey::new("reverse-1").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    let inverse: Vec<Decimal> = sqlx::query_scalar(
+        "SELECT signed_amount FROM ledger.postings WHERE journal_entry_id = $1 ORDER BY position",
+    ).bind(reversed.journal_entry_id.into_uuid()).fetch_all(&pool).await.unwrap();
+    assert_eq!(inverse, before_postings.iter().map(|(_, amount)| -*amount).collect::<Vec<_>>());
+
+    let category = contexts.categories.create(
+        CategoryCommand { user_id: user, name: "Adjusted".to_owned(), kind: CategoryKind::Expense }, Utc::now(),
+    ).await.unwrap();
+    let posting_count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM ledger.postings")
+        .fetch_one(&pool).await.unwrap();
+    let annotation = ledger.update_annotation(UpdateTransactionAnnotation {
+        user_id: user, journal_entry_id: original.journal_entry_id,
+        changes: AnnotationChanges {
+            description: Some("Corrected expense".to_owned()),
+            category: Some(Some(moneykeeper::contexts::ledger::public::CategoryReference::new(category.id.into_uuid()))),
+            note: Some(Some("Reviewed".to_owned())),
+            tags: Some(NormalizedTags::new(["reviewed"]).unwrap()),
+            budget_visibility: Some(BudgetVisibility::Excluded),
+        },
+        expected_version: moneykeeper::contexts::ledger::public::AnnotationVersion::INITIAL,
+        idempotency_key: IdempotencyKey::new("annotation-1").unwrap(),
+        correlation_id: CorrelationId::generate(), occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(annotation.version.get(), 2);
+    let posting_count_after: i64 = sqlx::query_scalar("SELECT count(*) FROM ledger.postings")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(posting_count_after, posting_count_before);
+
+    let replacement = ledger.replace_transaction(ReplaceTransaction {
+        user_id: user, original_journal_entry_id: correction.journal_entry_id,
+        account_id: account.account.id, kind: ManualTransactionKind::Expense,
+        amount: Money::new(Decimal::new(300, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        description: "Replacement".to_owned(), category_id: None, note: None,
+        tags: NormalizedTags::empty(), budget_visibility: BudgetVisibility::Included,
+        idempotency_key: IdempotencyKey::new("replacement-1").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    let relations: Vec<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT reverses_transaction_id, replaces_transaction_id FROM ledger.journal_entries \
+         WHERE id = ANY($1) ORDER BY id",
+    ).bind(&[
+        replacement.reversal_journal_entry_id.into_uuid(),
+        replacement.replacement_journal_entry_id.into_uuid(),
+    ][..]).fetch_all(&pool).await.unwrap();
+    assert!(relations.iter().any(|(reverses, _)| *reverses == Some(correction.journal_entry_id.into_uuid())));
+    assert!(relations.iter().any(|(_, replaces)| *replaces == Some(correction.journal_entry_id.into_uuid())));
+}
+
+#[tokio::test]
+async fn correction_normalizes_liability_sign_and_rejects_zero_delta() {
+    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let ledger = moneykeeper::contexts::ledger::build(&verified);
+    let user = UserId::generate();
+    let account = ledger.open_account(open_command(
+        user, "liability-correction-open", "Card", "10.00",
+        AccountKind::CreditCard, AccountNature::Liability,
+    )).await.unwrap();
+    let increased = ledger.correct_balance(CorrectBalance {
+        user_id: user, account_id: account.account.id,
+        target_display_balance: Money::new(Decimal::new(1500, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        expected_balance_version: account.account.balance_version, reason: "Statement".to_owned(),
+        observed_at: Utc::now(), idempotency_key: IdempotencyKey::new("liability-correction").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap();
+    assert_eq!(increased.effects[0].signed_amount, Decimal::new(-500, 2));
+    assert_eq!(increased.effects[0].display_balance, Decimal::new(1500, 2));
+    let zero = ledger.correct_balance(CorrectBalance {
+        user_id: user, account_id: account.account.id,
+        target_display_balance: Money::new(Decimal::new(1500, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        expected_balance_version: increased.effects[0].balance_version, reason: "No change".to_owned(),
+        observed_at: Utc::now(), idempotency_key: IdempotencyKey::new("zero-correction").unwrap(),
+        correlation_id: CorrelationId::generate(), causation_id: None, occurred_at: Utc::now(),
+    }).await.unwrap_err();
+    assert!(zero.is_invalid_money());
 }
