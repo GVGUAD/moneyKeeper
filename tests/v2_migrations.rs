@@ -369,6 +369,32 @@ async fn root_migration_seeds_and_constrains_reference_and_tenant_data() {
 }
 
 #[tokio::test]
+async fn banking_migration_installs_the_phase_three_baseline() {
+    let database = fresh_database().await;
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+    for table in [
+        "provider_connections",
+        "external_resources",
+        "resource_mappings",
+        "provider_events",
+        "balance_observations",
+        "sync_jobs",
+        "sync_pages",
+        "command_receipts",
+    ] {
+        let relation: Option<String> = sqlx::query_scalar(
+            "SELECT to_regclass(format('banking.%I', $1))::text",
+        )
+        .bind(table)
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert!(relation.is_some(), "missing banking.{table}");
+    }
+}
+
+#[tokio::test]
 async fn database_lineage_cannot_be_updated_or_deleted() {
     let database = fresh_database().await;
     let verified = database.initialize().await.unwrap();
@@ -396,7 +422,7 @@ async fn third_migration_installs_the_strict_ledger_baseline() {
             .fetch_all(&mut *connection)
             .await
             .unwrap();
-    assert_eq!(applied, vec![1, 2, 3]);
+    assert_eq!(&applied[..3], &[1, 2, 3]);
 
     for relation in [
         "ledger.accounts",

@@ -165,7 +165,7 @@ rg -n "(token|secret).*derive.*(Debug|Serialize)|crate::contexts::ledger::(domai
 
 Expected: no credential serialization, Ledger-internal imports, SQLx/Reqwest dependencies, or Monobank wire concepts in provider-neutral layers.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking/domain src/contexts/banking/public.rs src/contexts/banking/mod.rs tests/banking_domain.rs
@@ -182,7 +182,7 @@ git commit -m "feat(banking): model provider connections and durable facts"
 - Create: `tests/banking_persistence.rs`
 - Modify: `tests/v2_migrations.rs`
 
-- [ ] **Step 1 — RED: write fresh-V2 schema tests**
+- [x] **Step 1 — RED: write fresh-V2 schema tests**
 
 Using only `v2_test_db`, test that migration `0004` creates:
 
@@ -199,7 +199,7 @@ banking.command_receipts
 
 Prove composite tenant uniqueness/FKs, bounded provider IDs/errors, `TIMESTAMPTZ`, immediately valid state checks, encrypted-only credential columns, immutable event revisions/observations, durable webhook registration attempts, and indexes for connection/resource lookup, ready events, due jobs, leases, undelivered observations, and chronological inspection. `banking.command_receipts` is tenant/scoped-key unique and stores a canonical request hash plus the exact typed result/status so it can commit in the same Banking UoW as command state and outbox.
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 SQLX_OFFLINE=true cargo test --test banking_persistence schema_ -- --nocapture
@@ -208,13 +208,13 @@ cargo test --test v2_migrations banking_migration -- --nocapture
 
 Expected: FAIL because `0004_banking.sql` and its tables do not exist.
 
-- [ ] **Step 3 — GREEN: add migration `0004_banking.sql`**
+- [x] **Step 3 — GREEN: add migration `0004_banking.sql`**
 
 Use `UNIQUE(id, user_id)` and tenant-safe composite FKs within `banking`. Do not create a foreign key to `ledger.*` or `portfolio.*`; `resource_mappings.ledger_account_id` is an opaque typed UUID validated through Ledger's public facade. Provider event uniqueness is exactly `(connection_id, external_resource_id, external_event_id, revision)`, with an additional content digest to detect an unnumbered provider correction. Never make `external_event_id` alone unique.
 
 Store token/provenance ciphertext, nonce/envelope version/key ID as an authenticated envelope or one versioned envelope column. Store the webhook credential in a separate authenticated encrypted envelope for retryable provider registration and also store a keyed lookup digest for request routing/constant-time comparison; never store its plaintext or full callback URL. Persist webhook desired/registered credential version, provider-registration state, attempts, next retry, and bounded error without the secret URL itself. Add append/update/delete guards so durable provider facts cannot be rewritten or hard-deleted. Mutable aggregate/status/link tables remain version checked.
 
-- [ ] **Step 4: run focused schema tests**
+- [x] **Step 4: run focused schema tests**
 
 ~~~bash
 SQLX_OFFLINE=true cargo test --test banking_persistence schema_ -- --nocapture
@@ -223,7 +223,7 @@ cargo test --test v2_migrations -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: inspect ownership and unsafe SQL**
+- [x] **Step 5 — REFACTOR: inspect ownership and unsafe SQL**
 
 ~~~bash
 rg -n "REFERENCES (ledger|portfolio|public)\.|FLOAT|DOUBLE|ON CONFLICT.*DO NOTHING|token_plain|raw_payload JSON" src/infrastructure/migrations_v2/0004_banking.sql

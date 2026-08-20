@@ -8,7 +8,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{Postgres, Transaction};
 
-/// The immutable Finance V2 migration lineage, including the parallel Ledger baseline.
+/// The immutable Finance V2 migration lineage through the parallel Banking baseline.
 pub static V2_MIGRATOR: Migrator = sqlx::migrate!("src/infrastructure/migrations_v2");
 
 const DATABASE_LINEAGE: &str = "finance-v2";
