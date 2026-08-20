@@ -2,12 +2,47 @@
 
 use super::super::{
     domain::{JournalEntryId, LedgerAccountId, LedgerError},
-    public::{AccountView, ActivityCursor, JournalView, ProjectionMismatch},
+    public::{
+        AccountView, ActivityCursor, JournalView, ProjectionMismatch,
+        ProviderAccountBindingRejection, ProviderAccountBindingResult,
+        ValidateProviderAccountBinding,
+    },
 };
 use super::accounts::LedgerFacade;
 use crate::shared_kernel::UserId;
 
 impl LedgerFacade {
+    /// Validates a provider mapping without revealing a cross-tenant account.
+    pub async fn validate_provider_account_binding(
+        &self,
+        command: ValidateProviderAccountBinding,
+    ) -> Result<ProviderAccountBindingResult, LedgerError> {
+        let account = match self.queries.get_account(command.user_id, command.account_id).await {
+            Ok(account) => account,
+            Err(error) if error.is_not_found() => {
+                return Ok(ProviderAccountBindingResult::Rejected(
+                    ProviderAccountBindingRejection::NotFound,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let rejection = if account.lifecycle == super::super::domain::AccountLifecycle::Archived {
+            Some(ProviderAccountBindingRejection::Archived)
+        } else if account.currency != command.currency {
+            Some(ProviderAccountBindingRejection::CurrencyMismatch)
+        } else if account.authority == super::super::domain::AccountAuthority::System {
+            Some(ProviderAccountBindingRejection::SystemAccount)
+        } else if account.kind != command.kind || account.nature != command.nature {
+            Some(ProviderAccountBindingRejection::IncompatibleKindOrNature)
+        } else {
+            None
+        };
+        Ok(match rejection {
+            Some(reason) => ProviderAccountBindingResult::Rejected(reason),
+            None => ProviderAccountBindingResult::Accepted(account),
+        })
+    }
+
     /// Lists tenant-visible accounts including archived history and balances.
     pub async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError> {
         self.queries.list_accounts(user_id).await

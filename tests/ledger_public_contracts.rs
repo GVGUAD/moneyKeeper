@@ -13,6 +13,9 @@ fn later_context_commands_are_typed_closed_recipes() {
     assert_contract::<TransitionProviderTransactionState>();
     assert_contract::<ReverseProviderTransaction>();
     assert_contract::<ObserveProviderBalance>();
+    assert_contract::<ValidateProviderAccountBinding>();
+    assert_contract::<ProviderAccountBindingResult>();
+    assert_contract::<OpenProviderObservedAccount>();
     assert_contract::<ReclassifyExpenseToReceivableOrPayable>();
     assert_contract::<SettleReceivableOrPayable>();
     assert_contract::<RecordExpenseAndControlBalances>();

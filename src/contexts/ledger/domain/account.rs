@@ -359,6 +359,30 @@ impl LedgerAccount {
         )
     }
 
+    /// Opens a provider-observed, user-visible account after an external
+    /// resource has been validated by the owning integration context.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_provider_observed(
+        id: LedgerAccountId,
+        user_id: UserId,
+        name: impl Into<String>,
+        currency: CurrencyCode,
+        kind: AccountKind,
+        nature: AccountNature,
+        clock: &(impl Clock + ?Sized),
+    ) -> Result<Self, LedgerError> {
+        Self::open_user(
+            id,
+            user_id,
+            name,
+            currency,
+            kind,
+            nature,
+            AccountAuthority::ProviderObserved,
+            clock,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn open_user(
         id: LedgerAccountId,
