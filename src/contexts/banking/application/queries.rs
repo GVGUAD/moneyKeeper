@@ -165,3 +165,18 @@ pub struct BalanceObservedV1 {
     pub basis: super::super::domain::BalanceBasis,
     pub comparable: bool,
 }
+
+#[derive(Debug)]
+pub struct WebhookRotationResult {
+    pub connection_id: ProviderConnectionId,
+    pub credential: super::super::infrastructure::WebhookCredential,
+    pub desired_version: i64,
+    pub connection_version: ConnectionVersion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebhookReceiptOutcome {
+    pub connection_id: ProviderConnectionId,
+    pub receipt_id: uuid::Uuid,
+    pub duplicate: bool,
+}

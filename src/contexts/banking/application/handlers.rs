@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::ports::{CredentialCipher, ProviderClient};
+use super::ports::{CredentialBinding, CredentialCipher, ProviderClient};
 use super::{
     BindExistingResource, ConnectProvider, ConnectionResult, CreateAndMapResource,
     DeactivateResourceMapping, ProviderConnectionView, ReplaceProviderCredential,
@@ -11,6 +11,7 @@ use super::{
     ProviderImportOutcome, ProviderImportWork,
     BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork, BalanceObservationView,
     RecordBalanceObservation,
+    RotateWebhookCredential, WebhookReceiptOutcome, WebhookRotationResult,
 };
 use crate::contexts::banking::domain::BankingError;
 use crate::contexts::banking::infrastructure::PgBankingStore;
@@ -23,10 +24,11 @@ pub struct BankingFacade {
     pub(crate) provider: Arc<dyn ProviderClient>,
     pub(crate) ledger: Option<crate::contexts::ledger::public::LedgerFacade>,
     pub(crate) currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
+    pub(crate) webhook_secrets: super::super::infrastructure::WebhookSecretManager,
 }
 
 impl BankingFacade {
-    pub(crate) fn new(store: PgBankingStore, cipher: Arc<dyn CredentialCipher>, provider: Arc<dyn ProviderClient>, ledger: Option<crate::contexts::ledger::public::LedgerFacade>, currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade) -> Self { Self { store, cipher, provider, ledger, currencies } }
+    pub(crate) fn new(store: PgBankingStore, cipher: Arc<dyn CredentialCipher>, provider: Arc<dyn ProviderClient>, ledger: Option<crate::contexts::ledger::public::LedgerFacade>, currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade, webhook_secrets: super::super::infrastructure::WebhookSecretManager) -> Self { Self { store, cipher, provider, ledger, currencies, webhook_secrets } }
 
     pub async fn connect_provider(&self, command: ConnectProvider) -> Result<ConnectionResult, BankingError> {
         self.store.connect(command, self.cipher.as_ref()).await
@@ -116,4 +118,16 @@ impl BankingFacade {
     pub async fn complete_balance_observation(&self, outcome: BalanceObservationDeliveryOutcome) -> Result<BalanceObservationDeliveryOutcome, BankingError> {
         self.store.complete_balance_observation(outcome).await
     }
+
+    pub async fn rotate_webhook_credential(&self, command: RotateWebhookCredential) -> Result<WebhookRotationResult, BankingError> {
+        let credential=self.webhook_secrets.generate();
+        let digest=self.webhook_secrets.digest(&credential);
+        self.store.rotate_webhook(command,credential,digest,self.cipher.as_ref()).await
+    }
+
+    pub async fn validate_webhook_credential(&self, credential:&str)->Result<bool,BankingError>{let credential=super::super::infrastructure::WebhookCredential::new(credential)?;self.store.validate_webhook_digest(&self.webhook_secrets.digest(&credential),&self.webhook_secrets).await}
+
+    pub async fn receive_webhook(&self,credential:&str,body:&[u8])->Result<WebhookReceiptOutcome,BankingError>{if body.len()>1_048_576{return Err(BankingError::InvalidValue("webhook body is too large"));}let credential=super::super::infrastructure::WebhookCredential::new(credential)?;self.store.receive_webhook(&self.webhook_secrets.digest(&credential),body,&self.webhook_secrets).await}
+
+    pub async fn register_pending_webhook(&self,user_id:UserId,connection_id:super::super::domain::ProviderConnectionId,callback_base:&str)->Result<(),BankingError>{let work=self.store.webhook_registration_work(user_id,connection_id).await?;let token=self.cipher.decrypt(&work.provider_envelope,&CredentialBinding::new(user_id,connection_id.into_uuid(),&work.provider,work.credential_generation,"active")?)?;let webhook=self.cipher.decrypt(&work.webhook_envelope,&CredentialBinding::new(user_id,connection_id.into_uuid(),&work.provider,work.webhook_version,"webhook")?)?;let url=format!("{}/webhooks/monobank/{}",callback_base.trim_end_matches('/'),webhook.expose());match self.provider.register_webhook(&token,&url).await{Ok(())=>self.store.complete_webhook_registration(user_id,connection_id,work.webhook_version,true).await,Err(_)=>self.store.complete_webhook_registration(user_id,connection_id,work.webhook_version,false).await}}
 }

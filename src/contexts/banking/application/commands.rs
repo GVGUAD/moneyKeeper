@@ -117,3 +117,10 @@ pub struct RecordBalanceObservation {
     pub recorded_at: DateTime<Utc>,
     pub correlation_id: CorrelationId,
 }
+
+pub struct RotateWebhookCredential {
+    pub user_id: UserId,
+    pub connection_id: ProviderConnectionId,
+    pub expected_version: ConnectionVersion,
+    pub requested_at: DateTime<Utc>,
+}

@@ -77,4 +77,8 @@ pub enum ProviderFailure {
 #[async_trait]
 pub trait ProviderClient: Send + Sync {
     async fn client_info(&self, credential: &ProviderCredential) -> Result<String, ProviderFailure>;
+
+    async fn register_webhook(&self, _credential: &ProviderCredential, _callback_url: &str) -> Result<(), ProviderFailure> {
+        Err(ProviderFailure::Classified { class: ProviderFailureClass::Terminal })
+    }
 }

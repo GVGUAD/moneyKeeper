@@ -581,7 +581,7 @@ rg -n "set_balance|adjust_balance|UPDATE ledger\.|account_balance_projection|bal
 
 Expected: no direct Ledger balance mutation. Assignments to Banking observation/read DTO fields are acceptable; inspect any match manually.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking src/integration/process_managers tests/banking_domain.rs tests/banking_ledger_contract.rs
@@ -600,13 +600,13 @@ git commit -m "feat(banking): deliver provider balance observations"
 - Modify: `src/contexts/banking/api/{dto.rs,handlers.rs,routes.rs}`
 - Create: `tests/banking_webhook.rs`
 
-- [ ] **Step 1 — RED: write webhook authentication and handshake tests**
+- [x] **Step 1 — RED: write webhook authentication and handshake tests**
 
 Freeze the non-public callback contract as both `GET /webhooks/monobank/{webhook_credential}` for Monobank validation and `POST /webhooks/monobank/{webhook_credential}` for notification intake. Cover a CSPRNG-generated credential with at least 256 bits of entropy, per-connection uniqueness, encrypted-at-rest recovery for registration retry, keyed lookup digest persistence, constant-time verification, and rotation invalidating the old URL. After token validation activates a connection, prove the worker calls Monobank webhook registration with the generated callback URL, persists desired/registered versions and attempt state, retries registration failure after restart, and never schedules ordinary sync for an invalid token. Also cover generic 404 behavior for unknown/invalid credentials, provider validation handshake, body/size/content-type limits, replayed delivery, and disabled/revoked connection behavior. The callback is deliberately omitted from public OpenAPI because its path segment is a credential; a separate route-manifest/security test still makes method/path exact.
 
 Capture tracing/access-proxy output and assert the raw request target, route credential, token, full callback URL, raw body, full external IDs, and merchant description are absent; logs use only the route template and redacted connection reference. A valid webhook response must not depend on Ledger availability.
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test banking_webhook -- --nocapture
@@ -614,11 +614,11 @@ cargo test --test banking_webhook -- --nocapture
 
 Expected: FAIL because webhook secret handling/routes do not exist.
 
-- [ ] **Step 3 — GREEN: implement fast authenticated intake**
+- [x] **Step 3 — GREEN: implement fast authenticated intake**
 
 Expose a provider callback route inside the isolated V2 router using an unguessable per-connection path credential. Configure tracing so the raw path is not logged. After connection activation/secret creation or rotation, a durable worker calls the provider's registration endpoint and records registered URL version, attempt, retry time, and bounded/redacted failure; crash/restart safely retries the same desired version. The handler validates/limits the request, performs the provider handshake, resolves and verifies the connection, and transactionally stores encrypted provenance or normalized intake plus an outbox wake-up. Return promptly; normalization/import runs after receipt through the durable Banking workflow.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test banking_webhook -- --nocapture
@@ -627,7 +627,7 @@ cargo test --test banking_sync -- --nocapture
 
 Expected: PASS. Replays are harmless, and stopping/restarting the worker processes the persisted receipt.
 
-- [ ] **Step 5 — REFACTOR: review credential exposure surfaces**
+- [x] **Step 5 — REFACTOR: review credential exposure surfaces**
 
 Check Axum error bodies, tracing spans, metrics labels, panic/debug formatting, database errors, and OpenAPI examples. The full callback URL is returned only once during connect/rotation; later reads expose `webhook_configured` and rotation time, not the credential.
 
