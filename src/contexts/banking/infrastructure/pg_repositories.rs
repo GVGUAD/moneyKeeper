@@ -113,7 +113,33 @@ impl PgBankingStore {
         command: ReplaceProviderCredential,
         cipher: &dyn CredentialCipher,
     ) -> Result<ConnectionResult, BankingError> {
+        let mut request_hasher = Sha256::new();
+        request_hasher.update(command.connection_id.into_uuid().as_bytes());
+        request_hasher.update(command.expected_version.get().to_be_bytes());
+        request_hasher.update(command.credential.expose().as_bytes());
+        let request_hash = request_hasher.finalize().to_vec();
         let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        if let Some(receipt) = sqlx::query(
+            "SELECT request_hash,result FROM banking.command_receipts
+             WHERE user_id=$1 AND scope='replace_provider_credential' AND idempotency_key=$2",
+        )
+        .bind(command.user_id.into_uuid())
+        .bind(command.idempotency_key.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?
+        {
+            if receipt.get::<Vec<u8>, _>("request_hash") != request_hash {
+                return Err(BankingError::IdempotencyConflict);
+            }
+            let result: ConnectionResult = serde_json::from_value(receipt.get("result"))
+                .map_err(|_| BankingError::InvalidValue("stored command result is invalid"))?;
+            tx.rollback().await.map_err(database)?;
+            return Ok(ConnectionResult {
+                replayed: true,
+                ..result
+            });
+        }
         let row = sqlx::query("SELECT provider,state,credential_generation,version,created_at FROM banking.provider_connections WHERE id=$1 AND user_id=$2 FOR UPDATE")
             .bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         let version: i64 = row.get("version");
@@ -135,8 +161,7 @@ impl PgBankingStore {
         let envelope = cipher.encrypt(&command.credential, &binding)?;
         sqlx::query("UPDATE banking.provider_connections SET pending_credential_ciphertext=$3,pending_credential_nonce=$4,pending_credential_key_id=$5,pending_credential_envelope_version=$6,state='pending_credential_validation',version=version+1,updated_at=$7 WHERE id=$1 AND user_id=$2 AND version=$8")
             .bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).bind(envelope.ciphertext()).bind(envelope.nonce()).bind(envelope.key_id()).bind(i16::try_from(envelope.envelope_version()).unwrap()).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
-        tx.commit().await.map_err(database)?;
-        Ok(ConnectionResult {
+        let result = ConnectionResult {
             connection: ProviderConnectionView {
                 id: command.connection_id,
                 user_id: command.user_id,
@@ -149,7 +174,24 @@ impl PgBankingStore {
                 updated_at: command.requested_at,
             },
             replayed: false,
-        })
+        };
+        sqlx::query(
+            "INSERT INTO banking.command_receipts
+             (user_id,scope,idempotency_key,request_hash,result,status_code)
+             VALUES ($1,'replace_provider_credential',$2,$3,$4,202)",
+        )
+        .bind(command.user_id.into_uuid())
+        .bind(command.idempotency_key.as_str())
+        .bind(request_hash)
+        .bind(
+            serde_json::to_value(&result)
+                .map_err(|_| BankingError::InvalidValue("cannot serialize command result"))?,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(database)?;
+        tx.commit().await.map_err(database)?;
+        Ok(result)
     }
 
     pub(crate) async fn validate_and_discover(
@@ -598,13 +640,46 @@ impl PgBankingStore {
         {
             return Err(BankingError::InvalidValue("invalid sync range"));
         }
-        let row=sqlx::query("SELECT version,credential_generation,state FROM banking.provider_connections WHERE id=$1 AND user_id=$2").bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let request_hash = Sha256::digest(
+            serde_json::to_vec(&json!({
+                "connection_id": command.connection_id,
+                "requested_from": command.requested_from,
+                "requested_to": command.requested_to,
+                "overlap_seconds": command.overlap_seconds,
+            }))
+            .map_err(|_| BankingError::InvalidValue("cannot hash sync request"))?,
+        )
+        .to_vec();
+        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        if let Some(receipt) = sqlx::query(
+            "SELECT request_hash,result FROM banking.command_receipts
+             WHERE user_id=$1 AND scope='request_sync_job' AND idempotency_key=$2",
+        )
+        .bind(command.user_id.into_uuid())
+        .bind(command.idempotency_key.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?
+        {
+            if receipt.get::<Vec<u8>, _>("request_hash") != request_hash {
+                return Err(BankingError::IdempotencyConflict);
+            }
+            let result = serde_json::from_value(receipt.get("result"))
+                .map_err(|_| BankingError::InvalidValue("stored command result is invalid"))?;
+            tx.rollback().await.map_err(database)?;
+            return Ok(result);
+        }
+        let row=sqlx::query("SELECT version,credential_generation,state FROM banking.provider_connections WHERE id=$1 AND user_id=$2 FOR UPDATE").bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         if row.get::<String, _>("state") != "active" {
             return Err(BankingError::InvalidState);
         }
         let id = SyncJobId::generate();
-        sqlx::query("INSERT INTO banking.sync_jobs (id,user_id,connection_id,requested_from,requested_to,overlap_seconds,state,connection_version,credential_generation) VALUES ($1,$2,$3,$4,$5,$6,'requested',$7,$8)").bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.requested_from).bind(command.requested_to).bind(command.overlap_seconds).bind(row.get::<i64,_>("version")).bind(row.get::<i64,_>("credential_generation")).execute(&self.uow.pool).await.map_err(database)?;
-        self.get_sync_job(command.user_id, id).await
+        let inserted=sqlx::query("INSERT INTO banking.sync_jobs (id,user_id,connection_id,requested_from,requested_to,overlap_seconds,state,connection_version,credential_generation) VALUES ($1,$2,$3,$4,$5,$6,'requested',$7,$8) RETURNING id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.requested_from).bind(command.requested_to).bind(command.overlap_seconds).bind(row.get::<i64,_>("version")).bind(row.get::<i64,_>("credential_generation")).fetch_one(&mut *tx).await.map_err(database)?;
+        let result = sync_job_view(inserted)?;
+        sqlx::query("INSERT INTO banking.command_receipts (user_id,scope,idempotency_key,request_hash,result,status_code) VALUES ($1,'request_sync_job',$2,$3,$4,202)")
+            .bind(command.user_id.into_uuid()).bind(command.idempotency_key.as_str()).bind(request_hash).bind(serde_json::to_value(&result).map_err(|_| BankingError::InvalidValue("cannot serialize command result"))?).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)?;
+        Ok(result)
     }
 
     pub(crate) async fn claim_due_sync_job(
@@ -616,7 +691,7 @@ impl PgBankingStore {
         if holder.is_empty() || holder.len() > 200 || lease_seconds <= 0 || lease_seconds > 3600 {
             return Err(BankingError::InvalidValue("invalid sync claim"));
         }
-        let row=sqlx::query("WITH candidate AS (SELECT job.id,job.user_id FROM banking.sync_jobs job JOIN banking.provider_connections connection ON connection.id=job.connection_id AND connection.user_id=job.user_id WHERE job.state IN ('requested','retry_due','running','waiting_for_events') AND (job.next_retry_at IS NULL OR job.next_retry_at<=$2) AND (job.lease_expires_at IS NULL OR job.lease_expires_at<=$2 OR job.lease_holder=$1) AND connection.state='active' AND connection.version=job.connection_version AND connection.credential_generation=job.credential_generation AND NOT EXISTS (SELECT 1 FROM banking.sync_jobs other WHERE other.connection_id=job.connection_id AND other.id<>job.id AND other.lease_expires_at>$2) ORDER BY job.created_at,job.id FOR UPDATE OF job SKIP LOCKED LIMIT 1) UPDATE banking.sync_jobs job SET state='running',lease_holder=$1,lease_token=job.lease_token+1,lease_expires_at=$2+($3::bigint*interval '1 second'),attempts=job.attempts+1,updated_at=$2 FROM candidate WHERE job.id=candidate.id AND job.user_id=candidate.user_id RETURNING job.id,job.user_id,job.connection_id,job.state,job.cursor,job.attempts,job.next_retry_at,job.last_error,job.lease_token,job.lease_holder,job.lease_expires_at")
+        let row=sqlx::query("WITH candidate AS (SELECT job.id,job.user_id FROM banking.sync_jobs job JOIN banking.provider_connections connection ON connection.id=job.connection_id AND connection.user_id=job.user_id WHERE job.state IN ('requested','retry_due','running','waiting_for_events') AND (job.next_retry_at IS NULL OR job.next_retry_at<=$2) AND (job.lease_expires_at IS NULL OR job.lease_expires_at<=$2 OR job.lease_holder=$1) AND connection.state='active' AND connection.version=job.connection_version AND connection.credential_generation=job.credential_generation AND NOT EXISTS (SELECT 1 FROM banking.sync_jobs other WHERE other.connection_id=job.connection_id AND other.id<>job.id AND other.lease_expires_at>$2) ORDER BY job.created_at,job.id FOR UPDATE OF job SKIP LOCKED LIMIT 1) UPDATE banking.sync_jobs job SET state='running',lease_holder=$1,lease_token=job.lease_token+1,lease_expires_at=$2+($3::bigint*interval '1 second'),attempts=job.attempts+1,updated_at=$2 FROM candidate WHERE job.id=candidate.id AND job.user_id=candidate.user_id RETURNING job.id,job.user_id,job.connection_id,job.requested_from,job.requested_to,job.overlap_seconds,job.connection_version,job.credential_generation,job.state,job.cursor,job.attempts,job.next_retry_at,job.last_error,job.lease_token,job.lease_holder,job.lease_expires_at")
             .bind(holder).bind(now).bind(lease_seconds).fetch_optional(&self.uow.pool).await.map_err(database)?;
         row.map(sync_job_view).transpose()
     }
@@ -657,7 +732,7 @@ impl PgBankingStore {
         } else {
             "completed"
         };
-        let row=sqlx::query("UPDATE banking.sync_jobs SET state=$3,cursor=$4,lease_holder=NULL,lease_expires_at=NULL,updated_at=$5 WHERE id=$1 AND user_id=$2 AND lease_token=$6 RETURNING id,user_id,connection_id,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(state).bind(next).bind(command.now).bind(command.fencing_token).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
+        let row=sqlx::query("UPDATE banking.sync_jobs SET state=$3,cursor=$4,lease_holder=NULL,lease_expires_at=NULL,updated_at=$5 WHERE id=$1 AND user_id=$2 AND lease_token=$6 RETURNING id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(state).bind(next).bind(command.now).bind(command.fencing_token).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
         tx.commit().await.map_err(database)?;
         sync_job_view(row)
     }
@@ -667,7 +742,7 @@ impl PgBankingStore {
         user_id: UserId,
         id: SyncJobId,
     ) -> Result<SyncJobView, BankingError> {
-        let row=sqlx::query("SELECT id,user_id,connection_id,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at FROM banking.sync_jobs WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let row=sqlx::query("SELECT id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at FROM banking.sync_jobs WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         sync_job_view(row)
     }
 
@@ -1243,6 +1318,11 @@ fn sync_job_view(row: sqlx::postgres::PgRow) -> Result<SyncJobView, BankingError
         id: SyncJobId::new(row.get("id")),
         user_id: UserId::new(row.get("user_id")),
         connection_id: ProviderConnectionId::new(row.get("connection_id")),
+        requested_from: row.get("requested_from"),
+        requested_to: row.get("requested_to"),
+        overlap_seconds: row.get("overlap_seconds"),
+        connection_version: row.get("connection_version"),
+        credential_generation: row.get("credential_generation"),
         state: row.get("state"),
         cursor: row.get("cursor"),
         attempts: row.get("attempts"),

@@ -102,6 +102,52 @@ async fn banking_surface_is_tenant_scoped_idempotent_and_never_echoes_tokens() {
         .await;
     assert_eq!(conflict.status_code(), StatusCode::CONFLICT);
 
+    let replacement = server
+        .post(&format!(
+            "/provider-connections/{id}/credential-replacements"
+        ))
+        .authorization_bearer(&owner)
+        .add_header("Idempotency-Key", "replace-api")
+        .json(&json!({
+            "x_token": "replacement-provider-token",
+            "expected_version": 1
+        }))
+        .await;
+    assert_eq!(replacement.status_code(), StatusCode::ACCEPTED);
+    let replacement_body: Value = replacement.json();
+    assert_eq!(replacement_body["connection"]["id"], id);
+    assert_eq!(replacement_body["replayed"], false);
+    assert!(
+        !replacement_body
+            .to_string()
+            .contains("replacement-provider-token")
+    );
+    let replacement_replay = server
+        .post(&format!(
+            "/provider-connections/{id}/credential-replacements"
+        ))
+        .authorization_bearer(&owner)
+        .add_header("Idempotency-Key", "replace-api")
+        .json(&json!({
+            "x_token": "replacement-provider-token",
+            "expected_version": 1
+        }))
+        .await;
+    assert_eq!(replacement_replay.status_code(), StatusCode::ACCEPTED);
+    assert_eq!(replacement_replay.json::<Value>()["replayed"], true);
+    let replacement_conflict = server
+        .post(&format!(
+            "/provider-connections/{id}/credential-replacements"
+        ))
+        .authorization_bearer(&owner)
+        .add_header("Idempotency-Key", "replace-api")
+        .json(&json!({
+            "x_token": "conflicting-replacement-token",
+            "expected_version": 1
+        }))
+        .await;
+    assert_eq!(replacement_conflict.status_code(), StatusCode::CONFLICT);
+
     let owner_get = server
         .get(&format!("/provider-connections/{id}"))
         .authorization_bearer(&owner)

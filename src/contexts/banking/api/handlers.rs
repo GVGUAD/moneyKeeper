@@ -307,7 +307,7 @@ fn key(headers: &HeaderMap) -> Result<IdempotencyKey, V2ApiError> {
 }
 fn map(error: BankingError) -> V2ApiError {
     if matches!(error, BankingError::IdempotencyConflict) {
-        V2ApiError::conflict("idempotency key conflicts with an earlier request")
+        V2ApiError::conflict("idempotency key does not match an earlier request")
     } else if matches!(
         error,
         BankingError::VersionConflict | BankingError::MappingAlreadyActive

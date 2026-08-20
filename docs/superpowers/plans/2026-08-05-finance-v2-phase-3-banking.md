@@ -716,7 +716,7 @@ rg -n "MonobankService|PgBankConnectionRepository|Sqlite(Account|Transaction)Rep
 
 Expected: both commands produce no matches/output. `DATABASE_URL` and the default migrator remain unchanged.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking/api src/contexts/banking/mod.rs src/contexts/mod.rs src/api/v2.rs src/api/v2_state.rs src/bootstrap/v2.rs static/openapi.v2.json tests/banking_api.rs
@@ -733,7 +733,7 @@ git commit -m "feat(api): add parallel v2 banking surface"
 - Modify: `tests/banking_{persistence,monobank,sync,webhook,api,ledger_contract}.rs`
 - Modify: `tests/context_boundaries.rs`
 
-- [ ] **Step 1 — RED: write the full acceptance scenario**
+- [x] **Step 1 — RED: write the full acceptance scenario**
 
 On an isolated blank V2 database:
 
@@ -749,7 +749,7 @@ On an isolated blank V2 database:
 10. fail provider webhook registration, restart and retry it, complete the validation handshake, replay an authenticated webhook, reject a wrong/rotated secret, then restart and process the durable receipt; and
 11. disconnect while retaining inspectable history and eliminating usable credentials.
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test phase3_workflow -- --nocapture
@@ -757,11 +757,11 @@ cargo test --test phase3_workflow -- --nocapture
 
 Expected: FAIL until all paths are integrated.
 
-- [ ] **Step 3 — GREEN: close only integration gaps**
+- [x] **Step 3 — GREEN: close only integration gaps**
 
 Fix composition, transaction boundaries, wait/poll helpers, and deterministic test scheduling. Do not weaken uniqueness, fencing, revision, authentication, or Ledger invariants to make the scenario pass.
 
-- [ ] **Step 4: run the complete Phase 3 suite**
+- [x] **Step 4: run the complete Phase 3 suite**
 
 ~~~bash
 SQLX_OFFLINE=true cargo test --test v2_migrations -- --nocapture
@@ -782,7 +782,7 @@ cargo test
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: final security and architecture audit**
+- [x] **Step 5 — REFACTOR: final security and architecture audit**
 
 ~~~bash
 rg -n "set_balance|adjust_balance|UPDATE ledger\.|DELETE FROM ledger\.|ON CONFLICT.*DO NOTHING" src/contexts/banking src/integration/process_managers src/infrastructure/migrations_v2/0004_banking.sql
@@ -793,7 +793,7 @@ git diff --check
 
 Expected: no direct balance/posted-row mutation, no blanket duplicate discard, no secrets/raw fixture data in logs or snapshots, no Ledger-internal/table coupling, and no whitespace errors. Manually inspect legitimate type/fixture declarations returned by the broad secret scan.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add tests/phase3_workflow.rs tests/banking_*.rs tests/context_boundaries.rs
@@ -842,22 +842,22 @@ Every boundary must compile and its focused tests must pass. Before Phase 8, rev
 
 ## Exit criteria
 
-- [ ] Migration `0004_banking.sql` applies only through the guarded V2 migrator on a blank/already-marked V2 database.
-- [ ] One encrypted-only Monobank X-Token connection discovers separate card/current-account and jar resources; secrets are absent from database plaintext, API reads, debug output, fixtures, and logs.
-- [ ] A `NeedsReauth`/proactive credential replacement is exact, idempotent, expected-version fenced, validates before activation, preserves connection/resource/mapping identity, and prevents stale old-generation workers from advancing state.
-- [ ] Provider-neutral `SecurityPortfolio` resources cannot map to Ledger scalar accounts. Monobank tests discover cards/current accounts and jars only, and unknown Monobank products are quarantined rather than fabricated as securities/ОВДП.
-- [ ] Mapping validates tenant, native currency, lifecycle, kind/nature, authority, and version through Ledger's public façade; create-and-map is durable/idempotent and bind-existing uses no cross-context SQL or repository import.
-- [ ] Mistaken or `NeedsReview` mappings can be version-checked/deactivated or replaced through exact task routes; history/effective boundaries remain visible and prior Ledger journals are not moved.
-- [ ] Durable event identity/revisions correctly handle duplicate delivery, pending-to-settled, monetary correction, reversal, and conflicting content.
-- [ ] Sync jobs survive restart, honor per-token rate limiting, fence concurrent workers, retry safely, and advance a cursor only after all page events are processed or explicitly quarantined.
-- [ ] Import uses the shared inbox/process-manager runtime and Ledger idempotency so duplicate delivery and crash-after-Ledger-commit have one financial effect.
-- [ ] Provider snapshots/observations are stored in Banking, passed through Ledger's provider-neutral `ObserveProviderBalance` command, and never overwrite Ledger. Ledger alone owns the resulting case; approval creates a visible, version-checked reconciliation `JournalEntry`, and stale cases cannot apply an obsolete delta.
-- [ ] Per-connection webhook credentials are high entropy, rotatable, constant-time verified, validation-handshake compatible, replay safe, and absent from normal logs. Provider registration state/attempts survive failure and restart; receipt remains independent of Ledger availability.
-- [ ] Users can inspect Banking connections, resources, mappings, provider revisions, sync jobs/pages, accounting processes, observations, and links to Ledger-owned reconciliation cases through tenant-safe V2 reads; case decisions remain Ledger reads.
-- [ ] Mapped account reads compose Ledger and the latest Banking observation with explicit `as_of`; manual/unmapped accounts return nullable provider fields without invented values.
-- [ ] Banking tests use `v2_test_db` and the isolated V2 router only.
-- [ ] `src/main.rs`, default DB/test migrators, legacy public routes/API, Docker, environment files, and `DATABASE_URL` are unchanged; Phase 8 remains the sole cutover.
-- [ ] The context-boundary, Ledger regression, integration-runtime, OpenAPI, complete Phase 3, and full test suites pass.
+- [x] Migration `0004_banking.sql` applies only through the guarded V2 migrator on a blank/already-marked V2 database.
+- [x] One encrypted-only Monobank X-Token connection discovers separate card/current-account and jar resources; secrets are absent from database plaintext, API reads, debug output, fixtures, and logs.
+- [x] A `NeedsReauth`/proactive credential replacement is exact, idempotent, expected-version fenced, validates before activation, preserves connection/resource/mapping identity, and prevents stale old-generation workers from advancing state.
+- [x] Provider-neutral `SecurityPortfolio` resources cannot map to Ledger scalar accounts. Monobank tests discover cards/current accounts and jars only, and unknown Monobank products are quarantined rather than fabricated as securities/ОВДП.
+- [x] Mapping validates tenant, native currency, lifecycle, kind/nature, authority, and version through Ledger's public façade; create-and-map is durable/idempotent and bind-existing uses no cross-context SQL or repository import.
+- [x] Mistaken or `NeedsReview` mappings can be version-checked/deactivated or replaced through exact task routes; history/effective boundaries remain visible and prior Ledger journals are not moved.
+- [x] Durable event identity/revisions correctly handle duplicate delivery, pending-to-settled, monetary correction, reversal, and conflicting content.
+- [x] Sync jobs survive restart, honor per-token rate limiting, fence concurrent workers, retry safely, and advance a cursor only after all page events are processed or explicitly quarantined.
+- [x] Import uses the shared inbox/process-manager runtime and Ledger idempotency so duplicate delivery and crash-after-Ledger-commit have one financial effect.
+- [x] Provider snapshots/observations are stored in Banking, passed through Ledger's provider-neutral `ObserveProviderBalance` command, and never overwrite Ledger. Ledger alone owns the resulting case; approval creates a visible, version-checked reconciliation `JournalEntry`, and stale cases cannot apply an obsolete delta.
+- [x] Per-connection webhook credentials are high entropy, rotatable, constant-time verified, validation-handshake compatible, replay safe, and absent from normal logs. Provider registration state/attempts survive failure and restart; receipt remains independent of Ledger availability.
+- [x] Users can inspect Banking connections, resources, mappings, provider revisions, sync jobs/pages, accounting processes, observations, and links to Ledger-owned reconciliation cases through tenant-safe V2 reads; case decisions remain Ledger reads.
+- [x] Mapped account reads compose Ledger and the latest Banking observation with explicit `as_of`; manual/unmapped accounts return nullable provider fields without invented values.
+- [x] Banking tests use `v2_test_db` and the isolated V2 router only.
+- [x] `src/main.rs`, default DB/test migrators, legacy public routes/API, Docker, environment files, and `DATABASE_URL` are unchanged; Phase 8 remains the sole cutover.
+- [x] The context-boundary, Ledger regression, integration-runtime, OpenAPI, complete Phase 3, and full test suites pass.
 
 ## Explicitly out of scope
 
