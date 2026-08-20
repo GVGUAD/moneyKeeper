@@ -530,7 +530,7 @@ Expected: PASS and Ledger projection rebuild remains equal to posting sums.
 
 Add contract snapshots for the public command/outcome and `banking.provider-event-ready.v1`. Consumers ignore additive fields but reject unknown major versions. Verify the process-manager state contains IDs and minimum facts only, not tokens or raw provider payloads.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/integration/process_managers src/contexts/banking tests/banking_ledger_contract.rs tests/banking_sync.rs
@@ -552,15 +552,15 @@ git commit -m "feat(banking): import provider revisions idempotently"
 - Modify: `tests/banking_domain.rs`
 - Modify: `tests/banking_ledger_contract.rs`
 
-- [ ] **Step 1 — RED: prove observations never overwrite Ledger**
+- [x] **Step 1 — RED: prove observations never overwrite Ledger**
 
 Test reported balance, available balance, credit limit, statement-running balance, basis/sign semantics, optional normalized Ledger-comparable balance, currency, provider observation time, recorded time, stable per-resource source sequence, resource, and provenance. Banking must durably store the observation before invoking Ledger's provider-neutral `ObserveProviderBalance` command. Deliver newer then older observations and deliver both concurrently; after either step, Ledger balance/posting counts must be unchanged and the active case must never regress. Ledger creates/refreshes only from the greatest `(observed_at, source_sequence, observation_id)` and returns `IgnoredOlderObservation` linked to the active case for an older fact; `NotComparable` remains visible with no Ledger call/case. Banking retains the provider-specific facts and only the delivery/link result.
 
-- [ ] **Step 2 — RED: prove Ledger retains approval authority**
+- [x] **Step 2 — RED: prove Ledger retains approval authority**
 
 Through Ledger's frozen public/API contract, test that approval requires actor, reason, expected case version, and the captured Ledger balance version. If Ledger changed, the outcome is `Stale`; it never applies the old delta. Approval produces a visible Ledger reconciliation `JournalEntry`, duplicate approval returns the same result, and dismissal is non-financial. Banking cannot approve/dismiss and stores no second reconciliation aggregate; it may consume Ledger decision events for a local read status.
 
-- [ ] **Step 3: run and capture RED**
+- [x] **Step 3: run and capture RED**
 
 ~~~bash
 cargo test --test banking_ledger_contract -- --nocapture
@@ -569,11 +569,11 @@ cargo test --test banking_domain reconciliation -- --nocapture
 
 Expected: FAIL because Banking observation delivery is incomplete.
 
-- [ ] **Step 4 — GREEN: implement durable observation delivery**
+- [x] **Step 4 — GREEN: implement durable observation delivery**
 
 Persist the Banking observation first and assign its monotonic per-resource source sequence. A `NotComparable` observation becomes terminal/visible without invoking Ledger. Otherwise use the shared process manager to invoke Ledger's provider-neutral `ObserveProviderBalance` command with the normalized comparable Money, stable observation idempotency key, minimal source-stream reference, and full ordering tuple. Persist `Delivered { reconciliation_case_id, status }`, `IgnoredOlder { active_case_id }`, `RetryDue`, or terminal rejection without copying Ledger's case. Ledger calculates the comparison and owns latest-stream serialization plus later approve/dismiss/stale behavior. Publish `banking.balance-observed.v1` with provider-specific facts/basis/comparability for Reporting; optionally consume Ledger decision events only to update Banking's read link/status.
 
-- [ ] **Step 5 — REFACTOR: search for forbidden balance mutation**
+- [x] **Step 5 — REFACTOR: search for forbidden balance mutation**
 
 ~~~bash
 rg -n "set_balance|adjust_balance|UPDATE ledger\.|account_balance_projection|balance\s*=" src/contexts/banking src/integration/process_managers/banking_observation.rs

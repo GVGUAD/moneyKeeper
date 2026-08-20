@@ -104,3 +104,16 @@ pub struct CompleteSyncPage {
     pub quarantined_events: i32,
     pub now: DateTime<Utc>,
 }
+
+pub struct RecordBalanceObservation {
+    pub user_id: UserId,
+    pub connection_id: ProviderConnectionId,
+    pub resource_id: ExternalResourceId,
+    pub basis: super::super::domain::BalanceBasis,
+    pub provider_money: Money,
+    pub sign_semantics: String,
+    pub comparability: super::super::domain::BalanceComparability,
+    pub observed_at: DateTime<Utc>,
+    pub recorded_at: DateTime<Utc>,
+    pub correlation_id: CorrelationId,
+}

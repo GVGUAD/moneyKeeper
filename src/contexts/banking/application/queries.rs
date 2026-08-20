@@ -10,6 +10,7 @@ use super::super::domain::{
     ResourceMappingId,
     ProviderEventId,
     SyncJobId,
+    BalanceObservationId,
 };
 use crate::contexts::ledger::public::LedgerAccountId;
 use crate::contexts::ledger::public::JournalEntryId;
@@ -123,4 +124,44 @@ pub struct ProviderImportOutcome {
     pub state: String,
     pub ledger_journal_entry_id: Option<JournalEntryId>,
     pub replayed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct BalanceObservationView {
+    pub id: BalanceObservationId,
+    pub resource_id: ExternalResourceId,
+    pub source_sequence: i64,
+    pub basis: super::super::domain::BalanceBasis,
+    pub provider_money: Money,
+    pub comparable_money: Option<Money>,
+    pub non_comparable_reason: Option<String>,
+    pub observed_at: DateTime<Utc>,
+    pub recorded_at: DateTime<Utc>,
+    pub delivery_state: String,
+    pub reconciliation_case_id: Option<crate::contexts::ledger::public::ReconciliationCaseId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BalanceObservationDeliveryWork {
+    pub observation: BalanceObservationView,
+    pub user_id: UserId,
+    pub ledger_account_id: LedgerAccountId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BalanceObservationDeliveryOutcome {
+    pub observation_id: BalanceObservationId,
+    pub state: String,
+    pub reconciliation_case_id: Option<crate::contexts::ledger::public::ReconciliationCaseId>,
+    pub active_case_id: Option<crate::contexts::ledger::public::ReconciliationCaseId>,
+    pub replayed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BalanceObservedV1 {
+    pub observation_id: BalanceObservationId,
+    pub resource_id: ExternalResourceId,
+    pub source_sequence: i64,
+    pub basis: super::super::domain::BalanceBasis,
+    pub comparable: bool,
 }

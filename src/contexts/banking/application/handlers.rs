@@ -9,6 +9,8 @@ use super::{
     ResourceMappingResult,
     IntakeProviderEvent, ProviderEventReceipt,
     ProviderImportOutcome, ProviderImportWork,
+    BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork, BalanceObservationView,
+    RecordBalanceObservation,
 };
 use crate::contexts::banking::domain::BankingError;
 use crate::contexts::banking::infrastructure::PgBankingStore;
@@ -38,7 +40,18 @@ impl BankingFacade {
         use crate::contexts::reference_data::public::CurrencyCatalog;
         let currencies = self.currencies.list_enabled().await.map_err(|_| BankingError::InvalidValue("currency catalog unavailable"))?
             .into_iter().filter_map(|definition| definition.numeric_code.and_then(|numeric| numeric.parse::<u16>().ok()).map(|numeric| (numeric, (definition.code, definition.minor_unit)))).collect();
-        self.store.validate_and_discover(user_id, connection_id, self.cipher.as_ref(), self.provider.as_ref(), &currencies).await
+        let resources = self.store.validate_and_discover(user_id, connection_id, self.cipher.as_ref(), self.provider.as_ref(), &currencies).await?;
+        for resource in &resources {
+            let resource_id = self.store.resource_id_by_external(user_id,connection_id,&resource.external_resource_id).await?;
+            let comparability = if resource.funding_model == super::super::domain::FundingModel::OwnFunds {
+                super::super::domain::BalanceComparability::Comparable(resource.provider_balance.clone())
+            } else {
+                super::super::domain::BalanceComparability::NotComparable("provider credit balance semantics require review".to_owned())
+            };
+            let now = chrono::Utc::now();
+            self.store.record_balance_observation(RecordBalanceObservation { user_id, connection_id, resource_id, basis: super::super::domain::BalanceBasis::Reported, provider_money: resource.provider_balance.clone(), sign_semantics: "provider_native".to_owned(), comparability, observed_at: now, recorded_at: now, correlation_id: crate::shared_kernel::CorrelationId::generate() }).await?;
+        }
+        Ok(resources)
     }
 
     pub async fn list_connections(&self, user_id: UserId) -> Result<Vec<ProviderConnectionView>, BankingError> { self.store.list_connections(user_id).await }
@@ -90,5 +103,17 @@ impl BankingFacade {
 
     pub async fn complete_provider_import(&self, outcome: ProviderImportOutcome) -> Result<ProviderImportOutcome, BankingError> {
         self.store.complete_provider_import(outcome).await
+    }
+
+    pub async fn record_balance_observation(&self, command: RecordBalanceObservation) -> Result<BalanceObservationView, BankingError> {
+        self.store.record_balance_observation(command).await
+    }
+
+    pub async fn claim_balance_observation(&self, user_id: UserId, observation_id: super::super::domain::BalanceObservationId) -> Result<Option<BalanceObservationDeliveryWork>, BankingError> {
+        self.store.claim_balance_observation(user_id,observation_id).await
+    }
+
+    pub async fn complete_balance_observation(&self, outcome: BalanceObservationDeliveryOutcome) -> Result<BalanceObservationDeliveryOutcome, BankingError> {
+        self.store.complete_balance_observation(outcome).await
     }
 }

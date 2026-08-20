@@ -54,6 +54,17 @@ async fn mapping_existing_account_validates_public_ledger_contract_and_tenant() 
     }).await.unwrap();
     assert_eq!(mapped.mapping.ledger_account_id, Some(account.id));
 
+    let observation_time=Utc::now();
+    let observation=banking.record_balance_observation(RecordBalanceObservation{user_id,connection_id:connection.id,resource_id,basis:BalanceBasis::Reported,provider_money:Money::new(rust_decimal_macros::dec!(100.00),CurrencyCode::new("UAH").unwrap(),2).unwrap(),sign_semantics:"provider_native".to_owned(),comparability:BalanceComparability::Comparable(Money::new(rust_decimal_macros::dec!(100.00),CurrencyCode::new("UAH").unwrap(),2).unwrap()),observed_at:observation_time,recorded_at:observation_time,correlation_id:CorrelationId::generate()}).await.unwrap();
+    let delivered=moneykeeper::integration::process_managers::banking_observation::deliver_balance_observation(&banking,&ledger,user_id,observation.id).await.unwrap();
+    assert_eq!(delivered.state,"delivered");
+    assert!(delivered.reconciliation_case_id.is_some());
+    assert!(ledger.list_journals(user_id,None,100).await.unwrap().is_empty());
+    let non_comparable=banking.record_balance_observation(RecordBalanceObservation{user_id,connection_id:connection.id,resource_id,basis:BalanceBasis::CreditLimit,provider_money:Money::new(rust_decimal_macros::dec!(0.00),CurrencyCode::new("UAH").unwrap(),2).unwrap(),sign_semantics:"provider_native".to_owned(),comparability:BalanceComparability::NotComparable("not a scalar account balance".to_owned()),observed_at:observation_time,recorded_at:observation_time,correlation_id:CorrelationId::generate()}).await.unwrap();
+    let skipped=moneykeeper::integration::process_managers::banking_observation::deliver_balance_observation(&banking,&ledger,user_id,non_comparable.id).await.unwrap();
+    assert!(skipped.replayed);
+    assert_eq!(ledger.list_reconciliations(user_id).await.unwrap().len(),1);
+
     let other_user = UserId::new(Uuid::new_v4());
     let rejected = banking.bind_existing_resource(BindExistingResource {
         user_id:other_user, resource_id, ledger_account_id:account.id, expected_resource_version:2,
