@@ -6,7 +6,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 
-use crate::{contexts::banking::{application::{ConnectProvider, ConnectionResult, CredentialBinding, CredentialCipher, ProviderClient, ProviderConnectionView, ReplaceProviderCredential}, domain::{BankingError, ConnectionState, ConnectionVersion, CredentialEnvelope, ProviderConnectionId}}, infrastructure::v2_db::VerifiedV2Pool, shared_kernel::{CurrencyCode, UserId}};
+use crate::{contexts::banking::{application::{BindExistingResource, ConnectProvider, ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher, DeactivateResourceMapping, ProviderClient, ProviderConnectionView, ReplaceProviderCredential, ResourceMappingResult, ResourceMappingView}, domain::{BankingError, ConnectionState, ConnectionVersion, CredentialEnvelope, ExternalResourceId, FundingModel, ProviderConnectionId, ResourceKind, ResourceMappingId}}, contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId}, infrastructure::v2_db::VerifiedV2Pool, shared_kernel::{CurrencyCode, UserId}};
 
 use super::{MonobankAdapter, NormalizedResource, pg_unit_of_work::PgBankingUnitOfWork, rows::ConnectionRow};
 
@@ -56,7 +56,7 @@ impl PgBankingStore {
         Ok(ConnectionResult { connection: ProviderConnectionView { id: command.connection_id, user_id: command.user_id, provider, state: ConnectionState::PendingCredentialValidation, credential_generation: generation, version: ConnectionVersion::new(version+1)?, webhook_configured: false, created_at: row.get("created_at"), updated_at: command.requested_at }, replayed: false })
     }
 
-    pub(crate) async fn validate_and_discover(&self, user_id: UserId, connection_id: ProviderConnectionId, cipher: &dyn CredentialCipher, provider_client: &dyn ProviderClient) -> Result<Vec<NormalizedResource>, BankingError> {
+    pub(crate) async fn validate_and_discover(&self, user_id: UserId, connection_id: ProviderConnectionId, cipher: &dyn CredentialCipher, provider_client: &dyn ProviderClient, currencies: &BTreeMap<u16, (CurrencyCode, u8)>) -> Result<Vec<NormalizedResource>, BankingError> {
         let row = self.connection_row(user_id, connection_id).await?;
         let candidate = row.state == "pending_credential_validation";
         let generation = if candidate { row.credential_generation.checked_add(1).ok_or(BankingError::InvalidValue("credential generation overflow"))? } else { row.credential_generation };
@@ -78,9 +78,7 @@ impl PgBankingStore {
             }
             Err(_) => return Err(BankingError::InvalidValue("provider validation failed")),
         };
-        let currency_rows = sqlx::query("SELECT numeric_code,code,minor_unit FROM reference_data.currencies WHERE enabled AND numeric_code IS NOT NULL").fetch_all(&self.uow.pool).await.map_err(database)?;
-        let currencies = currency_rows.into_iter().map(|row| { let numeric: String=row.get("numeric_code"); let code: String=row.get("code"); (numeric.parse::<u16>().unwrap(), (CurrencyCode::new(code).unwrap(), u8::try_from(row.get::<i16,_>("minor_unit")).unwrap())) }).collect::<BTreeMap<_,_>>();
-        let snapshot = MonobankAdapter::normalize_client_info(&body, &currencies)?;
+        let snapshot = MonobankAdapter::normalize_client_info(&body, currencies)?;
         let mut tx = self.uow.pool.begin().await.map_err(database)?;
         for resource in &snapshot.resources {
             sqlx::query("INSERT INTO banking.external_resources (id,user_id,connection_id,external_resource_id,kind,funding_model,currency,masked_label,discovery_state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (connection_id,external_resource_id) DO UPDATE SET masked_label=EXCLUDED.masked_label,funding_model=EXCLUDED.funding_model,discovery_state=EXCLUDED.discovery_state,version=banking.external_resources.version+1,updated_at=clock_timestamp()")
@@ -102,6 +100,71 @@ impl PgBankingStore {
         rows.into_iter().map(view).collect()
     }
 
+    pub(crate) async fn resource_binding(&self, user_id: UserId, resource_id: ExternalResourceId) -> Result<ResourceBinding, BankingError> {
+        let row = sqlx::query("SELECT kind,funding_model,currency,version FROM banking.external_resources WHERE id=$1 AND user_id=$2 AND discovery_state IN ('active','needs_review')")
+            .bind(resource_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        Ok(ResourceBinding { kind: parse_kind(row.get::<String,_>("kind").as_str())?, funding_model: parse_funding(row.get::<String,_>("funding_model").as_str())?, currency: CurrencyCode::new(row.get::<String,_>("currency")).map_err(|_| BankingError::InvalidValue("stored resource currency is invalid"))?, version: row.get("version") })
+    }
+
+    pub(crate) async fn commit_mapping(&self, command: BindExistingResource) -> Result<ResourceMappingResult, BankingError> {
+        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        let version: i64 = sqlx::query_scalar("SELECT version FROM banking.external_resources WHERE id=$1 AND user_id=$2 FOR UPDATE")
+            .bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        if version != command.expected_resource_version { return Err(BankingError::VersionConflict); }
+        if let Some(row) = sqlx::query("SELECT id,ledger_account_id,mapping_version,state,effective_at,ended_at FROM banking.resource_mappings WHERE external_resource_id=$1 AND user_id=$2 AND state='active'")
+            .bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)? {
+            let mapping = mapping_view(command.resource_id, row)?;
+            tx.rollback().await.map_err(database)?;
+            return if mapping.ledger_account_id == Some(command.ledger_account_id) { Ok(ResourceMappingResult { mapping, replayed: true }) } else { Err(BankingError::MappingAlreadyActive) };
+        }
+        let mapping_version: i64 = sqlx::query_scalar("SELECT COALESCE(max(mapping_version),0)+1 FROM banking.resource_mappings WHERE external_resource_id=$1 AND user_id=$2")
+            .bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_one(&mut *tx).await.map_err(database)?;
+        let id = ResourceMappingId::generate();
+        sqlx::query("INSERT INTO banking.resource_mappings (id,user_id,connection_id,external_resource_id,ledger_account_id,mapping_version,state,effective_at) SELECT $1,$2,connection_id,id,$3,$4,'active',$5 FROM banking.external_resources WHERE id=$6 AND user_id=$2")
+            .bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.ledger_account_id.into_uuid()).bind(mapping_version).bind(command.requested_at).bind(command.resource_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE banking.external_resources SET version=version+1,updated_at=$3 WHERE id=$1 AND user_id=$2 AND version=$4")
+            .bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)?;
+        Ok(ResourceMappingResult { mapping: ResourceMappingView { id, resource_id: command.resource_id, ledger_account_id: Some(command.ledger_account_id), mapping_version, state: "active".to_owned(), effective_at: command.requested_at, ended_at: None }, replayed: false })
+    }
+
+    pub(crate) async fn ensure_pending_mapping(&self, command: &CreateAndMapResource) -> Result<ResourceMappingResult, BankingError> {
+        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        let version: i64 = sqlx::query_scalar("SELECT version FROM banking.external_resources WHERE id=$1 AND user_id=$2 FOR UPDATE")
+            .bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        if version != command.expected_resource_version && !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM banking.resource_mappings WHERE external_resource_id=$1 AND user_id=$2 AND state IN ('pending_account_creation','active'))").bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_one(&mut *tx).await.map_err(database)? { return Err(BankingError::VersionConflict); }
+        if let Some(row) = sqlx::query("SELECT id,ledger_account_id,mapping_version,state,effective_at,ended_at FROM banking.resource_mappings WHERE external_resource_id=$1 AND user_id=$2 AND state IN ('pending_account_creation','active') ORDER BY mapping_version DESC LIMIT 1")
+            .bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)? {
+            let mapping = mapping_view(command.resource_id, row)?; tx.rollback().await.map_err(database)?; return Ok(ResourceMappingResult { mapping, replayed: true });
+        }
+        let mapping_version: i64 = sqlx::query_scalar("SELECT COALESCE(max(mapping_version),0)+1 FROM banking.resource_mappings WHERE external_resource_id=$1 AND user_id=$2").bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_one(&mut *tx).await.map_err(database)?;
+        let id=ResourceMappingId::generate();
+        sqlx::query("INSERT INTO banking.resource_mappings (id,user_id,connection_id,external_resource_id,ledger_account_id,mapping_version,state,process_correlation_id,effective_at) SELECT $1,$2,connection_id,id,NULL,$3,'pending_account_creation',$4,$5 FROM banking.external_resources WHERE id=$6 AND user_id=$2")
+            .bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(mapping_version).bind(command.correlation_id.into_uuid()).bind(command.requested_at).bind(command.resource_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE banking.external_resources SET version=version+1,updated_at=$3 WHERE id=$1 AND user_id=$2 AND version=$4").bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)?;
+        Ok(ResourceMappingResult { mapping: ResourceMappingView { id, resource_id: command.resource_id, ledger_account_id: None, mapping_version, state:"pending_account_creation".to_owned(), effective_at:command.requested_at, ended_at:None }, replayed:false })
+    }
+
+    pub(crate) async fn complete_pending_mapping(&self, user_id: UserId, resource_id: ExternalResourceId, mapping_id: ResourceMappingId, mapping_version: i64, account_id: LedgerAccountId, now: chrono::DateTime<chrono::Utc>) -> Result<ResourceMappingResult, BankingError> {
+        let result=sqlx::query("UPDATE banking.resource_mappings SET ledger_account_id=$4,state='active',updated_at=$5 WHERE id=$1 AND user_id=$2 AND external_resource_id=$3 AND mapping_version=$6 AND state='pending_account_creation' RETURNING id,ledger_account_id,mapping_version,state,effective_at,ended_at")
+            .bind(mapping_id.into_uuid()).bind(user_id.into_uuid()).bind(resource_id.into_uuid()).bind(account_id.into_uuid()).bind(now).bind(mapping_version).fetch_optional(&self.uow.pool).await.map_err(database)?;
+        let replayed = result.is_none();
+        let row=match result { Some(row)=>row, None=>sqlx::query("SELECT id,ledger_account_id,mapping_version,state,effective_at,ended_at FROM banking.resource_mappings WHERE id=$1 AND user_id=$2 AND state='active'").bind(mapping_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::VersionConflict)? };
+        Ok(ResourceMappingResult { mapping:mapping_view(resource_id,row)?, replayed })
+    }
+
+    pub(crate) async fn deactivate_mapping(&self, command: DeactivateResourceMapping) -> Result<ResourceMappingResult, BankingError> {
+        if command.reason.trim().is_empty() || command.reason.len()>500 { return Err(BankingError::InvalidValue("mapping reason is invalid")); }
+        let mut tx=self.uow.pool.begin().await.map_err(database)?;
+        let version:i64=sqlx::query_scalar("SELECT version FROM banking.external_resources WHERE id=$1 AND user_id=$2 FOR UPDATE").bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        if version!=command.expected_resource_version { return Err(BankingError::VersionConflict); }
+        let row=sqlx::query("UPDATE banking.resource_mappings SET state='inactive',reason=$3,ended_at=$4,updated_at=$4 WHERE external_resource_id=$1 AND user_id=$2 AND state IN ('active','needs_review') RETURNING id,ledger_account_id,mapping_version,state,effective_at,ended_at").bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).bind(&command.reason).bind(command.requested_at).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::MappingNotActive)?;
+        sqlx::query("UPDATE banking.external_resources SET version=version+1,updated_at=$3 WHERE id=$1 AND user_id=$2 AND version=$4").bind(command.resource_id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)?;
+        Ok(ResourceMappingResult { mapping:mapping_view(command.resource_id,row)?, replayed:false })
+    }
+
     async fn connection_row(&self, user_id: UserId, connection_id: ProviderConnectionId) -> Result<ConnectionRow, BankingError> {
         let row = sqlx::query("SELECT provider,state,active_credential_ciphertext,active_credential_nonce,active_credential_key_id,active_credential_envelope_version,pending_credential_ciphertext,pending_credential_nonce,pending_credential_key_id,pending_credential_envelope_version,credential_generation FROM banking.provider_connections WHERE id=$1 AND user_id=$2")
             .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
@@ -109,10 +172,16 @@ impl PgBankingStore {
     }
 }
 
+pub(crate) struct ResourceBinding { pub(crate) kind: ResourceKind, pub(crate) funding_model: FundingModel, pub(crate) currency: CurrencyCode, pub(crate) version: i64 }
+impl ResourceBinding { pub(crate) fn expected_ledger_account(&self) -> Result<(AccountKind,AccountNature),BankingError> { match (self.kind,self.funding_model) { (ResourceKind::Card,FundingModel::OwnFunds)=>Ok((AccountKind::DebitCard,AccountNature::Asset)),(ResourceKind::CurrentAccount,FundingModel::OwnFunds)=>Ok((AccountKind::Current,AccountNature::Asset)),(ResourceKind::Jar,FundingModel::OwnFunds)=>Ok((AccountKind::Jar,AccountNature::Asset)),(ResourceKind::Card,FundingModel::RevolvingCredit)=>Ok((AccountKind::CreditCard,AccountNature::Liability)),(ResourceKind::SecurityPortfolio,_)=>Err(BankingError::RouteToPortfolio),_=>Err(BankingError::IncompatibleMapping) } } }
+
 fn view(row: sqlx::postgres::PgRow) -> Result<ProviderConnectionView, BankingError> {
     Ok(ProviderConnectionView { id: ProviderConnectionId::new(row.get("id")), user_id: UserId::new(row.get("user_id")), provider: row.get("provider"), state: state(row.get::<String,_>("state").as_str())?, credential_generation: row.get("credential_generation"), version: ConnectionVersion::new(row.get("version"))?, webhook_configured: row.get::<Option<Vec<u8>>,_>("webhook_lookup_digest").is_some(), created_at: row.get("created_at"), updated_at: row.get("updated_at") })
 }
 fn state(value: &str) -> Result<ConnectionState, BankingError> { match value { "pending"=>Ok(ConnectionState::Pending),"active"=>Ok(ConnectionState::Active),"pending_credential_validation"=>Ok(ConnectionState::PendingCredentialValidation),"needs_reauth"=>Ok(ConnectionState::NeedsReauth),"revoked"=>Ok(ConnectionState::Revoked),_=>Err(BankingError::InvalidValue("stored connection state is invalid")) } }
 fn kind(value: crate::contexts::banking::domain::ResourceKind) -> &'static str { match value { crate::contexts::banking::domain::ResourceKind::Card=>"card",crate::contexts::banking::domain::ResourceKind::CurrentAccount=>"current_account",crate::contexts::banking::domain::ResourceKind::Jar=>"jar",crate::contexts::banking::domain::ResourceKind::SecurityPortfolio=>"security_portfolio",crate::contexts::banking::domain::ResourceKind::Unsupported=>"unsupported" } }
 fn funding(value: crate::contexts::banking::domain::FundingModel) -> &'static str { match value { crate::contexts::banking::domain::FundingModel::OwnFunds=>"own_funds",crate::contexts::banking::domain::FundingModel::RevolvingCredit=>"revolving_credit",crate::contexts::banking::domain::FundingModel::Unknown=>"unknown" } }
+fn parse_kind(value:&str)->Result<ResourceKind,BankingError>{match value{"card"=>Ok(ResourceKind::Card),"current_account"=>Ok(ResourceKind::CurrentAccount),"jar"=>Ok(ResourceKind::Jar),"security_portfolio"=>Ok(ResourceKind::SecurityPortfolio),"unsupported"=>Ok(ResourceKind::Unsupported),_=>Err(BankingError::InvalidValue("stored resource kind is invalid"))}}
+fn parse_funding(value:&str)->Result<FundingModel,BankingError>{match value{"own_funds"=>Ok(FundingModel::OwnFunds),"revolving_credit"=>Ok(FundingModel::RevolvingCredit),"unknown"=>Ok(FundingModel::Unknown),_=>Err(BankingError::InvalidValue("stored funding model is invalid"))}}
+fn mapping_view(resource_id:ExternalResourceId,row:sqlx::postgres::PgRow)->Result<ResourceMappingView,BankingError>{Ok(ResourceMappingView{id:ResourceMappingId::new(row.get("id")),resource_id,ledger_account_id:row.get::<Option<uuid::Uuid>,_>("ledger_account_id").map(LedgerAccountId::new),mapping_version:row.get("mapping_version"),state:row.get("state"),effective_at:row.get("effective_at"),ended_at:row.get("ended_at")})}
 fn database(_error: sqlx::Error) -> BankingError { BankingError::InvalidValue("banking persistence failed") }

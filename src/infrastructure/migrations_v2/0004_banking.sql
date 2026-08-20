@@ -124,7 +124,7 @@ CREATE TABLE banking.resource_mappings (
     user_id UUID NOT NULL,
     connection_id UUID NOT NULL,
     external_resource_id UUID NOT NULL,
-    ledger_account_id UUID NOT NULL,
+    ledger_account_id UUID,
     mapping_version BIGINT NOT NULL CHECK (mapping_version >= 1),
     effective_provider_revision BIGINT NOT NULL DEFAULT 1 CHECK (effective_provider_revision >= 1),
     state TEXT NOT NULL CHECK (state IN (

@@ -277,7 +277,7 @@ Expected: FAIL because the application and adapters do not exist.
 
 Keep `X-Token`, Monobank numeric currency/product strings, minor-unit conversion, rate-limit headers, and JSON DTOs under `infrastructure/monobank`. The provider client logs only endpoint class, HTTP status, request ID, elapsed time, and redacted connection/resource IDs. Zeroize plaintext credential buffers when the existing secret type permits it.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking/application src/contexts/banking/infrastructure tests/banking_monobank.rs tests/banking_persistence.rs
@@ -298,13 +298,13 @@ git commit -m "feat(banking): encrypt connections and discover Monobank resource
 - Modify: `tests/banking_domain.rs`
 - Create: `tests/banking_ledger_contract.rs`
 
-- [ ] **Step 1 — RED: write mapping contract tests**
+- [x] **Step 1 — RED: write mapping contract tests**
 
 Cover both mapping targets: bind an existing Ledger account, or request creation of a provider-observed Ledger account from the resource. Prove mapping succeeds only when the authenticated user owns the objects, resource/account currencies match, Ledger account authority/kind/nature accepts provider mapping, and neither side is archived. Validate the resource's native currency before either path. `OwnFunds` card/current resources require an Asset/debit-card-or-current target; `RevolvingCredit` card resources require a Liability/credit-card target; `Unknown` blocks create/map pending user-visible review. Reject cross-user IDs without revealing existence, wrong currency, incompatible funding model/nature, security/ОВДП, system accounts, duplicate active mappings, stale expected versions, and two resources mapped to one Ledger account unless the frozen Ledger contract explicitly permits it.
 
 For create-and-map, prove the Banking command first persists `PendingAccountCreation` plus outbox/process correlation, a durable process manager calls Ledger's provider-neutral account-opening command with the exact kind/nature dictated by the confirmed funding model and key `banking-resource-account:{resource_id}:{mapping_version}`, and crash/retry creates one account and one active mapping. Also prove version-checked deactivation and replacement retain the old mapping/effective boundary, reject stale versions, and route only later provider revisions to the replacement account. A resource moved to `NeedsReview` by a funding-model change stops new imports until deactivation/replacement resolves it; prior Ledger journals are never rewritten. Banking must not hold a transaction open across the Ledger call.
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test banking_ledger_contract mapping_ -- --nocapture
@@ -312,11 +312,11 @@ cargo test --test banking_ledger_contract mapping_ -- --nocapture
 
 Expected: FAIL because Banking has no Ledger public-port adapter or mapping handler.
 
-- [ ] **Step 3 — GREEN: implement public-facade validation and audited mapping**
+- [x] **Step 3 — GREEN: implement public-facade validation and audited mapping**
 
 For an existing account, call a provider-neutral Ledger query such as `validate_provider_account_binding(user_id, account_id, currency, expected_authority)`, then recheck Banking version and commit the audited mapping. For create-and-map, persist intent and let the shared process manager call Ledger, then commit the returned account ID only if the resource/mapping version still matches. Both paths publish `banking.resource-mapped.v1`; failures expose retryable or terminal status. A race is resolved by database uniqueness/version checks. Do not hold a Banking SQL transaction open while calling Ledger.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test banking_ledger_contract mapping_ -- --nocapture
@@ -325,7 +325,7 @@ cargo test --test banking_persistence mapping_ -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: prove there is no table coupling**
+- [x] **Step 5 — REFACTOR: prove there is no table coupling**
 
 ~~~bash
 rg -n "ledger\.|Pg.*Ledger|contexts::ledger::(domain|application|infrastructure)" src/contexts/banking

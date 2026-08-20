@@ -19,6 +19,7 @@ use super::super::{
     infrastructure::{PgLedgerProjection, PgLedgerQueries, PgLedgerUnitOfWork},
     public::{
         AccountResult, AccountView, ArchiveAccount, OpenAccount, RenameAccount, RestoreAccount,
+        OpenProviderObservedAccount,
     },
 };
 use super::commit::commit_journal;
@@ -69,7 +70,34 @@ impl LedgerFacade {
 
     /// Opens an account and records any non-zero opening balance as a journal.
     pub async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError> {
-        open_account(&self.uow, self.clock.as_ref(), command).await
+        open_account(&self.uow, self.clock.as_ref(), command, false).await
+    }
+
+    /// Opens an account whose metadata authority belongs to a provider mapping.
+    pub async fn open_provider_observed_account(
+        &self,
+        command: OpenProviderObservedAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        let zero = crate::shared_kernel::Money::zero(command.currency.clone(), 0)
+            .map_err(|error| LedgerError::invalid_money(error.to_string()))?;
+        open_account(
+            &self.uow,
+            self.clock.as_ref(),
+            OpenAccount {
+                user_id: command.user_id,
+                name: command.name,
+                currency: command.currency,
+                kind: command.kind,
+                nature: command.nature,
+                opening_balance: zero,
+                idempotency_key: command.idempotency_key,
+                correlation_id: command.correlation_id,
+                causation_id: command.causation_id,
+                occurred_at: command.occurred_at,
+            },
+            true,
+        )
+        .await
     }
 
     /// Renames account metadata using optimistic concurrency.
@@ -111,6 +139,7 @@ async fn open_account<U: LedgerUnitOfWork>(
     uow: &U,
     clock: &dyn Clock,
     command: OpenAccount,
+    provider_observed: bool,
 ) -> Result<AccountResult, LedgerError> {
     if command.opening_balance.currency() != &command.currency {
         return Err(LedgerError::currency_mismatch());
@@ -123,11 +152,12 @@ async fn open_account<U: LedgerUnitOfWork>(
         "opening_balance": command.opening_balance,
         "occurred_at": command.occurred_at,
     }))?;
+    let scope = if provider_observed { "open_provider_observed_account" } else { "open_account" };
     let mut tx = uow.begin().await?;
     if let Some(result) = replay(
         &mut tx,
         command.user_id,
-        "open_account",
+        scope,
         &command.idempotency_key,
         &request_hash,
     )
@@ -138,15 +168,17 @@ async fn open_account<U: LedgerUnitOfWork>(
     }
 
     let now = clock.now();
-    let account = LedgerAccount::open_manual(
-        LedgerAccountId::generate(),
-        command.user_id,
-        &command.name,
-        command.currency.clone(),
-        command.kind,
-        command.nature,
-        clock,
-    )?;
+    let account = if provider_observed {
+        LedgerAccount::open_provider_observed(
+            LedgerAccountId::generate(), command.user_id, &command.name,
+            command.currency.clone(), command.kind, command.nature, clock,
+        )?
+    } else {
+        LedgerAccount::open_manual(
+            LedgerAccountId::generate(), command.user_id, &command.name,
+            command.currency.clone(), command.kind, command.nature, clock,
+        )?
+    };
 
     let outcome = async {
         tx.insert_account(&account).await?;
@@ -229,7 +261,7 @@ async fn open_account<U: LedgerUnitOfWork>(
             .map_err(|error| LedgerError::persistence(error.to_string()))?;
         tx.insert_receipt(
             command.user_id,
-            "open_account",
+            scope,
             &command.idempotency_key,
             &request_hash,
             &result_json,
@@ -247,7 +279,7 @@ async fn open_account<U: LedgerUnitOfWork>(
                 replay_after_failure(
                     uow,
                     command.user_id,
-                    "open_account",
+                    scope,
                     &command.idempotency_key,
                     &request_hash,
                     error,
@@ -260,7 +292,7 @@ async fn open_account<U: LedgerUnitOfWork>(
             replay_after_failure(
                 uow,
                 command.user_id,
-                "open_account",
+                scope,
                 &command.idempotency_key,
                 &request_hash,
                 error,

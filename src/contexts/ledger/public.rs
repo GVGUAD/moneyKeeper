@@ -39,6 +39,50 @@ pub struct OpenAccount {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// Opens a provider-observed account for a validated Banking resource.
+#[derive(Clone, Debug)]
+pub struct OpenProviderObservedAccount {
+    pub user_id: UserId,
+    pub name: String,
+    pub currency: CurrencyCode,
+    pub kind: AccountKind,
+    pub nature: AccountNature,
+    pub source: SourceReference,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub causation_id: Option<CausationId>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Provider mapping requirements evaluated without exposing Ledger internals.
+#[derive(Clone, Debug)]
+pub struct ValidateProviderAccountBinding {
+    pub user_id: UserId,
+    pub account_id: LedgerAccountId,
+    pub currency: CurrencyCode,
+    pub kind: AccountKind,
+    pub nature: AccountNature,
+}
+
+/// Stable reason a Ledger account cannot accept a provider mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountBindingRejection {
+    NotFound,
+    Archived,
+    CurrencyMismatch,
+    IncompatibleKindOrNature,
+    SystemAccount,
+}
+
+/// Closed result of validating one provider account binding.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "outcome", content = "reason")]
+pub enum ProviderAccountBindingResult {
+    Accepted(AccountView),
+    Rejected(ProviderAccountBindingRejection),
+}
+
 /// Renames an account with optimistic concurrency and idempotency.
 #[derive(Clone, Debug)]
 pub struct RenameAccount {
