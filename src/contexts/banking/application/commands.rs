@@ -4,11 +4,11 @@ use chrono::{DateTime, Utc};
 
 use crate::shared_kernel::{CorrelationId, IdempotencyKey, UserId};
 
-use super::super::domain::{ConnectionVersion, ExternalResourceId, ProviderConnectionId};
-use crate::contexts::ledger::public::LedgerAccountId;
 use super::super::domain::ProviderTransactionState;
-use crate::shared_kernel::Money;
+use super::super::domain::{ConnectionVersion, ExternalResourceId, ProviderConnectionId};
 use super::ports::ProviderCredential;
+use crate::contexts::ledger::public::LedgerAccountId;
+use crate::shared_kernel::Money;
 
 pub struct ConnectProvider {
     pub user_id: UserId,

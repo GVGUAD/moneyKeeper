@@ -23,8 +23,7 @@ fn money(amount: rust_decimal::Decimal) -> Money {
 }
 
 fn at(second: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, second)
-        .unwrap()
+    Utc.with_ymd_and_hms(2026, 8, 20, 12, 0, second).unwrap()
 }
 
 #[test]
@@ -53,14 +52,18 @@ fn connection_versions_credential_replacement_and_disconnect() {
         connection.state(),
         ConnectionState::PendingCredentialValidation
     );
-    assert!(connection.activate_candidate(connection.version(), at(3)).is_ok());
+    assert!(
+        connection
+            .activate_candidate(connection.version(), at(3))
+            .is_ok()
+    );
     assert_eq!(connection.credential_generation(), 2);
-    assert!(connection
-        .disconnect(ConnectionVersion::INITIAL, at(4))
-        .is_err());
-    connection
-        .disconnect(connection.version(), at(4))
-        .unwrap();
+    assert!(
+        connection
+            .disconnect(ConnectionVersion::INITIAL, at(4))
+            .is_err()
+    );
+    connection.disconnect(connection.version(), at(4)).unwrap();
     assert_eq!(connection.state(), ConnectionState::Revoked);
     assert!(!connection.has_usable_credential());
 }
@@ -90,7 +93,11 @@ fn resources_are_stable_cash_like_mapping_roots() {
     let account = LedgerAccountId::new(Uuid::from_u128(10));
     resource.map(account, resource.version(), at(1)).unwrap();
     assert!(resource.map(account, resource.version(), at(2)).is_err());
-    assert!(resource.change_currency(CurrencyCode::new("USD").unwrap()).is_err());
+    assert!(
+        resource
+            .change_currency(CurrencyCode::new("USD").unwrap())
+            .is_err()
+    );
     resource
         .deactivate_mapping(resource.version(), "wrong account", at(3))
         .unwrap();

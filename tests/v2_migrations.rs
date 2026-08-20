@@ -383,13 +383,12 @@ async fn banking_migration_installs_the_phase_three_baseline() {
         "sync_pages",
         "command_receipts",
     ] {
-        let relation: Option<String> = sqlx::query_scalar(
-            "SELECT to_regclass(format('banking.%I', $1))::text",
-        )
-        .bind(table)
-        .fetch_one(&mut *connection)
-        .await
-        .unwrap();
+        let relation: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass(format('banking.%I', $1))::text")
+                .bind(table)
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap();
         assert!(relation.is_some(), "missing banking.{table}");
     }
 }

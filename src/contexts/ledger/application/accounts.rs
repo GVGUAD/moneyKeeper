@@ -18,8 +18,8 @@ use super::super::{
     },
     infrastructure::{PgLedgerProjection, PgLedgerQueries, PgLedgerUnitOfWork},
     public::{
-        AccountResult, AccountView, ArchiveAccount, OpenAccount, RenameAccount, RestoreAccount,
-        OpenProviderObservedAccount,
+        AccountResult, AccountView, ArchiveAccount, OpenAccount, OpenProviderObservedAccount,
+        RenameAccount, RestoreAccount,
     },
 };
 use super::commit::commit_journal;
@@ -152,7 +152,11 @@ async fn open_account<U: LedgerUnitOfWork>(
         "opening_balance": command.opening_balance,
         "occurred_at": command.occurred_at,
     }))?;
-    let scope = if provider_observed { "open_provider_observed_account" } else { "open_account" };
+    let scope = if provider_observed {
+        "open_provider_observed_account"
+    } else {
+        "open_account"
+    };
     let mut tx = uow.begin().await?;
     if let Some(result) = replay(
         &mut tx,
@@ -170,13 +174,23 @@ async fn open_account<U: LedgerUnitOfWork>(
     let now = clock.now();
     let account = if provider_observed {
         LedgerAccount::open_provider_observed(
-            LedgerAccountId::generate(), command.user_id, &command.name,
-            command.currency.clone(), command.kind, command.nature, clock,
+            LedgerAccountId::generate(),
+            command.user_id,
+            &command.name,
+            command.currency.clone(),
+            command.kind,
+            command.nature,
+            clock,
         )?
     } else {
         LedgerAccount::open_manual(
-            LedgerAccountId::generate(), command.user_id, &command.name,
-            command.currency.clone(), command.kind, command.nature, clock,
+            LedgerAccountId::generate(),
+            command.user_id,
+            &command.name,
+            command.currency.clone(),
+            command.kind,
+            command.nature,
+            clock,
         )?
     };
 

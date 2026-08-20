@@ -4,9 +4,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use moneykeeper::contexts::banking::{self, public::{
-    Aes256CredentialCipher, ConnectProvider, ProviderClient, ProviderCredential, ProviderFailure,
-}};
+use moneykeeper::contexts::banking::{
+    self,
+    public::{
+        Aes256CredentialCipher, ConnectProvider, ProviderClient, ProviderCredential,
+        ProviderFailure,
+    },
+};
 use moneykeeper::shared_kernel::{CorrelationId, IdempotencyKey, UserId};
 use sqlx::Row;
 use uuid::Uuid;
@@ -15,7 +19,10 @@ struct UnusedProvider;
 
 #[async_trait]
 impl ProviderClient for UnusedProvider {
-    async fn client_info(&self, _credential: &ProviderCredential) -> Result<String, ProviderFailure> {
+    async fn client_info(
+        &self,
+        _credential: &ProviderCredential,
+    ) -> Result<String, ProviderFailure> {
         panic!("provider must not be called while persisting the connection")
     }
 }
@@ -24,7 +31,10 @@ struct FixtureProvider;
 
 #[async_trait]
 impl ProviderClient for FixtureProvider {
-    async fn client_info(&self, _credential: &ProviderCredential) -> Result<String, ProviderFailure> {
+    async fn client_info(
+        &self,
+        _credential: &ProviderCredential,
+    ) -> Result<String, ProviderFailure> {
         Ok(r#"{"accounts":[{"id":"card-1","currencyCode":980,"balance":10000,"creditLimit":0,"maskedPan":["4444******1111"],"type":"black","iban":""}],"jars":[{"id":"jar-1","title":"Reserve","currencyCode":980,"balance":5000}]}"#.to_owned())
     }
 }
@@ -38,19 +48,26 @@ async fn credential_validation_discovers_distinct_resources_and_activates_connec
         Arc::new(Aes256CredentialCipher::new("test-key", [4_u8; 32]).unwrap()),
         Arc::new(FixtureProvider),
         currencies,
-        [1_u8;32],
+        [1_u8; 32],
     );
     let user_id = UserId::new(Uuid::new_v4());
-    let connection = facade.connect_provider(ConnectProvider {
-        user_id,
-        provider: "monobank".to_owned(),
-        credential: ProviderCredential::new("sanitized-token").unwrap(),
-        idempotency_key: IdempotencyKey::new("connect-discover").unwrap(),
-        correlation_id: CorrelationId::generate(),
-        requested_at: Utc::now(),
-    }).await.unwrap().connection;
+    let connection = facade
+        .connect_provider(ConnectProvider {
+            user_id,
+            provider: "monobank".to_owned(),
+            credential: ProviderCredential::new("sanitized-token").unwrap(),
+            idempotency_key: IdempotencyKey::new("connect-discover").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            requested_at: Utc::now(),
+        })
+        .await
+        .unwrap()
+        .connection;
 
-    let resources = facade.validate_and_discover(user_id, connection.id).await.unwrap();
+    let resources = facade
+        .validate_and_discover(user_id, connection.id)
+        .await
+        .unwrap();
     assert_eq!(resources.len(), 2);
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT external_resource_id,kind FROM banking.external_resources \
@@ -61,7 +78,13 @@ async fn credential_validation_discovers_distinct_resources_and_activates_connec
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows, vec![("card-1".to_owned(), "card".to_owned()), ("jar-1".to_owned(), "jar".to_owned())]);
+    assert_eq!(
+        rows,
+        vec![
+            ("card-1".to_owned(), "card".to_owned()),
+            ("jar-1".to_owned(), "jar".to_owned())
+        ]
+    );
     let state: String = sqlx::query_scalar(
         "SELECT state FROM banking.provider_connections WHERE id=$1 AND user_id=$2",
     )
@@ -82,7 +105,7 @@ async fn credential_is_encrypted_before_connection_commit_and_never_returned() {
         Arc::new(Aes256CredentialCipher::new("test-key", [9_u8; 32]).unwrap()),
         Arc::new(UnusedProvider),
         currencies,
-        [1_u8;32],
+        [1_u8; 32],
     );
     let user_id = UserId::new(Uuid::new_v4());
     let token = "sanitized-x-token-that-must-not-appear";
@@ -107,8 +130,15 @@ async fn credential_is_encrypted_before_connection_commit_and_never_returned() {
     .await
     .unwrap();
     let ciphertext: Vec<u8> = row.get("active_credential_ciphertext");
-    assert!(!ciphertext.windows(token.len()).any(|bytes| bytes == token.as_bytes()));
-    assert_ne!(row.get::<Vec<u8>, _>("active_credential_nonce"), Vec::<u8>::new());
+    assert!(
+        !ciphertext
+            .windows(token.len())
+            .any(|bytes| bytes == token.as_bytes())
+    );
+    assert_ne!(
+        row.get::<Vec<u8>, _>("active_credential_nonce"),
+        Vec::<u8>::new()
+    );
     assert_eq!(row.get::<String, _>("active_credential_key_id"), "test-key");
     assert!(!serde_json::to_string(&result).unwrap().contains(token));
 }
@@ -134,7 +164,10 @@ async fn schema_creates_banking_owned_tables_and_worker_indexes() {
         "sync_pages",
         "webhook_receipts",
     ] {
-        assert!(tables.iter().any(|actual| actual == table), "missing {table}");
+        assert!(
+            tables.iter().any(|actual| actual == table),
+            "missing {table}"
+        );
     }
 
     let indexes: Vec<String> = sqlx::query_scalar(
@@ -150,7 +183,10 @@ async fn schema_creates_banking_owned_tables_and_worker_indexes() {
         "banking_observations_undelivered",
         "banking_resources_by_connection",
     ] {
-        assert!(indexes.iter().any(|actual| actual == index), "missing {index}");
+        assert!(
+            indexes.iter().any(|actual| actual == index),
+            "missing {index}"
+        );
     }
 }
 
@@ -235,11 +271,13 @@ async fn schema_enforces_tenant_revision_and_encrypted_credential_constraints() 
     .execute(&pool)
     .await;
     assert!(duplicate_revision.is_err());
-    assert!(sqlx::query("UPDATE banking.provider_events SET description='changed' WHERE id=$1")
-        .bind(event_id)
-        .execute(&pool)
-        .await
-        .is_err());
+    assert!(
+        sqlx::query("UPDATE banking.provider_events SET description='changed' WHERE id=$1")
+            .bind(event_id)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
 
     let plaintext_columns: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM information_schema.columns WHERE table_schema='banking' \
@@ -282,5 +320,8 @@ async fn schema_uses_timestamptz_and_no_foreign_context_keys() {
         .await
         .unwrap();
     assert_eq!(rows.last().unwrap().get::<i64, _>("version"), 4);
-    assert_eq!(rows.last().unwrap().get::<String, _>("description"), "banking");
+    assert_eq!(
+        rows.last().unwrap().get::<String, _>("description"),
+        "banking"
+    );
 }

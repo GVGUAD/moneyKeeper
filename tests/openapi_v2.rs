@@ -42,6 +42,21 @@ fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
         "/reconciliations/{id}",
         "/reconciliations/{id}/approve",
         "/reconciliations/{id}/dismiss",
+        "/provider-connections/monobank",
+        "/provider-connections",
+        "/provider-connections/{id}",
+        "/provider-connections/{id}/disconnect",
+        "/provider-connections/{id}/credential-replacements",
+        "/provider-connections/{id}/webhook-rotations",
+        "/provider-connections/{id}/resources",
+        "/provider-connections/{id}/resource-mappings",
+        "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations",
+        "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements",
+        "/provider-connections/{id}/sync-jobs",
+        "/sync-jobs/{id}",
+        "/provider-events/{id}",
+        "/accounting-processes/{id}",
+        "/balance-observations/{id}",
     ]);
     assert_eq!(actual, expected);
     assert!(actual.iter().all(|path| !path.starts_with("/v2")));
@@ -85,7 +100,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 29);
+    assert_eq!(operation_count, 44);
 }
 
 #[test]

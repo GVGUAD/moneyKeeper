@@ -77,12 +77,23 @@ pub(crate) async fn get_account(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::contexts::ledger::public::AccountView>, V2ApiError> {
-    state
+    let mut account = state
         .ledger
         .get_account(user_id, LedgerAccountId::new(id))
         .await
-        .map(Json)
-        .map_err(map_ledger_error)
+        .map_err(map_ledger_error)?;
+    if let Some(banking) = &state.banking {
+        let summary = banking
+            .provider_account_summary(user_id, account.id)
+            .await
+            .map_err(|_| V2ApiError::internal())?;
+        account.provider_reported = summary.provider_reported;
+        account.available = summary.available;
+        account.reconciliation_difference = summary
+            .provider_reported
+            .map(|provider| provider - account.display_balance);
+    }
+    Ok(Json(account))
 }
 
 pub(crate) async fn rename_account(

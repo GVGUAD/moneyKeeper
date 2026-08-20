@@ -1,9 +1,9 @@
 //! Provider-neutral Banking bounded context.
 
-mod domain;
-mod application;
-mod infrastructure;
 pub(crate) mod api;
+mod application;
+mod domain;
+mod infrastructure;
 pub mod public;
 
 use std::sync::Arc;
@@ -17,7 +17,14 @@ pub fn build_with_adapters(
     currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
     webhook_lookup_key: [u8; 32],
 ) -> public::BankingFacade {
-    public::BankingFacade::new(infrastructure::PgBankingStore::new(pool), cipher, provider, None, currencies, infrastructure::WebhookSecretManager::new(webhook_lookup_key))
+    public::BankingFacade::new(
+        infrastructure::PgBankingStore::new(pool),
+        cipher,
+        provider,
+        None,
+        currencies,
+        infrastructure::WebhookSecretManager::new(webhook_lookup_key),
+    )
 }
 
 pub fn build_with_ledger(
@@ -28,7 +35,16 @@ pub fn build_with_ledger(
     currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
     webhook_lookup_key: [u8; 32],
 ) -> public::BankingFacade {
-    public::BankingFacade::new(infrastructure::PgBankingStore::new(pool), cipher, provider, Some(ledger), currencies, infrastructure::WebhookSecretManager::new(webhook_lookup_key))
+    public::BankingFacade::new(
+        infrastructure::PgBankingStore::new(pool),
+        cipher,
+        provider,
+        Some(ledger),
+        currencies,
+        infrastructure::WebhookSecretManager::new(webhook_lookup_key),
+    )
 }
 
-pub fn webhook_router(banking: public::BankingFacade) -> axum::Router { api::routes::webhook_router(banking) }
+pub fn webhook_router(banking: public::BankingFacade) -> axum::Router {
+    api::routes::webhook_router(banking)
+}

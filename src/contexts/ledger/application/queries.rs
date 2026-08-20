@@ -17,7 +17,11 @@ impl LedgerFacade {
         &self,
         command: ValidateProviderAccountBinding,
     ) -> Result<ProviderAccountBindingResult, LedgerError> {
-        let account = match self.queries.get_account(command.user_id, command.account_id).await {
+        let account = match self
+            .queries
+            .get_account(command.user_id, command.account_id)
+            .await
+        {
             Ok(account) => account,
             Err(error) if error.is_not_found() => {
                 return Ok(ProviderAccountBindingResult::Rejected(

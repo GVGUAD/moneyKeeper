@@ -61,17 +61,37 @@ fn monobank_acl_discovers_cards_current_accounts_and_jars_without_securities_gue
     assert_eq!(snapshot.resources.len(), 4);
     assert_eq!(snapshot.resources[0].kind, ResourceKind::Card);
     assert_eq!(snapshot.resources[0].funding_model, FundingModel::OwnFunds);
-    assert_eq!(snapshot.resources[1].funding_model, FundingModel::RevolvingCredit);
+    assert_eq!(
+        snapshot.resources[1].funding_model,
+        FundingModel::RevolvingCredit
+    );
     assert_eq!(snapshot.resources[2].kind, ResourceKind::Unsupported);
     assert_eq!(snapshot.resources[3].kind, ResourceKind::Jar);
-    assert!(!snapshot.resources.iter().any(|resource| resource.kind == ResourceKind::SecurityPortfolio));
+    assert!(
+        !snapshot
+            .resources
+            .iter()
+            .any(|resource| resource.kind == ResourceKind::SecurityPortfolio)
+    );
     assert!(!format!("{snapshot:?}").contains("redacted-client"));
 }
 
 #[test]
 fn provider_failures_are_retry_classified_without_response_bodies() {
-    assert_eq!(MonobankAdapter::classify_status(429), ProviderFailureClass::RateLimited);
-    assert_eq!(MonobankAdapter::classify_status(503), ProviderFailureClass::Transient);
-    assert_eq!(MonobankAdapter::classify_status(401), ProviderFailureClass::NeedsReauth);
-    assert_eq!(MonobankAdapter::classify_status(400), ProviderFailureClass::Terminal);
+    assert_eq!(
+        MonobankAdapter::classify_status(429),
+        ProviderFailureClass::RateLimited
+    );
+    assert_eq!(
+        MonobankAdapter::classify_status(503),
+        ProviderFailureClass::Transient
+    );
+    assert_eq!(
+        MonobankAdapter::classify_status(401),
+        ProviderFailureClass::NeedsReauth
+    );
+    assert_eq!(
+        MonobankAdapter::classify_status(400),
+        ProviderFailureClass::Terminal
+    );
 }
