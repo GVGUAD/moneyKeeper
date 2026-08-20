@@ -333,7 +333,7 @@ rg -n "ledger\.|Pg.*Ledger|contexts::ledger::(domain|application|infrastructure)
 
 Expected: the only Ledger reference is the provider-neutral `contexts::ledger::public` contract; no SQL table/repository/internal-layer reference appears.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking src/integration/process_managers/banking_resource_mapping.rs src/integration/process_managers/mod.rs tests/banking_domain.rs tests/banking_ledger_contract.rs tests/banking_persistence.rs
@@ -353,7 +353,7 @@ git commit -m "feat(banking): validate and audit ledger resource mappings"
 - Modify: `tests/banking_persistence.rs`
 - Create: `tests/banking_sync.rs`
 
-- [ ] **Step 1 — RED: specify duplicate and revision behavior**
+- [x] **Step 1 — RED: specify duplicate and revision behavior**
 
 Test:
 
@@ -368,7 +368,7 @@ events for unknown/unmapped resources -> retained pending/quarantined status, no
 malformed or unsupported currency/product -> bounded quarantine reason and encrypted provenance
 ~~~
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test banking_sync -- --nocapture
@@ -376,13 +376,13 @@ cargo test --test banking_sync -- --nocapture
 
 Expected: FAIL because durable intake is absent.
 
-- [ ] **Step 3 — GREEN: implement transactional event intake**
+- [x] **Step 3 — GREEN: implement transactional event intake**
 
 Normalize before domain construction, calculate a canonical SHA-256 content digest, encrypt permitted raw provenance, and insert/upsert by the full revision identity. Same identity+digest returns the existing receipt. Same identity+different digest is recorded as a conflict/quarantine requiring inspection. A new revision commits the provider fact, balance observation when present, audit record, and `banking.provider-event-ready.v1` outbox message atomically.
 
 Do not use `ON CONFLICT DO NOTHING` as the business decision. Use an explicit `INSERT ... ON CONFLICT ... RETURNING`/locked read that distinguishes duplicate, new revision, and conflicting content.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test banking_sync -- --nocapture
@@ -391,7 +391,7 @@ cargo test --test banking_persistence event_ -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: make provenance retention explicit**
+- [x] **Step 5 — REFACTOR: make provenance retention explicit**
 
 Document/test the retention class of encrypted raw provider payloads and ensure normal query DTOs return only normalized facts, digest, provider IDs in redacted form, state, attempts, and error class. No API returns ciphertext or raw payload.
 

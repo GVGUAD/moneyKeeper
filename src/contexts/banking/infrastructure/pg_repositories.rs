@@ -6,7 +6,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 
-use crate::{contexts::banking::{application::{BindExistingResource, ConnectProvider, ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher, DeactivateResourceMapping, ProviderClient, ProviderConnectionView, ReplaceProviderCredential, ResourceMappingResult, ResourceMappingView}, domain::{BankingError, ConnectionState, ConnectionVersion, CredentialEnvelope, ExternalResourceId, FundingModel, ProviderConnectionId, ResourceKind, ResourceMappingId}}, contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId}, infrastructure::v2_db::VerifiedV2Pool, shared_kernel::{CurrencyCode, UserId}};
+use crate::{contexts::banking::{application::{BindExistingResource, ConnectProvider, ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher, DeactivateResourceMapping, IntakeProviderEvent, ProviderClient, ProviderConnectionView, ProviderEventIntakeOutcome, ProviderEventReadyV1, ProviderEventReceipt, ReplaceProviderCredential, ResourceMappingResult, ResourceMappingView}, domain::{BankingError, ConnectionState, ConnectionVersion, CredentialEnvelope, ExternalResourceId, FundingModel, ProviderConnectionId, ProviderEventId, ProviderTransactionState, ResourceKind, ResourceMappingId}}, contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId}, infrastructure::v2_db::VerifiedV2Pool, integration::{IntegrationEvent, outbox::OutboxWriter, postgres::PgOutboxWriter}, shared_kernel::{CurrencyCode, EventEnvelope, EventId, UserId}};
 
 use super::{MonobankAdapter, NormalizedResource, pg_unit_of_work::PgBankingUnitOfWork, rows::ConnectionRow};
 
@@ -165,6 +165,33 @@ impl PgBankingStore {
         Ok(ResourceMappingResult { mapping:mapping_view(command.resource_id,row)?, replayed:false })
     }
 
+    pub(crate) async fn intake_provider_event(&self, command: IntakeProviderEvent) -> Result<ProviderEventReceipt, BankingError> {
+        if command.external_event_id.is_empty() || command.external_event_id.len()>200 || command.revision<1 || command.operation_money.is_zero() || command.effective_at>command.recorded_at { return Err(BankingError::InvalidValue("invalid provider event intake")); }
+        let content = json!({"connection_id":command.connection_id,"resource_id":command.resource_id,"external_event_id":command.external_event_id,"revision":command.revision,"state":command.state,"operation_money":command.operation_money,"description":command.description,"effective_at":command.effective_at});
+        let digest=Sha256::digest(serde_json::to_vec(&content).map_err(|_| BankingError::InvalidValue("cannot canonicalize provider event"))?).to_vec();
+        let mut tx=self.uow.pool.begin().await.map_err(database)?;
+        if let Some(row)=sqlx::query("SELECT id,content_digest FROM banking.provider_events WHERE connection_id=$1 AND external_resource_id=$2 AND external_event_id=$3 AND revision=$4 FOR UPDATE")
+            .bind(command.connection_id.into_uuid()).bind(command.resource_id.into_uuid()).bind(&command.external_event_id).bind(command.revision).fetch_optional(&mut *tx).await.map_err(database)? {
+            let id=ProviderEventId::new(row.get("id"));
+            if row.get::<Vec<u8>,_>("content_digest")==digest { tx.rollback().await.map_err(database)?; return Ok(ProviderEventReceipt{provider_event_id:id,outcome:ProviderEventIntakeOutcome::Duplicate,processing_state:"ready".to_owned()}); }
+            sqlx::query("INSERT INTO banking.provider_event_conflicts (id,user_id,provider_event_id,conflicting_digest,reason) VALUES ($1,$2,$3,$4,'same provider revision arrived with different normalized content') ON CONFLICT (provider_event_id,conflicting_digest) DO UPDATE SET reason=banking.provider_event_conflicts.reason")
+                .bind(uuid::Uuid::new_v4()).bind(command.user_id.into_uuid()).bind(id.into_uuid()).bind(&digest).execute(&mut *tx).await.map_err(database)?;
+            sqlx::query("UPDATE banking.provider_event_processes SET state='quarantined',last_error='conflicting normalized content',process_version=process_version+1,updated_at=$3 WHERE provider_event_id=$1 AND user_id=$2")
+                .bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.recorded_at).execute(&mut *tx).await.map_err(database)?;
+            tx.commit().await.map_err(database)?;
+            return Ok(ProviderEventReceipt{provider_event_id:id,outcome:ProviderEventIntakeOutcome::ConflictingContent,processing_state:"quarantined".to_owned()});
+        }
+        let id=ProviderEventId::generate();
+        sqlx::query("INSERT INTO banking.provider_events (id,user_id,connection_id,external_resource_id,external_event_id,revision,transaction_state,operation_amount,operation_currency,description,content_digest,effective_at,recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)")
+            .bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.resource_id.into_uuid()).bind(&command.external_event_id).bind(command.revision).bind(transaction_state(command.state)).bind(command.operation_money.amount()).bind(command.operation_money.currency().as_str()).bind(&command.description).bind(&digest).bind(command.effective_at).bind(command.recorded_at).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("INSERT INTO banking.provider_event_processes (provider_event_id,user_id,state) VALUES ($1,$2,'ready')").bind(id.into_uuid()).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        let payload=ProviderEventReadyV1{provider_event_id:id,connection_id:command.connection_id,resource_id:command.resource_id,external_event_id:command.external_event_id,revision:command.revision};
+        let envelope=EventEnvelope::new(EventId::generate(),"banking",id.to_string(),1,"banking.provider-event-ready.v1",1,command.user_id,command.recorded_at,command.correlation_id,None).map_err(|_| BankingError::InvalidValue("cannot create provider event envelope"))?;
+        PgOutboxWriter::from_transaction(&mut tx).append(&IntegrationEvent::new(envelope,serde_json::to_value(payload).map_err(|_| BankingError::InvalidValue("cannot serialize provider event"))?)).await.map_err(|_| BankingError::InvalidValue("cannot append provider event outbox"))?;
+        tx.commit().await.map_err(database)?;
+        Ok(ProviderEventReceipt{provider_event_id:id,outcome:ProviderEventIntakeOutcome::New,processing_state:"ready".to_owned()})
+    }
+
     async fn connection_row(&self, user_id: UserId, connection_id: ProviderConnectionId) -> Result<ConnectionRow, BankingError> {
         let row = sqlx::query("SELECT provider,state,active_credential_ciphertext,active_credential_nonce,active_credential_key_id,active_credential_envelope_version,pending_credential_ciphertext,pending_credential_nonce,pending_credential_key_id,pending_credential_envelope_version,credential_generation FROM banking.provider_connections WHERE id=$1 AND user_id=$2")
             .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
@@ -183,5 +210,6 @@ fn kind(value: crate::contexts::banking::domain::ResourceKind) -> &'static str {
 fn funding(value: crate::contexts::banking::domain::FundingModel) -> &'static str { match value { crate::contexts::banking::domain::FundingModel::OwnFunds=>"own_funds",crate::contexts::banking::domain::FundingModel::RevolvingCredit=>"revolving_credit",crate::contexts::banking::domain::FundingModel::Unknown=>"unknown" } }
 fn parse_kind(value:&str)->Result<ResourceKind,BankingError>{match value{"card"=>Ok(ResourceKind::Card),"current_account"=>Ok(ResourceKind::CurrentAccount),"jar"=>Ok(ResourceKind::Jar),"security_portfolio"=>Ok(ResourceKind::SecurityPortfolio),"unsupported"=>Ok(ResourceKind::Unsupported),_=>Err(BankingError::InvalidValue("stored resource kind is invalid"))}}
 fn parse_funding(value:&str)->Result<FundingModel,BankingError>{match value{"own_funds"=>Ok(FundingModel::OwnFunds),"revolving_credit"=>Ok(FundingModel::RevolvingCredit),"unknown"=>Ok(FundingModel::Unknown),_=>Err(BankingError::InvalidValue("stored funding model is invalid"))}}
+fn transaction_state(value:ProviderTransactionState)->&'static str{match value{ProviderTransactionState::Pending=>"pending",ProviderTransactionState::Settled=>"settled",ProviderTransactionState::Reversed=>"reversed"}}
 fn mapping_view(resource_id:ExternalResourceId,row:sqlx::postgres::PgRow)->Result<ResourceMappingView,BankingError>{Ok(ResourceMappingView{id:ResourceMappingId::new(row.get("id")),resource_id,ledger_account_id:row.get::<Option<uuid::Uuid>,_>("ledger_account_id").map(LedgerAccountId::new),mapping_version:row.get("mapping_version"),state:row.get("state"),effective_at:row.get("effective_at"),ended_at:row.get("ended_at")})}
 fn database(_error: sqlx::Error) -> BankingError { BankingError::InvalidValue("banking persistence failed") }
