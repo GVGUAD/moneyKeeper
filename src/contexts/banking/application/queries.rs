@@ -9,6 +9,7 @@ use super::super::domain::{
     ConnectionState, ConnectionVersion, ExternalResourceId, ProviderConnectionId,
     ResourceMappingId,
     ProviderEventId,
+    SyncJobId,
 };
 use crate::contexts::ledger::public::LedgerAccountId;
 
@@ -66,4 +67,32 @@ pub struct ProviderEventReadyV1 {
     pub resource_id: ExternalResourceId,
     pub external_event_id: String,
     pub revision: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncJobView {
+    pub id: SyncJobId,
+    pub user_id: UserId,
+    pub connection_id: ProviderConnectionId,
+    pub state: String,
+    pub cursor: Option<String>,
+    pub attempts: i32,
+    pub next_retry_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub fencing_token: i64,
+    pub lease_holder: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncPageView {
+    pub id: uuid::Uuid,
+    pub sync_job_id: SyncJobId,
+    pub page_number: i64,
+    pub provider_cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub expected_events: i32,
+    pub processed_events: i32,
+    pub quarantined_events: i32,
+    pub state: String,
 }

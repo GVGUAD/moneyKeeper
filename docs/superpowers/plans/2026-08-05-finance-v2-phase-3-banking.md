@@ -395,7 +395,7 @@ Expected: PASS.
 
 Document/test the retention class of encrypted raw provider payloads and ensure normal query DTOs return only normalized facts, digest, provider IDs in redacted form, state, attempts, and error class. No API returns ciphertext or raw payload.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking tests/banking_monobank.rs tests/banking_persistence.rs tests/banking_sync.rs
@@ -414,7 +414,7 @@ git commit -m "feat(banking): persist revision-aware provider events"
 - Modify: `src/contexts/banking/infrastructure/monobank/client.rs`
 - Modify: `tests/banking_sync.rs`
 
-- [ ] **Step 1 — RED: write crash, retry, and concurrency tests**
+- [x] **Step 1 — RED: write crash, retry, and concurrency tests**
 
 Using fake time and a scripted provider, prove:
 
@@ -432,7 +432,7 @@ terminal quarantine is visible and requires an explicit reason; transient failur
 disconnect/credential rotation fences an old worker
 ~~~
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test banking_sync -- --nocapture
@@ -440,7 +440,7 @@ cargo test --test banking_sync -- --nocapture
 
 Expected: FAIL because the sync executor does not exist.
 
-- [ ] **Step 3 — GREEN: implement the durable sync state machine**
+- [x] **Step 3 — GREEN: implement the durable sync state machine**
 
 Use the Phase 1 shared lease/process primitives rather than a detached `tokio::spawn` per connection. Persist requested range, current page/window, overlap, attempt, next retry, last bounded error, connection version, and fencing token. The sequence is:
 
@@ -451,7 +451,7 @@ Use the Phase 1 shared lease/process primitives rather than a detached `tokio::s
 5. transactionally mark the page complete and advance the durable cursor; and
 6. release/renew with the current fencing token.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test banking_sync -- --nocapture
@@ -460,7 +460,7 @@ cargo test --test integration_runtime lease -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: bound work and make restart behavior inspectable**
+- [x] **Step 5 — REFACTOR: bound work and make restart behavior inspectable**
 
 Use configurable batch/window sizes and jittered backoff. Do not sleep while holding a PostgreSQL connection or lease transaction. Every job/page exposes state, cursor, attempts, retry time, last error class, and blocking event counts to read queries.
 

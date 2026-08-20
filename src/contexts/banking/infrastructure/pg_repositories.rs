@@ -6,7 +6,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 
-use crate::{contexts::banking::{application::{BindExistingResource, ConnectProvider, ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher, DeactivateResourceMapping, IntakeProviderEvent, ProviderClient, ProviderConnectionView, ProviderEventIntakeOutcome, ProviderEventReadyV1, ProviderEventReceipt, ReplaceProviderCredential, ResourceMappingResult, ResourceMappingView}, domain::{BankingError, ConnectionState, ConnectionVersion, CredentialEnvelope, ExternalResourceId, FundingModel, ProviderConnectionId, ProviderEventId, ProviderTransactionState, ResourceKind, ResourceMappingId}}, contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId}, infrastructure::v2_db::VerifiedV2Pool, integration::{IntegrationEvent, outbox::OutboxWriter, postgres::PgOutboxWriter}, shared_kernel::{CurrencyCode, EventEnvelope, EventId, UserId}};
+use crate::{contexts::banking::{application::{BeginSyncPage, BindExistingResource, CompleteSyncPage, ConnectProvider, ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher, DeactivateResourceMapping, IntakeProviderEvent, ProviderClient, ProviderConnectionView, ProviderEventIntakeOutcome, ProviderEventReadyV1, ProviderEventReceipt, ReplaceProviderCredential, RequestSyncJob, ResourceMappingResult, ResourceMappingView, SyncJobView, SyncPageView}, domain::{BankingError, ConnectionState, ConnectionVersion, CredentialEnvelope, ExternalResourceId, FundingModel, ProviderConnectionId, ProviderEventId, ProviderTransactionState, ResourceKind, ResourceMappingId, SyncJobId}}, contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId}, infrastructure::v2_db::VerifiedV2Pool, integration::{IntegrationEvent, outbox::OutboxWriter, postgres::PgOutboxWriter}, shared_kernel::{CurrencyCode, EventEnvelope, EventId, UserId}};
 
 use super::{MonobankAdapter, NormalizedResource, pg_unit_of_work::PgBankingUnitOfWork, rows::ConnectionRow};
 
@@ -192,6 +192,46 @@ impl PgBankingStore {
         Ok(ProviderEventReceipt{provider_event_id:id,outcome:ProviderEventIntakeOutcome::New,processing_state:"ready".to_owned()})
     }
 
+    pub(crate) async fn request_sync_job(&self, command: RequestSyncJob) -> Result<SyncJobView,BankingError>{
+        if command.requested_from>command.requested_to || !(0..=86400).contains(&command.overlap_seconds){return Err(BankingError::InvalidValue("invalid sync range"));}
+        let row=sqlx::query("SELECT version,credential_generation,state FROM banking.provider_connections WHERE id=$1 AND user_id=$2").bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        if row.get::<String,_>("state")!="active"{return Err(BankingError::InvalidState);}
+        let id=SyncJobId::generate();
+        sqlx::query("INSERT INTO banking.sync_jobs (id,user_id,connection_id,requested_from,requested_to,overlap_seconds,state,connection_version,credential_generation) VALUES ($1,$2,$3,$4,$5,$6,'requested',$7,$8)").bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.requested_from).bind(command.requested_to).bind(command.overlap_seconds).bind(row.get::<i64,_>("version")).bind(row.get::<i64,_>("credential_generation")).execute(&self.uow.pool).await.map_err(database)?;
+        self.get_sync_job(command.user_id,id).await
+    }
+
+    pub(crate) async fn claim_due_sync_job(&self,holder:&str,now:chrono::DateTime<chrono::Utc>,lease_seconds:i64)->Result<Option<SyncJobView>,BankingError>{
+        if holder.is_empty()||holder.len()>200||lease_seconds<=0||lease_seconds>3600{return Err(BankingError::InvalidValue("invalid sync claim"));}
+        let row=sqlx::query("WITH candidate AS (SELECT job.id,job.user_id FROM banking.sync_jobs job JOIN banking.provider_connections connection ON connection.id=job.connection_id AND connection.user_id=job.user_id WHERE job.state IN ('requested','retry_due','running','waiting_for_events') AND (job.next_retry_at IS NULL OR job.next_retry_at<=$2) AND (job.lease_expires_at IS NULL OR job.lease_expires_at<=$2 OR job.lease_holder=$1) AND connection.state='active' AND connection.version=job.connection_version AND connection.credential_generation=job.credential_generation AND NOT EXISTS (SELECT 1 FROM banking.sync_jobs other WHERE other.connection_id=job.connection_id AND other.id<>job.id AND other.lease_expires_at>$2) ORDER BY job.created_at,job.id FOR UPDATE OF job SKIP LOCKED LIMIT 1) UPDATE banking.sync_jobs job SET state='running',lease_holder=$1,lease_token=job.lease_token+1,lease_expires_at=$2+($3::bigint*interval '1 second'),attempts=job.attempts+1,updated_at=$2 FROM candidate WHERE job.id=candidate.id AND job.user_id=candidate.user_id RETURNING job.id,job.user_id,job.connection_id,job.state,job.cursor,job.attempts,job.next_retry_at,job.last_error,job.lease_token,job.lease_holder,job.lease_expires_at")
+            .bind(holder).bind(now).bind(lease_seconds).fetch_optional(&self.uow.pool).await.map_err(database)?;
+        row.map(sync_job_view).transpose()
+    }
+
+    pub(crate) async fn begin_sync_page(&self,command:BeginSyncPage)->Result<SyncPageView,BankingError>{
+        if command.expected_events<0{return Err(BankingError::InvalidValue("negative page event count"));}
+        let mut tx=self.uow.pool.begin().await.map_err(database)?;
+        let connection_id:uuid::Uuid=sqlx::query_scalar("SELECT connection_id FROM banking.sync_jobs WHERE id=$1 AND user_id=$2 AND lease_holder=$3 AND lease_token=$4 AND lease_expires_at>$5 FOR UPDATE").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(&command.holder).bind(command.fencing_token).bind(command.now).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
+        let page_number:i64=sqlx::query_scalar("SELECT COALESCE(max(page_number),0)+1 FROM banking.sync_pages WHERE sync_job_id=$1 AND user_id=$2").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_one(&mut *tx).await.map_err(database)?;
+        let id=uuid::Uuid::new_v4();
+        let row=sqlx::query("INSERT INTO banking.sync_pages (id,user_id,connection_id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'waiting_for_events') RETURNING id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,processed_events,quarantined_events,state").bind(id).bind(command.user_id.into_uuid()).bind(connection_id).bind(command.sync_job_id.into_uuid()).bind(page_number).bind(command.provider_cursor).bind(command.next_cursor).bind(command.expected_events).fetch_one(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE banking.sync_jobs SET state='waiting_for_events',updated_at=$3 WHERE id=$1 AND user_id=$2").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.now).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)?;Ok(sync_page_view(row))
+    }
+
+    pub(crate) async fn complete_sync_page(&self,command:CompleteSyncPage)->Result<SyncJobView,BankingError>{
+        if command.processed_events<0||command.quarantined_events<0{return Err(BankingError::PageIncomplete);}
+        let mut tx=self.uow.pool.begin().await.map_err(database)?;
+        let fenced:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM banking.sync_jobs WHERE id=$1 AND user_id=$2 AND lease_holder=$3 AND lease_token=$4 AND lease_expires_at>$5)").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(&command.holder).bind(command.fencing_token).bind(command.now).fetch_one(&mut *tx).await.map_err(database)?;
+        if !fenced{return Err(BankingError::LeaseFenced);}
+        let page=sqlx::query("UPDATE banking.sync_pages SET processed_events=$4,quarantined_events=$5,state='completed',completed_at=$6,updated_at=$6 WHERE id=$1 AND user_id=$2 AND sync_job_id=$3 AND expected_events=$4+$5 AND state='waiting_for_events' RETURNING next_cursor").bind(command.sync_page_id).bind(command.user_id.into_uuid()).bind(command.sync_job_id.into_uuid()).bind(command.processed_events).bind(command.quarantined_events).bind(command.now).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::PageIncomplete)?;
+        let next:Option<String>=page.get("next_cursor");let state=if next.is_some(){"requested"}else{"completed"};
+        let row=sqlx::query("UPDATE banking.sync_jobs SET state=$3,cursor=$4,lease_holder=NULL,lease_expires_at=NULL,updated_at=$5 WHERE id=$1 AND user_id=$2 AND lease_token=$6 RETURNING id,user_id,connection_id,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(state).bind(next).bind(command.now).bind(command.fencing_token).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
+        tx.commit().await.map_err(database)?;sync_job_view(row)
+    }
+
+    pub(crate) async fn get_sync_job(&self,user_id:UserId,id:SyncJobId)->Result<SyncJobView,BankingError>{let row=sqlx::query("SELECT id,user_id,connection_id,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at FROM banking.sync_jobs WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;sync_job_view(row)}
+
     async fn connection_row(&self, user_id: UserId, connection_id: ProviderConnectionId) -> Result<ConnectionRow, BankingError> {
         let row = sqlx::query("SELECT provider,state,active_credential_ciphertext,active_credential_nonce,active_credential_key_id,active_credential_envelope_version,pending_credential_ciphertext,pending_credential_nonce,pending_credential_key_id,pending_credential_envelope_version,credential_generation FROM banking.provider_connections WHERE id=$1 AND user_id=$2")
             .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
@@ -212,4 +252,6 @@ fn parse_kind(value:&str)->Result<ResourceKind,BankingError>{match value{"card"=
 fn parse_funding(value:&str)->Result<FundingModel,BankingError>{match value{"own_funds"=>Ok(FundingModel::OwnFunds),"revolving_credit"=>Ok(FundingModel::RevolvingCredit),"unknown"=>Ok(FundingModel::Unknown),_=>Err(BankingError::InvalidValue("stored funding model is invalid"))}}
 fn transaction_state(value:ProviderTransactionState)->&'static str{match value{ProviderTransactionState::Pending=>"pending",ProviderTransactionState::Settled=>"settled",ProviderTransactionState::Reversed=>"reversed"}}
 fn mapping_view(resource_id:ExternalResourceId,row:sqlx::postgres::PgRow)->Result<ResourceMappingView,BankingError>{Ok(ResourceMappingView{id:ResourceMappingId::new(row.get("id")),resource_id,ledger_account_id:row.get::<Option<uuid::Uuid>,_>("ledger_account_id").map(LedgerAccountId::new),mapping_version:row.get("mapping_version"),state:row.get("state"),effective_at:row.get("effective_at"),ended_at:row.get("ended_at")})}
+fn sync_job_view(row:sqlx::postgres::PgRow)->Result<SyncJobView,BankingError>{Ok(SyncJobView{id:SyncJobId::new(row.get("id")),user_id:UserId::new(row.get("user_id")),connection_id:ProviderConnectionId::new(row.get("connection_id")),state:row.get("state"),cursor:row.get("cursor"),attempts:row.get("attempts"),next_retry_at:row.get("next_retry_at"),last_error:row.get("last_error"),fencing_token:row.get("lease_token"),lease_holder:row.get("lease_holder"),lease_expires_at:row.get("lease_expires_at")})}
+fn sync_page_view(row:sqlx::postgres::PgRow)->SyncPageView{SyncPageView{id:row.get("id"),sync_job_id:SyncJobId::new(row.get("sync_job_id")),page_number:row.get("page_number"),provider_cursor:row.get("provider_cursor"),next_cursor:row.get("next_cursor"),expected_events:row.get("expected_events"),processed_events:row.get("processed_events"),quarantined_events:row.get("quarantined_events"),state:row.get("state")}}
 fn database(_error: sqlx::Error) -> BankingError { BankingError::InvalidValue("banking persistence failed") }
