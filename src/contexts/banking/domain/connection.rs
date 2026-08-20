@@ -236,8 +236,6 @@ impl ProviderConnection {
     pub const fn version(&self) -> ConnectionVersion { self.version }
     pub const fn credential_generation(&self) -> i64 { self.credential_generation }
     pub fn has_usable_credential(&self) -> bool { self.active_credential.is_some() && self.state == ConnectionState::Active }
-    pub(crate) fn active_credential(&self) -> Option<&CredentialEnvelope> { self.active_credential.as_ref() }
-    pub(crate) fn pending_credential(&self) -> Option<&CredentialEnvelope> { self.pending_credential.as_ref() }
     pub const fn created_at(&self) -> DateTime<Utc> { self.created_at }
     pub const fn updated_at(&self) -> DateTime<Utc> { self.updated_at }
 }
