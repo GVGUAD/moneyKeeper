@@ -8,4 +8,5 @@ use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 pub(crate) struct LedgerApiState {
     pub(crate) ledger: LedgerFacade,
     pub(crate) currencies: CurrencyCatalogFacade,
+    pub(crate) banking: Option<crate::contexts::banking::public::BankingFacade>,
 }

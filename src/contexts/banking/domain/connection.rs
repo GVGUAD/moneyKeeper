@@ -20,7 +20,9 @@ impl ConnectionVersion {
     pub fn new(value: i64) -> Result<Self, BankingError> {
         (value > 0)
             .then_some(Self(value))
-            .ok_or(BankingError::InvalidValue("connection version must be positive"))
+            .ok_or(BankingError::InvalidValue(
+                "connection version must be positive",
+            ))
     }
 
     pub const fn get(self) -> i64 {
@@ -229,20 +231,44 @@ impl ProviderConnection {
         Ok(())
     }
 
-    pub const fn id(&self) -> ProviderConnectionId { self.id }
-    pub const fn user_id(&self) -> UserId { self.user_id }
-    pub fn provider(&self) -> &str { &self.provider }
-    pub const fn state(&self) -> ConnectionState { self.state }
-    pub const fn version(&self) -> ConnectionVersion { self.version }
-    pub const fn credential_generation(&self) -> i64 { self.credential_generation }
-    pub fn has_usable_credential(&self) -> bool { self.active_credential.is_some() && self.state == ConnectionState::Active }
-    pub const fn created_at(&self) -> DateTime<Utc> { self.created_at }
-    pub const fn updated_at(&self) -> DateTime<Utc> { self.updated_at }
+    pub const fn id(&self) -> ProviderConnectionId {
+        self.id
+    }
+    pub const fn user_id(&self) -> UserId {
+        self.user_id
+    }
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+    pub const fn state(&self) -> ConnectionState {
+        self.state
+    }
+    pub const fn version(&self) -> ConnectionVersion {
+        self.version
+    }
+    pub const fn credential_generation(&self) -> i64 {
+        self.credential_generation
+    }
+    pub fn has_usable_credential(&self) -> bool {
+        self.active_credential.is_some() && self.state == ConnectionState::Active
+    }
+    pub const fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+    pub const fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
 }
 
 fn bounded(value: String, _name: &'static str) -> Result<String, BankingError> {
-    if value.is_empty() || value.len() > 100 || value.trim() != value || value.chars().any(char::is_control) {
-        Err(BankingError::InvalidValue("provider must be bounded printable text"))
+    if value.is_empty()
+        || value.len() > 100
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        Err(BankingError::InvalidValue(
+            "provider must be bounded printable text",
+        ))
     } else {
         Ok(value)
     }

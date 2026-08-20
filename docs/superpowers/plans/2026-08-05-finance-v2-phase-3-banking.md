@@ -631,7 +631,7 @@ Expected: PASS. Replays are harmless, and stopping/restarting the worker process
 
 Check Axum error bodies, tracing spans, metrics labels, panic/debug formatting, database errors, and OpenAPI examples. The full callback URL is returned only once during connect/rotation; later reads expose `webhook_configured` and rotation time, not the credential.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking/infrastructure/webhook_secret.rs src/contexts/banking/application src/contexts/banking/infrastructure src/contexts/banking/api tests/banking_webhook.rs tests/banking_sync.rs
@@ -653,7 +653,7 @@ git commit -m "feat(banking): register and secure Monobank webhooks"
 - Modify: `static/openapi.v2.json`
 - Create: `tests/banking_api.rs`
 
-- [ ] **Step 1 — RED: write isolated router contract tests**
+- [x] **Step 1 — RED: write isolated router contract tests**
 
 Construct the application with `v2_test_db` and V2 test doubles. Cover authenticated tenant isolation and:
 
@@ -681,7 +681,7 @@ Financial/task POSTs require `Idempotency-Key`; mutable aggregate commands carry
 
 Also test the replacement `GET /accounts/{id}` composition: a mapped account combines Ledger balance/version with the latest Banking `provider_reported`, `available`, `reconciliation_difference`, currency, and explicit `as_of`; a manual/unmapped account returns those three provider fields as `null`. The composition calls both contexts' public query facades and performs no cross-context SQL join.
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test banking_api -- --nocapture
@@ -689,7 +689,7 @@ cargo test --test banking_api -- --nocapture
 
 Expected: FAIL because Banking routes are not composed into the isolated V2 router.
 
-- [ ] **Step 3 — GREEN: implement API, composition, and bounded worker registration**
+- [x] **Step 3 — GREEN: implement API, composition, and bounded worker registration**
 
 Mount the routes only in `src/api/v2.rs`. Compose account reads at the API boundary from Ledger and Banking public DTOs, preserving each source's `as_of` and nullable provider fields. Extend `bootstrap::v2` to accept Phase 1's `VerifiedV2Pool`/adapters and return the router plus bounded validation/discovery/sync/webhook-registration/intake worker handles. Tests must explicitly start/poll those handles; importing the module must not spawn tasks. Phase 8 promotes the already-tested composition to the default bootstrap.
 
@@ -697,7 +697,7 @@ Implement the account summary as an API/read-composition service over the two pu
 
 Update `static/openapi.v2.json` with the future replacement unversioned paths and security/error/idempotency/version contracts. Keep the default legacy router and runtime untouched.
 
-- [ ] **Step 4: run API and OpenAPI tests**
+- [x] **Step 4: run API and OpenAPI tests**
 
 ~~~bash
 cargo test --test banking_api -- --nocapture
@@ -707,7 +707,7 @@ jq empty static/openapi.v2.json
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: prove the phase stayed parallel**
+- [x] **Step 5 — REFACTOR: prove the phase stayed parallel**
 
 ~~~bash
 git diff --name-only -- src/main.rs src/api/routes.rs src/infrastructure/db.rs src/infrastructure/test_db.rs tests/common/mod.rs tests/migrations.rs Dockerfile docker-compose.yml .env .env.example

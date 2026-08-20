@@ -306,6 +306,111 @@
         "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DismissReconciliation"}}}},
         "responses": {"200": {"description": "Reconciliation dismissed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
+    },
+    "/provider-connections/monobank": {
+      "post": {
+        "operationId": "connectMonobank", "summary": "Connect Monobank",
+        "description": "Accepts a Monobank token for encrypted validation and resource discovery without returning the secret.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Connection validation queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections": {
+      "get": {
+        "operationId": "listProviderConnections", "summary": "List provider connections",
+        "description": "Lists provider connections and lifecycle versions for the authenticated tenant.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connections"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}": {
+      "get": {
+        "operationId": "getProviderConnection", "summary": "Get a provider connection",
+        "description": "Returns one tenant-scoped provider connection without credential material.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connection"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/disconnect": {
+      "post": {
+        "operationId": "disconnectProviderConnection", "summary": "Disconnect a provider connection",
+        "description": "Disconnects a connection under an optimistic connection-version fence while retaining history.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Connection disconnected"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/credential-replacements": {
+      "post": {
+        "operationId": "replaceProviderCredential", "summary": "Replace a provider credential",
+        "description": "Encrypts a replacement provider token and advances its generation under a version fence.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Replacement validation queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/webhook-rotations": {
+      "post": {
+        "operationId": "rotateProviderWebhook", "summary": "Rotate a webhook credential",
+        "description": "Creates a new high-entropy callback credential and invalidates the previous lookup digest.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Webhook credential rotated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resources": {
+      "get": {
+        "operationId": "listProviderResources", "summary": "List discovered resources",
+        "description": "Lists external provider resources and their mapping state for one tenant connection.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "External resources"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resource-mappings": {
+      "post": {
+        "operationId": "mapProviderResource", "summary": "Map a provider resource",
+        "description": "Binds a discovered resource to a compatible Ledger account or creates a provider-observed account.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Mapping accepted"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations": {
+      "post": {
+        "operationId": "deactivateProviderResourceMapping", "summary": "Deactivate a resource mapping",
+        "description": "Ends an active mapping under a resource-version fence without deleting mapping history.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Mapping deactivated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements": {
+      "post": {
+        "operationId": "replaceProviderResourceMapping", "summary": "Replace a resource mapping",
+        "description": "Deactivates the current mapping and establishes a versioned replacement.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Replacement accepted"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/sync-jobs": {
+      "post": {
+        "operationId": "requestProviderSync", "summary": "Request a provider sync",
+        "description": "Creates an idempotent durable sync job for a bounded statement interval.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Sync queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/sync-jobs/{id}": {
+      "get": {
+        "operationId": "getProviderSync", "summary": "Get a provider sync job",
+        "description": "Returns durable progress and fencing state for one tenant sync job.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Sync job"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-events/{id}": {
+      "get": {
+        "operationId": "getProviderEvent", "summary": "Get a provider event",
+        "description": "Returns one immutable revision-aware provider transaction fact.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider event"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounting-processes/{id}": {
+      "get": {
+        "operationId": "getAccountingProcess", "summary": "Get an accounting process",
+        "description": "Returns retry and completion state for the provider-event import process.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Accounting process"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/balance-observations/{id}": {
+      "get": {
+        "operationId": "getBalanceObservation", "summary": "Get a balance observation",
+        "description": "Returns a durable provider balance observation and its comparability decision.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Balance observation"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
     }
   },
   "components": {

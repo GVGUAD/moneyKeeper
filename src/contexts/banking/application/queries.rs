@@ -6,14 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::shared_kernel::UserId;
 
 use super::super::domain::{
-    ConnectionState, ConnectionVersion, ExternalResourceId, ProviderConnectionId,
-    ResourceMappingId,
-    ProviderEventId,
-    SyncJobId,
-    BalanceObservationId,
+    BalanceObservationId, ConnectionState, ConnectionVersion, ExternalResourceId,
+    ProviderConnectionId, ProviderEventId, ResourceMappingId, SyncJobId,
 };
-use crate::contexts::ledger::public::LedgerAccountId;
 use crate::contexts::ledger::public::JournalEntryId;
+use crate::contexts::ledger::public::LedgerAccountId;
 use crate::shared_kernel::Money;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,7 +51,11 @@ pub struct ResourceMappingResult {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderEventIntakeOutcome { New, Duplicate, ConflictingContent }
+pub enum ProviderEventIntakeOutcome {
+    New,
+    Duplicate,
+    ConflictingContent,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderEventReceipt {
@@ -179,4 +180,52 @@ pub struct WebhookReceiptOutcome {
     pub connection_id: ProviderConnectionId,
     pub receipt_id: uuid::Uuid,
     pub duplicate: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalResourceView {
+    pub id: ExternalResourceId,
+    pub connection_id: ProviderConnectionId,
+    pub kind: super::super::domain::ResourceKind,
+    pub funding_model: super::super::domain::FundingModel,
+    pub currency: crate::shared_kernel::CurrencyCode,
+    pub masked_label: String,
+    pub discovery_state: String,
+    pub version: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProviderEventView {
+    pub id: ProviderEventId,
+    pub resource_id: ExternalResourceId,
+    pub external_event_id: String,
+    pub revision: i64,
+    pub state: super::super::domain::ProviderTransactionState,
+    pub operation_money: Money,
+    pub description: String,
+    pub effective_at: DateTime<Utc>,
+    pub recorded_at: DateTime<Utc>,
+    pub processing_state: String,
+    pub attempts: i32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountingProcessView {
+    pub id: uuid::Uuid,
+    pub process_name: String,
+    pub state: serde_json::Value,
+    pub status: String,
+    pub version: i64,
+    pub next_wake_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProviderAccountSummary {
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub provider_reported: Option<rust_decimal::Decimal>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    pub available: Option<rust_decimal::Decimal>,
+    pub currency: Option<crate::shared_kernel::CurrencyCode>,
+    pub as_of: Option<DateTime<Utc>>,
 }

@@ -82,7 +82,10 @@ async fn every_supporting_route_requires_an_authenticated_user() {
 
     let id = Uuid::new_v4().to_string();
     for (method, route) in moneykeeper::api::v2::ROUTE_MANIFEST {
-        let path = route.replace("{code}", "USD").replace("{id}", &id);
+        let path = route
+            .replace("{code}", "USD")
+            .replace("{id}", &id)
+            .replace("{mapping_id}", &id);
         let response = server
             .method(Method::from_bytes(method.as_bytes()).unwrap(), &path)
             .await;

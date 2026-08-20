@@ -20,12 +20,17 @@ use crate::shared_kernel::UserId;
 
 /// Composes the parallel supporting-context routes from a verified V2 pool.
 pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
-    Router::new()
+    let banking = contexts.banking.clone();
+    let authenticated = Router::new()
         .merge(crate::contexts::ledger::api::routes::router(
             crate::api::v2_state::LedgerApiState {
                 ledger: contexts.ledger,
                 currencies: contexts.currencies.clone(),
+                banking: Some(banking.clone()),
             },
+        ))
+        .merge(crate::contexts::banking::api::routes::authenticated_router(
+            banking.clone(),
         ))
         .merge(crate::contexts::reference_data::api::routes::router(
             contexts.currencies.clone(),
@@ -40,7 +45,8 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
         .layer(middleware::from_fn_with_state(
             V2AuthState { jwks },
             authenticate,
-        ))
+        ));
+    crate::contexts::banking::webhook_router(banking).merge(authenticated)
 }
 
 #[derive(Clone)]
@@ -96,6 +102,27 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/reconciliations/{id}"),
     ("POST", "/reconciliations/{id}/approve"),
     ("POST", "/reconciliations/{id}/dismiss"),
+    ("POST", "/provider-connections/monobank"),
+    ("GET", "/provider-connections"),
+    ("GET", "/provider-connections/{id}"),
+    ("POST", "/provider-connections/{id}/disconnect"),
+    ("POST", "/provider-connections/{id}/credential-replacements"),
+    ("POST", "/provider-connections/{id}/webhook-rotations"),
+    ("GET", "/provider-connections/{id}/resources"),
+    ("POST", "/provider-connections/{id}/resource-mappings"),
+    (
+        "POST",
+        "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations",
+    ),
+    (
+        "POST",
+        "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements",
+    ),
+    ("POST", "/provider-connections/{id}/sync-jobs"),
+    ("GET", "/sync-jobs/{id}"),
+    ("GET", "/provider-events/{id}"),
+    ("GET", "/accounting-processes/{id}"),
+    ("GET", "/balance-observations/{id}"),
 ];
 
 /// Authenticated tenant identity extracted from the existing auth boundary.

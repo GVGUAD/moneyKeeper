@@ -3,4 +3,6 @@
 use sqlx::PgPool;
 
 #[derive(Clone)]
-pub(super) struct PgBankingUnitOfWork { pub(super) pool: PgPool }
+pub(super) struct PgBankingUnitOfWork {
+    pub(super) pool: PgPool,
+}

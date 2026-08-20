@@ -9,6 +9,8 @@ pub enum BankingError {
     InvalidState,
     #[error("banking aggregate version conflict")]
     VersionConflict,
+    #[error("idempotency key was reused for a different banking request")]
+    IdempotencyConflict,
     #[error("provider credential is unavailable")]
     CredentialUnavailable,
     #[error("resource must be routed to Portfolio")]
