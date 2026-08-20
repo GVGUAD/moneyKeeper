@@ -231,7 +231,7 @@ rg -n "REFERENCES (ledger|portfolio|public)\.|FLOAT|DOUBLE|ON CONFLICT.*DO NOTHI
 
 Expected: no matches. Normal indexes are created inside this blank-database migration; do not use `CONCURRENTLY`, `NOT VALID`, compatibility views, or backfill SQL.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/infrastructure/migrations_v2/0004_banking.sql tests/banking_persistence.rs tests/v2_migrations.rs
@@ -250,17 +250,17 @@ git commit -m "feat(db): add strict v2 banking schema"
 - Create: `tests/banking_monobank.rs`
 - Modify: `tests/banking_persistence.rs`
 
-- [ ] **Step 1 — RED: test encrypted connection persistence**
+- [x] **Step 1 — RED: test encrypted connection persistence**
 
 Test that a connection round-trip decrypts only through the cipher port; database text/byte scans do not contain the X-Token; ciphertext is bound by associated data to user/connection/provider; wrong key/AAD fails closed; key rotation re-encrypts without changing connection identity; API/read DTOs and debug output omit the token. There is no plaintext compatibility column or fallback mode.
 
-- [ ] **Step 2 — RED: test provider discovery and normalization**
+- [x] **Step 2 — RED: test provider discovery and normalization**
 
 With a local fake HTTP server and sanitized fixtures, cover initial and replacement X-Token validation via client-info, card/current-account discovery, separate jar (`банка`) discovery, ISO numeric-code conversion through Reference Data, masked card/IBAN metadata, credit limits, reported/available balances, unknown-product quarantine, and timeout/429/5xx classification. Prove a valid replacement preserves connection/resource/mapping IDs, increments credential generation, re-runs discovery, fences old sync claims/cursor writes, and cryptographically retires the old credential; an invalid replacement leaves an active old generation active or a `NeedsReauth` connection unauthenticated without exposing either token. The Monobank fixtures do not invent or classify securities/ОВДП; `SecurityPortfolio` remains only a provider-neutral future kind.
 
 Assert response bodies, X-Tokens, webhook credentials, card identifiers, and raw financial JSON are absent from captured logs and bounded errors.
 
-- [ ] **Step 3: run and capture RED**
+- [x] **Step 3: run and capture RED**
 
 ~~~bash
 cargo test --test banking_monobank -- --nocapture
@@ -269,11 +269,11 @@ cargo test --test banking_persistence credential -- --nocapture
 
 Expected: FAIL because the application and adapters do not exist.
 
-- [ ] **Step 4 — GREEN: implement connect and discovery**
+- [x] **Step 4 — GREEN: implement connect and discovery**
 
 `ConnectProvider` encrypts the token before the Banking UoW commits a durable `PendingValidation` connection and validation-requested outbox event. `ReplaceProviderCredential` stores a separately encrypted candidate under a new credential generation and `PendingCredentialValidation` without changing connection/resource/mapping identity. A worker decrypts only the selected generation for the request duration and calls Monobank client-info. A valid candidate atomically activates its generation, fences old claims, retires old usable ciphertext, and schedules rediscovery/webhook registration; an invalid candidate is crypto-shredded and leaves the prior active generation unchanged when one exists, otherwise the connection remains visible `NeedsReauth`. Ordinary sync cannot use a pending/invalid generation. Discovery normalizes cards/current accounts and jars, upserts mutable resource metadata by stable external identity, and appends balance observations rather than replacing Ledger balances. A future provider adapter may publish `banking.security-resource-discovered.v1`; the Monobank adapter does not fabricate that resource.
 
-- [ ] **Step 5 — REFACTOR: separate provider wire details**
+- [x] **Step 5 — REFACTOR: separate provider wire details**
 
 Keep `X-Token`, Monobank numeric currency/product strings, minor-unit conversion, rate-limit headers, and JSON DTOs under `infrastructure/monobank`. The provider client logs only endpoint class, HTTP status, request ID, elapsed time, and redacted connection/resource IDs. Zeroize plaintext credential buffers when the existing secret type permits it.
 
