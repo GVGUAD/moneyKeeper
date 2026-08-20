@@ -2,8 +2,10 @@ use std::time::Duration;
 
 use chrono::Utc;
 use moneykeeper::contexts::ledger::public::{
-    AccountKind, AccountNature, CorrectBalance, ObservationId, ObserveProviderBalance, OpenAccount,
-    ReconciliationStatus, SourceReference, TransferFunds,
+    AccountKind, AccountNature, CancelOrReverseCashControlSettlement, ControlAccountRole,
+    CorrectBalance, EnsureTypedControlAccount, InternalCommandMetadata, ObservationId,
+    ObserveProviderBalance, OpenAccount, ReconciliationStatus, RecordCashControlSettlement,
+    SourceReference, TransferFunds,
 };
 use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
 use rust_decimal::Decimal;
@@ -187,5 +189,106 @@ async fn projection_never_drifts_after_concurrent_posts_transfers_and_correction
         })
         .await
         .unwrap();
+    assert!(ledger.verify_projection().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_cash_control_cancellations_create_exactly_one_reversal() {
+    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let ledger = moneykeeper::contexts::ledger::build(&verified);
+    let user = UserId::generate();
+    let currency = CurrencyCode::new("UAH").unwrap();
+    let cash = ledger
+        .open_account(OpenAccount {
+            user_id: user,
+            name: "Cash".to_owned(),
+            currency: currency.clone(),
+            kind: AccountKind::Cash,
+            nature: AccountNature::Asset,
+            opening_balance: Money::new(Decimal::new(10000, 2), currency.clone(), 2).unwrap(),
+            idempotency_key: IdempotencyKey::new("cash-control-concurrency-open").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+    let source = |item: &str| SourceReference::new("sharing", "expense:9", item).unwrap();
+    let payable = ledger
+        .ensure_typed_control_account(EnsureTypedControlAccount {
+            metadata: InternalCommandMetadata {
+                user_id: user,
+                source: source("ensure-payable"),
+                correlation_id: CorrelationId::generate(),
+                causation_id: None,
+                idempotency_key: IdempotencyKey::new("cash-control-concurrency-payable").unwrap(),
+                occurred_at: Utc::now(),
+            },
+            role: ControlAccountRole::ExternalPayable,
+            subject_reference: "contact:9".to_owned(),
+            currency: currency.clone(),
+        })
+        .await
+        .unwrap();
+    let posted = ledger
+        .record_cash_control_settlement(RecordCashControlSettlement {
+            metadata: InternalCommandMetadata {
+                user_id: user,
+                source: source("settle"),
+                correlation_id: CorrelationId::generate(),
+                causation_id: None,
+                idempotency_key: IdempotencyKey::new("ignored-caller-key").unwrap(),
+                occurred_at: Utc::now(),
+            },
+            cash_account_id: cash.account.id,
+            control_account_id: payable.account_id,
+            amount: Money::new(Decimal::new(1000, 2), currency, 2).unwrap(),
+            source_operation_id: "cash-control-operation-9".to_owned(),
+        })
+        .await
+        .unwrap();
+    let original_id = posted.journal_entry_id.unwrap();
+    let cancel = |item: &str, key: &str| CancelOrReverseCashControlSettlement {
+        metadata: InternalCommandMetadata {
+            user_id: user,
+            source: source(item),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            idempotency_key: IdempotencyKey::new(key).unwrap(),
+            occurred_at: Utc::now(),
+        },
+        source_operation_id: "cash-control-operation-9".to_owned(),
+        reason: "Cancelled concurrently".to_owned(),
+    };
+    let first = ledger.clone();
+    let second = ledger.clone();
+    let (left, right) = tokio::join!(
+        first.cancel_or_reverse_cash_control_settlement(cancel("cancel-a", "cancel-a")),
+        second.cancel_or_reverse_cash_control_settlement(cancel("cancel-b", "cancel-b")),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert!(left.cancelled && right.cancelled);
+    assert_eq!(left.journal_entry_id, right.journal_entry_id);
+
+    let reversals: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ledger.journal_entries WHERE user_id = $1 AND reverses_transaction_id = $2",
+    )
+    .bind(user.into_uuid())
+    .bind(original_id.into_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reversals, 1);
+    let receipt_status: String = sqlx::query_scalar(
+        "SELECT status FROM ledger.command_receipts WHERE user_id = $1 \
+         AND command_name = 'cash_control_operation' AND idempotency_key = $2",
+    )
+    .bind(user.into_uuid())
+    .bind("cash-control-operation-9")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(receipt_status, "cancelled");
     assert!(ledger.verify_projection().await.unwrap().is_empty());
 }

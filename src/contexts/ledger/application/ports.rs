@@ -228,6 +228,23 @@ pub(crate) trait CommandReceiptStore {
         result: &Value,
         completed_at: DateTime<Utc>,
     ) -> Result<(), LedgerError>;
+    async fn insert_cancelled_receipt(
+        &mut self,
+        user_id: UserId,
+        command_name: &str,
+        key: &IdempotencyKey,
+        request_hash: &[u8; 32],
+        result: &Value,
+        completed_at: DateTime<Utc>,
+    ) -> Result<(), LedgerError>;
+    async fn cancel_receipt(
+        &mut self,
+        user_id: UserId,
+        command_name: &str,
+        key: &IdempotencyKey,
+        result: &Value,
+        completed_at: DateTime<Utc>,
+    ) -> Result<(), LedgerError>;
 }
 
 /// Append-only audit persistence.
