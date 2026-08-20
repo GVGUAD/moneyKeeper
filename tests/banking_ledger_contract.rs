@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use chrono::Duration;
 use moneykeeper::contexts::{banking::{self, public::*}, ledger::public::{
     AccountKind, AccountNature, OpenAccount,
 }};
@@ -84,4 +85,32 @@ async fn create_and_map_is_retry_safe_and_opens_provider_observed_account() {
     let account=ledger.get_account(user_id,first.mapping.ledger_account_id.unwrap()).await.unwrap();
     assert_eq!(account.authority,moneykeeper::contexts::ledger::public::AccountAuthority::ProviderObserved);
     assert_eq!(account.kind,AccountKind::Jar);
+}
+
+#[tokio::test]
+async fn provider_revisions_post_once_and_corrections_and_reversals_remain_visible() {
+    let (verified,pool)=v2_test_support::fresh_v2_runtime().await;
+    let supporting=moneykeeper::bootstrap::v2::supporting_contexts(&verified);let ledger=supporting.ledger;
+    let banking=banking::build_with_ledger(&verified,Arc::new(Aes256CredentialCipher::new("test-key",[8_u8;32]).unwrap()),Arc::new(FixtureProvider),ledger.clone(),supporting.currencies);
+    let user=UserId::new(Uuid::new_v4());let now=Utc::now();
+    let connection=banking.connect_provider(ConnectProvider{user_id:user,provider:"monobank".to_owned(),credential:ProviderCredential::new("token").unwrap(),idempotency_key:IdempotencyKey::new("connect-import").unwrap(),correlation_id:CorrelationId::generate(),requested_at:now}).await.unwrap().connection;
+    banking.validate_and_discover(user,connection.id).await.unwrap();
+    let resource=ExternalResourceId::new(sqlx::query_scalar::<_,Uuid>("SELECT id FROM banking.external_resources WHERE user_id=$1 AND external_resource_id='card-1'").bind(user.into_uuid()).fetch_one(&pool).await.unwrap());
+    let account=ledger.open_account(OpenAccount{user_id:user,name:"Imported card".to_owned(),currency:CurrencyCode::new("UAH").unwrap(),kind:AccountKind::DebitCard,nature:AccountNature::Asset,opening_balance:Money::new(Decimal::ZERO,CurrencyCode::new("UAH").unwrap(),2).unwrap(),idempotency_key:IdempotencyKey::new("open-import").unwrap(),correlation_id:CorrelationId::generate(),causation_id:None,occurred_at:now}).await.unwrap().account;
+    banking.bind_existing_resource(BindExistingResource{user_id:user,resource_id:resource,ledger_account_id:account.id,expected_resource_version:1,idempotency_key:IdempotencyKey::new("bind-import").unwrap(),correlation_id:CorrelationId::generate(),requested_at:now}).await.unwrap();
+    let add=|revision,state,amount,offset|IntakeProviderEvent{user_id:user,connection_id:connection.id,resource_id:resource,external_event_id:"event-stream".to_owned(),revision,state,operation_money:Money::new(amount,CurrencyCode::new("UAH").unwrap(),2).unwrap(),description:"provider purchase".to_owned(),effective_at:now+Duration::seconds(offset),recorded_at:now+Duration::seconds(offset),correlation_id:CorrelationId::generate()};
+    let pending=banking.intake_provider_event(add(1,ProviderTransactionState::Pending,rust_decimal_macros::dec!(-10.00),1)).await.unwrap();
+    moneykeeper::integration::process_managers::banking_import::import_provider_revision(&banking,&ledger,user,pending.provider_event_id).await.unwrap();
+    moneykeeper::integration::process_managers::banking_import::import_provider_revision(&banking,&ledger,user,pending.provider_event_id).await.unwrap();
+    assert_eq!(ledger.list_journals(user,None,100).await.unwrap().len(),1);
+    let settled=banking.intake_provider_event(add(2,ProviderTransactionState::Settled,rust_decimal_macros::dec!(-10.00),2)).await.unwrap();
+    let settled_outcome=moneykeeper::integration::process_managers::banking_import::import_provider_revision(&banking,&ledger,user,settled.provider_event_id).await.unwrap();
+    assert_eq!(settled_outcome.state,"no_financial_change");
+    assert_eq!(ledger.list_journals(user,None,100).await.unwrap().len(),1);
+    let corrected=banking.intake_provider_event(add(3,ProviderTransactionState::Settled,rust_decimal_macros::dec!(-12.00),3)).await.unwrap();
+    moneykeeper::integration::process_managers::banking_import::import_provider_revision(&banking,&ledger,user,corrected.provider_event_id).await.unwrap();
+    assert_eq!(ledger.list_journals(user,None,100).await.unwrap().len(),3);
+    let reversed=banking.intake_provider_event(add(4,ProviderTransactionState::Reversed,rust_decimal_macros::dec!(-12.00),4)).await.unwrap();
+    moneykeeper::integration::process_managers::banking_import::import_provider_revision(&banking,&ledger,user,reversed.provider_event_id).await.unwrap();
+    assert_eq!(ledger.list_journals(user,None,100).await.unwrap().len(),4);
 }

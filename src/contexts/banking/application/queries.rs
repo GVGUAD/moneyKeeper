@@ -12,6 +12,8 @@ use super::super::domain::{
     SyncJobId,
 };
 use crate::contexts::ledger::public::LedgerAccountId;
+use crate::contexts::ledger::public::JournalEntryId;
+use crate::shared_kernel::Money;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConnectionView {
@@ -95,4 +97,30 @@ pub struct SyncPageView {
     pub processed_events: i32,
     pub quarantined_events: i32,
     pub state: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProviderImportWork {
+    pub provider_event_id: ProviderEventId,
+    pub user_id: UserId,
+    pub connection_id: ProviderConnectionId,
+    pub resource_id: ExternalResourceId,
+    pub external_event_id: String,
+    pub revision: i64,
+    pub state: super::super::domain::ProviderTransactionState,
+    pub operation_money: Money,
+    pub description: String,
+    pub effective_at: DateTime<Utc>,
+    pub ledger_account_id: LedgerAccountId,
+    pub previous_journal_id: Option<JournalEntryId>,
+    pub previous_money: Option<Money>,
+    pub previous_state: Option<super::super::domain::ProviderTransactionState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderImportOutcome {
+    pub provider_event_id: ProviderEventId,
+    pub state: String,
+    pub ledger_journal_entry_id: Option<JournalEntryId>,
+    pub replayed: bool,
 }
