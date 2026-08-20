@@ -123,7 +123,7 @@ Use the exact Phase 1/2 names if those phases landed a helper under a slightly d
 - Modify: `src/contexts/banking/mod.rs`
 - Create: `tests/banking_domain.rs`
 
-- [ ] **Step 1 — RED: specify connection and resource invariants**
+- [x] **Step 1 — RED: specify connection and resource invariants**
 
 Add pure tests covering:
 
@@ -141,11 +141,11 @@ mapping cannot silently change; unmap/remap is versioned and audited
 disconnect revokes work but retains non-secret history
 ~~~
 
-- [ ] **Step 2 — RED: specify event, sync, and observation state machines**
+- [x] **Step 2 — RED: specify event, sync, and observation state machines**
 
 Test identity `(connection, resource, external_event_id, revision)`, revision ordering, pending-to-settled transitions, non-monetary versus monetary revisions, explicit provider reversal, valid processing states, page completion rules, fenced job execution, retry classification, immutable observation facts, provider balance basis/sign, comparable normalization versus visible `NotComparable`, and observation delivery/link states. Reconciliation-case lifecycle stays in Ledger tests because Ledger owns that aggregate.
 
-- [ ] **Step 3: run and capture RED**
+- [x] **Step 3: run and capture RED**
 
 ~~~bash
 cargo test --test banking_domain -- --nocapture
@@ -153,11 +153,11 @@ cargo test --test banking_domain -- --nocapture
 
 Expected: FAIL because the Banking domain does not exist.
 
-- [ ] **Step 4 — GREEN: implement the smallest provider-neutral model**
+- [x] **Step 4 — GREEN: implement the smallest provider-neutral model**
 
 Use universal IDs/`Clock`/`Money`/`CurrencyCode` from the shared kernel and Banking-owned ID newtypes built with the shared macro, plus opaque credential handles and explicit versions. Do not include `Mono*` names in domain/application types. Model `ResourceKind::{Card, CurrentAccount, Jar, SecurityPortfolio, Unsupported}`, `FundingModel::{OwnFunds, RevolvingCredit, Unknown}`, and event `ProviderTransactionState::{Pending, Settled, Reversed}`. A normalized revision records effective/recorded times, original/operation money, merchant description/MCC, status, content digest, and optional provider running-balance observation. Monobank maps a positively configured credit limit to `RevolvingCredit` and a confirmed zero-credit own-funds product to `OwnFunds`; absent or contradictory product metadata is `Unknown` and blocks automatic account creation/mapping. A later credit-policy change never mutates Ledger account nature silently—it moves the resource mapping to visible `NeedsReview`.
 
-- [ ] **Step 5 — REFACTOR: enforce secret and context boundaries**
+- [x] **Step 5 — REFACTOR: enforce secret and context boundaries**
 
 ~~~bash
 rg -n "(token|secret).*derive.*(Debug|Serialize)|crate::contexts::ledger::(domain|application|infrastructure)|sqlx::|reqwest::|Mono(bank)?" src/contexts/banking/domain src/contexts/banking/application

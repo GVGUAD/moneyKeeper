@@ -1,3 +1,4 @@
-//! Banking bounded-context boundary; behavior arrives in Phase 3.
+//! Provider-neutral Banking bounded context.
 
+mod domain;
 pub mod public;
