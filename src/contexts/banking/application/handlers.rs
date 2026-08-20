@@ -7,6 +7,7 @@ use super::{
     BindExistingResource, ConnectProvider, ConnectionResult, CreateAndMapResource,
     DeactivateResourceMapping, ProviderConnectionView, ReplaceProviderCredential,
     ResourceMappingResult,
+    IntakeProviderEvent, ProviderEventReceipt,
 };
 use crate::contexts::banking::domain::BankingError;
 use crate::contexts::banking::infrastructure::PgBankingStore;
@@ -76,5 +77,9 @@ impl BankingFacade {
 
     pub async fn deactivate_resource_mapping(&self, command: DeactivateResourceMapping) -> Result<ResourceMappingResult, BankingError> {
         self.store.deactivate_mapping(command).await
+    }
+
+    pub async fn intake_provider_event(&self, command: IntakeProviderEvent) -> Result<ProviderEventReceipt, BankingError> {
+        self.store.intake_provider_event(command).await
     }
 }

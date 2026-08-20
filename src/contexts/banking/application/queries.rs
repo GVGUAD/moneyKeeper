@@ -8,6 +8,7 @@ use crate::shared_kernel::UserId;
 use super::super::domain::{
     ConnectionState, ConnectionVersion, ExternalResourceId, ProviderConnectionId,
     ResourceMappingId,
+    ProviderEventId,
 };
 use crate::contexts::ledger::public::LedgerAccountId;
 
@@ -45,4 +46,24 @@ pub struct ResourceMappingView {
 pub struct ResourceMappingResult {
     pub mapping: ResourceMappingView,
     pub replayed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderEventIntakeOutcome { New, Duplicate, ConflictingContent }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderEventReceipt {
+    pub provider_event_id: ProviderEventId,
+    pub outcome: ProviderEventIntakeOutcome,
+    pub processing_state: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderEventReadyV1 {
+    pub provider_event_id: ProviderEventId,
+    pub connection_id: ProviderConnectionId,
+    pub resource_id: ExternalResourceId,
+    pub external_event_id: String,
+    pub revision: i64,
 }

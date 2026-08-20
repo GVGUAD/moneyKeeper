@@ -211,6 +211,19 @@ CREATE TABLE banking.provider_event_processes (
         REFERENCES banking.provider_events (id, user_id)
 );
 
+CREATE TABLE banking.provider_event_conflicts (
+    id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    provider_event_id UUID NOT NULL,
+    conflicting_digest BYTEA NOT NULL CHECK (octet_length(conflicting_digest) = 32),
+    reason TEXT NOT NULL CHECK (reason <> '' AND char_length(reason) <= 500),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (id, user_id),
+    UNIQUE (provider_event_id, conflicting_digest),
+    FOREIGN KEY (provider_event_id, user_id)
+        REFERENCES banking.provider_events (id, user_id)
+);
+
 CREATE INDEX banking_events_ready
     ON banking.provider_event_processes (next_retry_at, provider_event_id)
     WHERE state IN ('ready', 'retry_due');
@@ -379,6 +392,10 @@ FOR EACH ROW EXECUTE FUNCTION banking.reject_immutable_fact_mutation();
 
 CREATE TRIGGER balance_observations_are_immutable
 BEFORE UPDATE OR DELETE ON banking.balance_observations
+FOR EACH ROW EXECUTE FUNCTION banking.reject_immutable_fact_mutation();
+
+CREATE TRIGGER provider_event_conflicts_are_immutable
+BEFORE UPDATE OR DELETE ON banking.provider_event_conflicts
 FOR EACH ROW EXECUTE FUNCTION banking.reject_immutable_fact_mutation();
 
 CREATE FUNCTION banking.reject_hard_delete()
