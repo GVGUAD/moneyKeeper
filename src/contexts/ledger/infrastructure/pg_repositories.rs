@@ -801,6 +801,14 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         key: &IdempotencyKey,
         lock: bool,
     ) -> Result<Option<StoredReceipt>, LedgerError> {
+        if lock {
+            let lock_identity = format!("{user_id}:{command_name}:{}", key.as_str());
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+                .bind(lock_identity)
+                .execute(&mut *self.transaction)
+                .await
+                .map_err(LedgerError::database)?;
+        }
         #[derive(FromRow)]
         struct ReceiptRow {
             request_hash: Vec<u8>,
@@ -856,6 +864,58 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         .execute(&mut *self.transaction)
         .await
         .map_err(LedgerError::database)?;
+        Ok(())
+    }
+
+    async fn insert_cancelled_receipt(
+        &mut self,
+        user_id: UserId,
+        command_name: &str,
+        key: &IdempotencyKey,
+        request_hash: &[u8; 32],
+        result: &serde_json::Value,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO ledger.command_receipts \
+             (user_id, command_name, idempotency_key, request_hash, status, result, completed_at) \
+             VALUES ($1, $2, $3, $4, 'cancelled', $5, $6)",
+        )
+        .bind(user_id.into_uuid())
+        .bind(command_name)
+        .bind(key.as_str())
+        .bind(request_hash.as_slice())
+        .bind(result)
+        .bind(completed_at)
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
+        Ok(())
+    }
+
+    async fn cancel_receipt(
+        &mut self,
+        user_id: UserId,
+        command_name: &str,
+        key: &IdempotencyKey,
+        result: &serde_json::Value,
+        completed_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), LedgerError> {
+        let updated = sqlx::query(
+            "UPDATE ledger.command_receipts SET status = 'cancelled', result = $4, completed_at = $5 \
+             WHERE user_id = $1 AND command_name = $2 AND idempotency_key = $3 AND status = 'completed'",
+        )
+        .bind(user_id.into_uuid())
+        .bind(command_name)
+        .bind(key.as_str())
+        .bind(result)
+        .bind(completed_at)
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::database)?;
+        if updated.rows_affected() != 1 {
+            return Err(LedgerError::not_found());
+        }
         Ok(())
     }
 }

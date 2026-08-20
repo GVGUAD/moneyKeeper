@@ -28,7 +28,7 @@ use super::{
     accounts::LedgerFacade,
     commit::commit_journal,
     ports::{
-        CommandReceiptStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
+        CommandReceiptStore, JournalStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
         TransactionControl,
     },
 };
@@ -237,13 +237,17 @@ impl LedgerFacade {
 
     pub async fn record_cash_control_settlement(
         &self,
-        command: RecordCashControlSettlement,
+        mut command: RecordCashControlSettlement,
     ) -> Result<InternalAccountingResult, LedgerError> {
+        let operation_key =
+            crate::shared_kernel::IdempotencyKey::new(command.source_operation_id.clone())
+                .map_err(|_| LedgerError::invalid_source_reference())?;
+        command.metadata.idempotency_key = operation_key;
         post_by_control_nature(
             &self.uow,
             self.clock.as_ref(),
             command.metadata,
-            "record_cash_control_settlement",
+            "cash_control_operation",
             command.cash_account_id,
             command.control_account_id,
             command.amount,
@@ -256,10 +260,124 @@ impl LedgerFacade {
         &self,
         command: CancelOrReverseCashControlSettlement,
     ) -> Result<InternalAccountingResult, LedgerError> {
-        let _ = command.source_operation_id;
-        Err(LedgerError::invalid_state(
-            "cash-control cancellation requires the posted journal identity",
-        ))
+        let operation_key =
+            crate::shared_kernel::IdempotencyKey::new(command.source_operation_id.clone())
+                .map_err(|_| LedgerError::invalid_source_reference())?;
+        let mut tx = self.uow.begin().await?;
+        let receipt = tx
+            .find_receipt(
+                command.metadata.user_id,
+                "cash_control_operation",
+                &operation_key,
+                true,
+            )
+            .await?;
+        let Some(receipt) = receipt else {
+            let mut cancelled = empty_result(command.metadata.correlation_id);
+            cancelled.cancelled = true;
+            let hash = digest(&json!({"source_operation_id": command.source_operation_id}))?;
+            let value = serde_json::to_value(&cancelled)
+                .map_err(|error| LedgerError::persistence(error.to_string()))?;
+            tx.insert_cancelled_receipt(
+                command.metadata.user_id,
+                "cash_control_operation",
+                &operation_key,
+                &hash,
+                &value,
+                self.clock.now(),
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(cancelled);
+        };
+        let stored: InternalAccountingResult = serde_json::from_value(receipt.result)
+            .map_err(|error| LedgerError::persistence(error.to_string()))?;
+        if stored.cancelled {
+            tx.rollback().await?;
+            return Ok(stored);
+        }
+        let original_id = stored.journal_entry_id.ok_or_else(|| {
+            LedgerError::invalid_state("posted cash-control operation has no journal")
+        })?;
+        let original = tx
+            .find_journal(command.metadata.user_id, original_id, true)
+            .await?
+            .ok_or_else(LedgerError::not_found)?;
+        let account_ids: Vec<_> = original
+            .postings
+            .iter()
+            .map(Posting::account_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let accounts = tx
+            .lock_accounts(command.metadata.user_id, &account_ids)
+            .await?;
+        if accounts.len() != account_ids.len() {
+            return Err(LedgerError::not_found());
+        }
+        let postings = original
+            .postings
+            .iter()
+            .map(|posting| {
+                Posting::rehydrate(
+                    PostingId::generate(),
+                    posting.position(),
+                    posting.account_id(),
+                    posting.user_id(),
+                    posting.currency().clone(),
+                    posting.account_nature(),
+                    -posting.signed_amount(),
+                )
+            })
+            .collect();
+        let journal = JournalEntry::post(
+            JournalEntryId::generate(),
+            command.metadata.user_id,
+            &command.reason,
+            PostingPurpose::Reversal,
+            JournalSource::System,
+            Actor::External {
+                source_kind: command.metadata.source.source_kind().to_owned(),
+                source_reference: command.metadata.source.item_id().to_owned(),
+            },
+            command.metadata.occurred_at,
+            self.clock.now(),
+            command.metadata.correlation_id,
+            command.metadata.causation_id,
+            command.metadata.idempotency_key,
+            JournalRelations::reversal_of(original.id),
+            postings,
+        )?;
+        commit_journal(
+            &mut tx,
+            "cancel_cash_control_settlement",
+            &journal,
+            None,
+            "ledger.entry-reversed.v1",
+        )
+        .await?;
+        let mut cancelled = accounting_result(
+            &mut tx,
+            command.metadata.user_id,
+            command.metadata.correlation_id,
+            &journal,
+            &accounts,
+        )
+        .await?;
+        cancelled.cancelled = true;
+        let value = serde_json::to_value(&cancelled)
+            .map_err(|error| LedgerError::persistence(error.to_string()))?;
+        tx.cancel_receipt(
+            command.metadata.user_id,
+            "cash_control_operation",
+            &operation_key,
+            &value,
+            journal.recorded_at(),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(cancelled)
     }
 }
 
@@ -660,6 +778,20 @@ async fn post_pair<U: LedgerUnitOfWork>(
         "second":second_id,"second_sign":second_sign,"amount":amount,"occurred_at":metadata.occurred_at}),
     )?;
     let mut tx = uow.begin().await?;
+    if scope == "cash_control_operation"
+        && let Some(receipt) = tx
+            .find_receipt(metadata.user_id, scope, &metadata.idempotency_key, true)
+            .await?
+    {
+        let mut result: InternalAccountingResult = serde_json::from_value(receipt.result)
+            .map_err(|error| LedgerError::persistence(error.to_string()))?;
+        if receipt.request_hash != hash && !result.cancelled {
+            return Err(LedgerError::idempotency_conflict());
+        }
+        result.replayed = true;
+        tx.rollback().await?;
+        return Ok(result);
+    }
     if let Some(mut result) = replay::<_, InternalAccountingResult>(
         &mut tx,
         metadata.user_id,

@@ -4,13 +4,14 @@ use moneykeeper::contexts::classification::public::{
 };
 use moneykeeper::contexts::ledger::public::{
     AccountKind, AccountLifecycle, AccountNature, AccountVersion, AnnotationChanges,
-    ApproveReconciliation, ArchiveAccount, BalanceVersion, BudgetVisibility, CashContribution,
-    ControlAccountRole, ControlAmount, CorrectBalance, DismissReconciliation,
-    EnsureTypedControlAccount, InternalCommandMetadata, ManualTransactionKind, NormalizedTags,
-    ObservationId, ObserveProviderBalance, OpenAccount, ReconciliationStatus,
-    ReconciliationVersion, RecordExpenseAndControlBalances, RecordManualTransaction, RenameAccount,
-    ReplaceTransaction, RestoreAccount, ReverseTransaction, SourceReference, TransferFee,
-    TransferFunds, UpdateTransactionAnnotation,
+    ApproveReconciliation, ArchiveAccount, BalanceVersion, BudgetVisibility,
+    CancelOrReverseCashControlSettlement, CashContribution, ControlAccountRole, ControlAmount,
+    CorrectBalance, DismissReconciliation, EnsureTypedControlAccount, InternalCommandMetadata,
+    ManualTransactionKind, NormalizedTags, ObservationId, ObserveProviderBalance, OpenAccount,
+    ReconciliationStatus, ReconciliationVersion, RecordCashControlSettlement,
+    RecordExpenseAndControlBalances, RecordManualTransaction, RenameAccount, ReplaceTransaction,
+    RestoreAccount, ReverseTransaction, SourceReference, TransferFee, TransferFunds,
+    UpdateTransactionAnnotation,
 };
 use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
 use rust_decimal::Decimal;
@@ -136,6 +137,65 @@ async fn internal_command_control_accounts_and_expense_recipe_are_closed_and_bal
         .await
         .unwrap_err();
     assert!(invalid.is_unbalanced_journal());
+
+    let settlement = || RecordCashControlSettlement {
+        metadata: metadata("cash-settlement", "caller-cash-settlement"),
+        cash_account_id: cash.account.id,
+        control_account_id: payable.account_id,
+        amount: Money::new(Decimal::ONE, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        source_operation_id: "cash-operation-7".to_owned(),
+    };
+    let posted = ledger
+        .record_cash_control_settlement(settlement())
+        .await
+        .unwrap();
+    assert!(!posted.cancelled);
+    let cancelled = ledger
+        .cancel_or_reverse_cash_control_settlement(CancelOrReverseCashControlSettlement {
+            metadata: metadata("cash-cancel", "cash-cancel-key"),
+            source_operation_id: "cash-operation-7".to_owned(),
+            reason: "Cancelled upstream".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(cancelled.cancelled);
+    assert_ne!(cancelled.journal_entry_id, posted.journal_entry_id);
+    let late = ledger
+        .record_cash_control_settlement(settlement())
+        .await
+        .unwrap();
+    assert!(late.cancelled);
+    let cancelled_first = ledger
+        .cancel_or_reverse_cash_control_settlement(CancelOrReverseCashControlSettlement {
+            metadata: metadata("cash-cancel-first", "cash-cancel-first-key"),
+            source_operation_id: "cash-operation-8".to_owned(),
+            reason: "Cancelled before delivery".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(cancelled_first.cancelled);
+    let late_original = ledger
+        .record_cash_control_settlement(RecordCashControlSettlement {
+            metadata: metadata("cash-settlement-late", "late-caller-key"),
+            cash_account_id: cash.account.id,
+            control_account_id: payable.account_id,
+            amount: Money::new(Decimal::ONE, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+            source_operation_id: "cash-operation-8".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(late_original.cancelled);
+    assert!(late_original.journal_entry_id.is_none());
+    let cancelled_receipts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ledger.command_receipts WHERE user_id = $1 \
+         AND command_name = 'cash_control_operation' AND status = 'cancelled' \
+         AND idempotency_key IN ('cash-operation-7', 'cash-operation-8')",
+    )
+    .bind(user.into_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cancelled_receipts, 2);
 }
 
 #[tokio::test]
