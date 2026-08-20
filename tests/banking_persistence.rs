@@ -38,6 +38,7 @@ async fn credential_validation_discovers_distinct_resources_and_activates_connec
         Arc::new(Aes256CredentialCipher::new("test-key", [4_u8; 32]).unwrap()),
         Arc::new(FixtureProvider),
         currencies,
+        [1_u8;32],
     );
     let user_id = UserId::new(Uuid::new_v4());
     let connection = facade.connect_provider(ConnectProvider {
@@ -81,6 +82,7 @@ async fn credential_is_encrypted_before_connection_commit_and_never_returned() {
         Arc::new(Aes256CredentialCipher::new("test-key", [9_u8; 32]).unwrap()),
         Arc::new(UnusedProvider),
         currencies,
+        [1_u8;32],
     );
     let user_id = UserId::new(Uuid::new_v4());
     let token = "sanitized-x-token-that-must-not-appear";

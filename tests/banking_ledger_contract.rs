@@ -34,6 +34,7 @@ async fn mapping_existing_account_validates_public_ledger_contract_and_tenant() 
         Arc::new(FixtureProvider),
         ledger.clone(),
         supporting.currencies,
+        [1_u8;32],
     );
     let user_id = UserId::new(Uuid::new_v4());
     let connection = banking.connect_provider(ConnectProvider {
@@ -84,6 +85,7 @@ async fn create_and_map_is_retry_safe_and_opens_provider_observed_account() {
         Arc::new(FixtureProvider),
         ledger.clone(),
         supporting.currencies,
+        [1_u8;32],
     );
     let user_id=UserId::new(Uuid::new_v4());
     let connection=banking.connect_provider(ConnectProvider { user_id,provider:"monobank".to_owned(),credential:ProviderCredential::new("token").unwrap(),idempotency_key:IdempotencyKey::new("connect-create-map").unwrap(),correlation_id:CorrelationId::generate(),requested_at:Utc::now() }).await.unwrap().connection;
@@ -102,7 +104,7 @@ async fn create_and_map_is_retry_safe_and_opens_provider_observed_account() {
 async fn provider_revisions_post_once_and_corrections_and_reversals_remain_visible() {
     let (verified,pool)=v2_test_support::fresh_v2_runtime().await;
     let supporting=moneykeeper::bootstrap::v2::supporting_contexts(&verified);let ledger=supporting.ledger;
-    let banking=banking::build_with_ledger(&verified,Arc::new(Aes256CredentialCipher::new("test-key",[8_u8;32]).unwrap()),Arc::new(FixtureProvider),ledger.clone(),supporting.currencies);
+    let banking=banking::build_with_ledger(&verified,Arc::new(Aes256CredentialCipher::new("test-key",[8_u8;32]).unwrap()),Arc::new(FixtureProvider),ledger.clone(),supporting.currencies,[1_u8;32]);
     let user=UserId::new(Uuid::new_v4());let now=Utc::now();
     let connection=banking.connect_provider(ConnectProvider{user_id:user,provider:"monobank".to_owned(),credential:ProviderCredential::new("token").unwrap(),idempotency_key:IdempotencyKey::new("connect-import").unwrap(),correlation_id:CorrelationId::generate(),requested_at:now}).await.unwrap().connection;
     banking.validate_and_discover(user,connection.id).await.unwrap();

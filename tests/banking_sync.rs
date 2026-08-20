@@ -29,7 +29,7 @@ async fn banking_fixture() -> (
 ) {
     let (verified,pool)=v2_test_support::fresh_v2_runtime().await;
     let supporting=moneykeeper::bootstrap::v2::supporting_contexts(&verified);
-    let banking=banking::build_with_ledger(&verified,Arc::new(Aes256CredentialCipher::new("test-key",[6_u8;32]).unwrap()),Arc::new(FixtureProvider),supporting.ledger,supporting.currencies);
+    let banking=banking::build_with_ledger(&verified,Arc::new(Aes256CredentialCipher::new("test-key",[6_u8;32]).unwrap()),Arc::new(FixtureProvider),supporting.ledger,supporting.currencies,[1_u8;32]);
     let user_id=UserId::new(Uuid::new_v4());
     let connection=banking.connect_provider(ConnectProvider{user_id,provider:"monobank".to_owned(),credential:ProviderCredential::new("token").unwrap(),idempotency_key:IdempotencyKey::new("connect-sync").unwrap(),correlation_id:CorrelationId::generate(),requested_at:Utc::now()}).await.unwrap().connection;
     banking.validate_and_discover(user_id,connection.id).await.unwrap();
