@@ -72,3 +72,35 @@ pub struct IntakeProviderEvent {
     pub recorded_at: DateTime<Utc>,
     pub correlation_id: CorrelationId,
 }
+
+pub struct RequestSyncJob {
+    pub user_id: UserId,
+    pub connection_id: ProviderConnectionId,
+    pub requested_from: DateTime<Utc>,
+    pub requested_to: DateTime<Utc>,
+    pub overlap_seconds: i32,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+}
+
+pub struct BeginSyncPage {
+    pub user_id: UserId,
+    pub sync_job_id: super::super::domain::SyncJobId,
+    pub holder: String,
+    pub fencing_token: i64,
+    pub provider_cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub expected_events: i32,
+    pub now: DateTime<Utc>,
+}
+
+pub struct CompleteSyncPage {
+    pub user_id: UserId,
+    pub sync_job_id: super::super::domain::SyncJobId,
+    pub sync_page_id: uuid::Uuid,
+    pub holder: String,
+    pub fencing_token: i64,
+    pub processed_events: i32,
+    pub quarantined_events: i32,
+    pub now: DateTime<Utc>,
+}

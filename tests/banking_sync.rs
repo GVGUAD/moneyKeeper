@@ -3,7 +3,7 @@ mod v2_test_support;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use moneykeeper::{
     contexts::banking::{self, public::*},
     shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId},
@@ -68,4 +68,23 @@ async fn revision_identity_is_scoped_to_resource_and_new_facts_publish_ready_eve
     assert_ne!(first.provider_event_id,settled.provider_event_id);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM integration.outbox_messages WHERE event_type='banking.provider-event-ready.v1' AND user_id=$1").bind(user.into_uuid()).fetch_one(&pool).await.unwrap();
     assert_eq!(outbox,3);
+}
+
+#[tokio::test]
+async fn sync_claims_are_connection_scoped_fenced_and_advance_only_complete_pages() {
+    let (banking,_pool,user,connection,_resources)=banking_fixture().await;
+    let now=Utc.with_ymd_and_hms(2026,8,20,10,0,0).unwrap();
+    let job=banking.request_sync_job(RequestSyncJob{user_id:user,connection_id:connection,requested_from:now-Duration::days(1),requested_to:now,overlap_seconds:3600,idempotency_key:IdempotencyKey::new("sync-1").unwrap(),correlation_id:CorrelationId::generate()}).await.unwrap();
+    let (first,second)=tokio::join!(banking.claim_due_sync_job("worker-a",now,60),banking.claim_due_sync_job("worker-b",now,60));
+    let first=first.unwrap().or(second.unwrap()).expect("one worker claims the job");
+    assert_eq!(first.id,job.id);
+    let page=banking.begin_sync_page(BeginSyncPage{user_id:user,sync_job_id:job.id,holder:first.lease_holder.clone().unwrap(),fencing_token:first.fencing_token,provider_cursor:None,next_cursor:None,expected_events:2,now:now+Duration::seconds(1)}).await.unwrap();
+    let incomplete=banking.complete_sync_page(CompleteSyncPage{user_id:user,sync_job_id:job.id,sync_page_id:page.id,holder:first.lease_holder.clone().unwrap(),fencing_token:first.fencing_token,processed_events:1,quarantined_events:0,now:now+Duration::seconds(2)}).await;
+    assert!(incomplete.is_err());
+    let current=banking.claim_due_sync_job("worker-c",now+Duration::seconds(61),60).await.unwrap().unwrap();
+    assert!(current.fencing_token>first.fencing_token);
+    let stale=banking.complete_sync_page(CompleteSyncPage{user_id:user,sync_job_id:job.id,sync_page_id:page.id,holder:first.lease_holder.unwrap(),fencing_token:first.fencing_token,processed_events:1,quarantined_events:1,now:now+Duration::seconds(62)}).await;
+    assert!(stale.is_err());
+    let completed=banking.complete_sync_page(CompleteSyncPage{user_id:user,sync_job_id:job.id,sync_page_id:page.id,holder:current.lease_holder.unwrap(),fencing_token:current.fencing_token,processed_events:1,quarantined_events:1,now:now+Duration::seconds(62)}).await.unwrap();
+    assert_eq!(completed.state,"completed");
 }
