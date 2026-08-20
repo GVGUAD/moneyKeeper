@@ -8,6 +8,7 @@ use super::{
     DeactivateResourceMapping, ProviderConnectionView, ReplaceProviderCredential,
     ResourceMappingResult,
     IntakeProviderEvent, ProviderEventReceipt,
+    ProviderImportOutcome, ProviderImportWork,
 };
 use crate::contexts::banking::domain::BankingError;
 use crate::contexts::banking::infrastructure::PgBankingStore;
@@ -81,5 +82,13 @@ impl BankingFacade {
 
     pub async fn intake_provider_event(&self, command: IntakeProviderEvent) -> Result<ProviderEventReceipt, BankingError> {
         self.store.intake_provider_event(command).await
+    }
+
+    pub async fn claim_provider_import(&self, user_id: UserId, provider_event_id: super::super::domain::ProviderEventId) -> Result<Option<ProviderImportWork>, BankingError> {
+        self.store.claim_provider_import(user_id,provider_event_id).await
+    }
+
+    pub async fn complete_provider_import(&self, outcome: ProviderImportOutcome) -> Result<ProviderImportOutcome, BankingError> {
+        self.store.complete_provider_import(outcome).await
     }
 }

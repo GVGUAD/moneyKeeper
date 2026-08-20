@@ -464,7 +464,7 @@ Expected: PASS.
 
 Use configurable batch/window sizes and jittered backoff. Do not sleep while holding a PostgreSQL connection or lease transaction. Every job/page exposes state, cursor, attempts, retry time, last error class, and blocking event counts to read queries.
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 ~~~bash
 git add src/contexts/banking/application/sync.rs src/contexts/banking/application src/contexts/banking/infrastructure tests/banking_sync.rs
@@ -485,7 +485,7 @@ git commit -m "feat(banking): add durable fenced Monobank sync"
 - Modify: `tests/banking_ledger_contract.rs`
 - Modify: `tests/banking_sync.rs`
 
-- [ ] **Step 1 — RED: write end-to-end idempotency/revision tests**
+- [x] **Step 1 — RED: write end-to-end idempotency/revision tests**
 
 With a real isolated Ledger facade where practical, prove:
 
@@ -502,7 +502,7 @@ revision N+1 claimed before N completes -> visible WaitingForPriorRevision and n
 predecessor crash/retry -> successors resume in causal revision order without duplicate effects
 ~~~
 
-- [ ] **Step 2: run and capture RED**
+- [x] **Step 2: run and capture RED**
 
 ~~~bash
 cargo test --test banking_ledger_contract -- --nocapture
@@ -511,13 +511,13 @@ cargo test --test banking_sync -- --nocapture
 
 Expected: FAIL because the Banking import process manager is absent.
 
-- [ ] **Step 3 — GREEN: implement the durable import coordinator**
+- [x] **Step 3 — GREEN: implement the durable import coordinator**
 
 Consume `banking.provider-event-ready.v1` through the shared inbox and process store. Translate the normalized event to Ledger's provider-neutral `ImportProviderTransaction` command. Derive the key from a canonical form such as `banking-import:{provider}:{connection}:{resource}:{event}:{revision}` and pass source/effective/recorded times, normalized money, state, mapping, and prior revision identity. Serialize by `(connection, resource, external_event_id)` and require every lower known revision to be terminal `Posted`, `NoFinancialChange`, or an explicitly quarantined terminal rejection before invoking Ledger for the next revision. An out-of-order successor persists `WaitingForPriorRevision`; predecessor completion emits/wakes the successor. Never pass a raw Monobank DTO or token.
 
 Persist `WaitingForMapping`, `WaitingForPriorRevision`, `Posting`, `Posted`, `NoFinancialChange`, `TerminalFailure`, or `RetryDue` process state. If Ledger already committed, its idempotency receipt returns the prior `JournalEntry`/reversal/replacement result and Banking safely completes. Commit process completion and Banking event status through the Banking UoW/inbox boundary. A higher revision cannot treat a merely claimed/failed/retrying predecessor as financially complete.
 
-- [ ] **Step 4: run focused integration tests**
+- [x] **Step 4: run focused integration tests**
 
 ~~~bash
 cargo test --test banking_ledger_contract -- --nocapture
@@ -526,7 +526,7 @@ cargo test --test banking_sync -- --nocapture
 
 Expected: PASS and Ledger projection rebuild remains equal to posting sums.
 
-- [ ] **Step 5 — REFACTOR: freeze the cross-context contract**
+- [x] **Step 5 — REFACTOR: freeze the cross-context contract**
 
 Add contract snapshots for the public command/outcome and `banking.provider-event-ready.v1`. Consumers ignore additive fields but reject unknown major versions. Verify the process-manager state contains IDs and minimum facts only, not tokens or raw provider payloads.
 
