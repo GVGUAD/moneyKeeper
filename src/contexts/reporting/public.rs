@@ -60,6 +60,20 @@ impl ReportingFacade {
         self.store.loan_summary(user, id).await
     }
 
+    pub async fn apply_sharing_event(
+        &self,
+        event: crate::contexts::sharing::public::SharingEventV1,
+    ) -> Result<ProjectionApplyResult, sqlx::Error> {
+        self.store.apply_sharing_event(event).await
+    }
+
+    pub async fn rebuild_sharing(
+        &self,
+        events: Vec<crate::contexts::sharing::public::SharingEventV1>,
+    ) -> Result<(), sqlx::Error> {
+        self.store.rebuild_sharing(events).await
+    }
+
     /// Clears rebuildable financial projections and replays a complete,
     /// sequence-ordered tenant-safe Ledger export.
     pub async fn rebuild_journals(

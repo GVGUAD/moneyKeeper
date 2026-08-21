@@ -1,6 +1,7 @@
 mod loan_projection;
 pub(crate) mod projections;
 pub(crate) mod queries;
+pub(crate) mod sharing_projection;
 use super::public::{
     ConversionStatus, ProjectionApplyResult, ReportMetadata, ReportRange, ReportResponse,
 };
@@ -15,7 +16,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 #[derive(Clone)]
 pub(crate) struct PgReportingStore {
-    pool: PgPool,
+    pub(crate) pool: PgPool,
 }
 impl PgReportingStore {
     pub(crate) fn new(pool: PgPool) -> Self {

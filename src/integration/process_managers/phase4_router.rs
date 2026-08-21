@@ -27,6 +27,10 @@ use crate::{
         },
         reference_data::public::{FX_OBSERVED_V1, FxObservedV1},
         reporting::public::ReportingFacade,
+        sharing::public::{
+            BILL_CANCELLED_V1, BILL_POSITION_CHANGED_V1, BillPositionV1, SharingEventFactV1,
+            SharingEventMetadataV1, SharingEventV1,
+        },
     },
     shared_kernel::{CausationId, CorrelationId, CurrencyCode, EventId, Money, UserId},
 };
@@ -265,9 +269,62 @@ impl Phase4EventRouter {
                     .map_err(RouteError::Database)?;
                 Ok(true)
             }
+            BILL_POSITION_CHANGED_V1 => {
+                #[derive(Deserialize)]
+                struct Payload {
+                    position: BillPositionV1,
+                }
+                let payload: Payload = serde_json::from_value(event.payload.clone())
+                    .map_err(|_| RouteError::InvalidPayload)?;
+                self.reporting
+                    .apply_sharing_event(sharing_event(
+                        event,
+                        SharingEventFactV1::BillPositionChanged {
+                            position: payload.position,
+                        },
+                    ))
+                    .await
+                    .map_err(RouteError::Database)?;
+                Ok(true)
+            }
+            BILL_CANCELLED_V1 => {
+                let fact: SharingEventFactV1 =
+                    serde_json::from_value(json_to_tagged_fact("bill_cancelled", &event.payload))
+                        .map_err(|_| RouteError::InvalidPayload)?;
+                self.reporting
+                    .apply_sharing_event(sharing_event(event, fact))
+                    .await
+                    .map_err(RouteError::Database)?;
+                Ok(true)
+            }
             _ => Ok(false),
         }
     }
+}
+
+fn sharing_event(event: &RoutedEvent, fact: SharingEventFactV1) -> SharingEventV1 {
+    SharingEventV1 {
+        metadata: SharingEventMetadataV1 {
+            schema_version: event.schema_version,
+            event_id: EventId::new(event.event_id),
+            user_id: UserId::new(event.user_id),
+            sequence: event.sequence,
+            correlation_id: CorrelationId::new(event.correlation_id),
+            causation_id: event.causation_id.map(CausationId::new),
+            occurred_at: event.occurred_at,
+            recorded_at: event.occurred_at,
+        },
+        fact,
+    }
+}
+
+fn json_to_tagged_fact(kind: &str, payload: &serde_json::Value) -> serde_json::Value {
+    let mut object = payload.as_object().cloned().unwrap_or_default();
+    object.insert(
+        "type".to_owned(),
+        serde_json::Value::String(kind.to_owned()),
+    );
+    serde_json::Value::Object(object)
 }
 
 fn ledger_event(

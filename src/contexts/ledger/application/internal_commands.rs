@@ -17,11 +17,11 @@ use super::super::{
         AccountEffect, CancelOrReverseCashControlSettlement, ControlAccountResult,
         ControlAccountRole, ControlDirection, EnsureTypedControlAccount, ImportProviderTransaction,
         InternalAccountingResult, ProjectionVersion, ProviderTransactionState,
-        ReclassifyExpenseToReceivableOrPayable, RecordCashControlSettlement,
-        RecordExpenseAndControlBalances, RecordInterestAndFee, RecordInterestOrFeeAccrual,
-        RecordPrincipalDisbursement, RecordPrincipalRepayment, ReverseProviderTransaction,
-        ReverseTransaction, SettleReceivableOrPayable, TransitionProviderTransactionState,
-        WriteOffLiabilityOrReceivable,
+        ReclassifyExpenseToReceivableOrPayable, ReclassifyImportedSettlement,
+        RecordCashControlSettlement, RecordExpenseAndControlBalances, RecordInterestAndFee,
+        RecordInterestOrFeeAccrual, RecordPrincipalDisbursement, RecordPrincipalRepayment,
+        ReverseProviderTransaction, ReverseTransaction, SettleReceivableOrPayable,
+        TransitionProviderTransactionState, WriteOffLiabilityOrReceivable,
     },
 };
 use super::{
@@ -238,6 +238,29 @@ impl LedgerFacade {
             role,
             command.amount,
             "Reclassify expense",
+        )
+        .await
+    }
+
+    /// Appends a typed reclassification for an already imported settlement.
+    pub async fn reclassify_imported_settlement(
+        &self,
+        command: ReclassifyImportedSettlement,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        let (control_sign, role) = match command.direction {
+            ControlDirection::Receivable => (-1, SystemAccountRole::UncategorizedIncome),
+            ControlDirection::Payable => (1, SystemAccountRole::UncategorizedExpense),
+        };
+        post_with_system(
+            &self.uow,
+            self.clock.as_ref(),
+            command.metadata,
+            "reclassify_imported_settlement",
+            command.control_account_id,
+            control_sign,
+            role,
+            command.amount,
+            "Reclassify imported settlement",
         )
         .await
     }
