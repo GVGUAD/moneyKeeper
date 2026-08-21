@@ -78,6 +78,18 @@ fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
         "/reports/reconciliations",
         "/reports/recurring",
         "/reports/net-worth",
+        "/loans",
+        "/loans/{id}",
+        "/loans/{id}/term-revisions",
+        "/loans/{id}/movements",
+        "/loans/{id}/movements/{movement_id}",
+        "/loans/{id}/closure",
+        "/loans/{id}/disbursements",
+        "/loans/{id}/repayments",
+        "/loans/{id}/interest-accruals",
+        "/loans/{id}/write-offs",
+        "/loans/{id}/movements/{movement_id}/reversals",
+        "/loans/{id}/movements/{movement_id}/replacements",
         "/contacts",
         "/contacts/{id}",
         "/contacts/{id}/archive",
@@ -134,7 +146,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 78);
+    assert_eq!(operation_count, 92);
 }
 
 #[test]

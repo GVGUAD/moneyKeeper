@@ -46,6 +46,19 @@ impl ReportingFacade {
             .apply_recurring_charge(event_id, source_sequence, event)
             .await
     }
+    pub async fn apply_loan_event(
+        &self,
+        event: crate::contexts::loans::public::LoanEventV1,
+    ) -> Result<ProjectionApplyResult, sqlx::Error> {
+        self.store.apply_loan_event(event).await
+    }
+    pub async fn loan_summary(
+        &self,
+        user: crate::shared_kernel::UserId,
+        id: crate::contexts::loans::public::LoanAgreementId,
+    ) -> Result<Option<LoanSummary>, sqlx::Error> {
+        self.store.loan_summary(user, id).await
+    }
 
     pub async fn apply_sharing_event(
         &self,
@@ -107,4 +120,19 @@ pub enum ConversionStatus {
 pub struct ReportResponse {
     pub metadata: ReportMetadata,
     pub rows: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LoanSummary {
+    pub agreement_id: crate::contexts::loans::public::LoanAgreementId,
+    pub currency: CurrencyCode,
+    pub direction: Option<crate::contexts::loans::public::LoanDirection>,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub principal: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub interest: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub fees: rust_decimal::Decimal,
+    pub status: String,
+    pub source_sequence: u64,
 }

@@ -49,6 +49,10 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
         .merge(crate::contexts::reporting::api::routes::router(
             contexts.reporting,
         ))
+        .merge(crate::contexts::loans::api::routes::router(
+            contexts.loans,
+            contexts.currencies.clone(),
+        ))
         .merge(crate::contexts::classification::api::routes::router(
             contexts.categories,
         ))
@@ -167,6 +171,20 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/reports/reconciliations"),
     ("GET", "/reports/recurring"),
     ("GET", "/reports/net-worth"),
+    ("GET", "/loans"),
+    ("GET", "/loans/{id}"),
+    ("GET", "/loans/{id}/term-revisions"),
+    ("GET", "/loans/{id}/movements"),
+    ("GET", "/loans/{id}/movements/{movement_id}"),
+    ("POST", "/loans"),
+    ("POST", "/loans/{id}/term-revisions"),
+    ("POST", "/loans/{id}/closure"),
+    ("POST", "/loans/{id}/disbursements"),
+    ("POST", "/loans/{id}/repayments"),
+    ("POST", "/loans/{id}/interest-accruals"),
+    ("POST", "/loans/{id}/write-offs"),
+    ("POST", "/loans/{id}/movements/{movement_id}/reversals"),
+    ("POST", "/loans/{id}/movements/{movement_id}/replacements"),
     ("POST", "/contacts"),
     ("GET", "/contacts"),
     ("GET", "/contacts/{id}"),

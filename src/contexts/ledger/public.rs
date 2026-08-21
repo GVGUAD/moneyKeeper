@@ -620,6 +620,16 @@ pub struct RecordInterestAndFee {
     pub direction: ControlDirection,
 }
 
+/// Records a manual interest or fee accrual without a cash movement.
+#[derive(Clone, Debug)]
+pub struct RecordInterestOrFeeAccrual {
+    pub metadata: InternalCommandMetadata,
+    pub accrual_control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub component: PrincipalOrAccrual,
+    pub direction: ControlDirection,
+}
+
 #[derive(Clone, Debug)]
 pub struct WriteOffLiabilityOrReceivable {
     pub metadata: InternalCommandMetadata,

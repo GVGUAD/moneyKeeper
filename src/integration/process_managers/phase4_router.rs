@@ -258,6 +258,17 @@ impl Phase4EventRouter {
                     .map_err(RouteError::Database)?;
                 Ok(true)
             }
+            event_type if event_type.starts_with("loans.") => {
+                let mut loan_event: crate::contexts::loans::public::LoanEventV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|_| RouteError::InvalidPayload)?;
+                loan_event.metadata.sequence = event.sequence;
+                self.reporting
+                    .apply_loan_event(loan_event)
+                    .await
+                    .map_err(RouteError::Database)?;
+                Ok(true)
+            }
             BILL_POSITION_CHANGED_V1 => {
                 #[derive(Deserialize)]
                 struct Payload {
@@ -462,6 +473,7 @@ fn is_phase4_event(event_type: &str) -> bool {
     event_type.starts_with("ledger.")
         || event_type.starts_with("mail.")
         || event_type.starts_with("recurring.")
+        || event_type.starts_with("loans.")
         || event_type == FX_OBSERVED_V1
 }
 
