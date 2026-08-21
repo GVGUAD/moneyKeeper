@@ -552,6 +552,17 @@ pub struct ReclassifyExpenseToReceivableOrPayable {
     pub direction: ControlDirection,
 }
 
+/// Reclassifies a provisional imported income/expense journal as settlement of
+/// a Sharing receivable/payable without editing the imported entry.
+#[derive(Clone, Debug)]
+pub struct ReclassifyImportedSettlement {
+    pub metadata: InternalCommandMetadata,
+    pub imported_journal_entry_id: JournalEntryId,
+    pub control_account_id: LedgerAccountId,
+    pub amount: Money,
+    pub direction: ControlDirection,
+}
+
 #[derive(Clone, Debug)]
 pub struct SettleReceivableOrPayable {
     pub metadata: InternalCommandMetadata,

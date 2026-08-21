@@ -23,6 +23,10 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
     let banking = contexts.banking.clone();
     let mail = contexts.mail.clone();
     let authenticated = Router::new()
+        .merge(crate::contexts::sharing::api::routes::router(
+            contexts.sharing,
+            contexts.currencies.clone(),
+        ))
         .merge(crate::contexts::ledger::api::routes::router(
             crate::api::v2_state::LedgerApiState {
                 ledger: contexts.ledger,
@@ -163,6 +167,21 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/reports/reconciliations"),
     ("GET", "/reports/recurring"),
     ("GET", "/reports/net-worth"),
+    ("POST", "/contacts"),
+    ("GET", "/contacts"),
+    ("GET", "/contacts/{id}"),
+    ("PATCH", "/contacts/{id}"),
+    ("POST", "/contacts/{id}/archive"),
+    ("POST", "/bill-splits"),
+    ("GET", "/bill-splits"),
+    ("GET", "/bill-splits/{id}"),
+    ("POST", "/bill-splits/{id}/revisions"),
+    ("POST", "/bill-splits/{id}/settlements"),
+    (
+        "POST",
+        "/bill-splits/{id}/settlements/{settlement_id}/reversal",
+    ),
+    ("POST", "/bill-splits/{id}/cancellations"),
 ];
 
 /// Authenticated tenant identity extracted from the existing auth boundary.

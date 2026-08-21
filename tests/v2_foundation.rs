@@ -120,7 +120,7 @@ async fn isolated_finance_v2_foundation_composes_end_to_end() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(migration_versions, (1_i64..=8).collect::<Vec<_>>());
+    assert_eq!(migration_versions, (1_i64..=9).collect::<Vec<_>>());
 
     let now = Utc
         .with_ymd_and_hms(2026, 8, 13, 12, 0, 0)
