@@ -9,9 +9,10 @@ use crate::shared_kernel::{CorrelationId, CurrencyCode, Money, UserId};
 
 use super::super::{
     domain::{
-        AccountNature, Actor, AnnotationVersion, BalanceVersion, JournalEntryId, JournalRelations,
-        JournalSource, LedgerAccountId, LedgerError, ObservationId, PostingId,
-        ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion, SourceReference,
+        AccountAuthority, AccountKind, AccountNature, Actor, AnnotationVersion, BalanceVersion,
+        JournalEntryId, JournalRelations, JournalSource, LedgerAccountId, LedgerError,
+        ObservationId, PostingId, PostingPurpose, ReconciliationCaseId, ReconciliationStatus,
+        ReconciliationVersion, SourceReference,
     },
     public::{
         AccountView, ActivityCursor, CorrectionView, JournalView, PostingView, ReconciliationView,
@@ -142,6 +143,7 @@ impl PgLedgerQueries {
             user_id: Uuid,
             ledger_sequence: i64,
             source: String,
+            purpose: String,
             description: String,
             actor_kind: String,
             actor_reference: Option<String>,
@@ -152,6 +154,7 @@ impl PgLedgerQueries {
             corrects_transaction_id: Option<Uuid>,
             replaces_transaction_id: Option<Uuid>,
             annotation_version: Option<i64>,
+            category_id: Option<Uuid>,
             correction_account_id: Option<Uuid>,
             correction_before: Option<Decimal>,
             correction_target: Option<Decimal>,
@@ -161,9 +164,9 @@ impl PgLedgerQueries {
             correction_observed_at: Option<chrono::DateTime<chrono::Utc>>,
         }
         let row = sqlx::query_as::<_, JournalRow>(
-            "SELECT j.id, j.user_id, j.ledger_sequence, j.source, j.description, j.actor_kind, j.actor_reference, j.occurred_at, \
+            "SELECT j.id, j.user_id, j.ledger_sequence, j.source, j.purpose, j.description, j.actor_kind, j.actor_reference, j.occurred_at, \
                     j.recorded_at, j.correlation_id, j.reverses_transaction_id, \
-                    j.corrects_transaction_id, j.replaces_transaction_id, a.version AS annotation_version, \
+                    j.corrects_transaction_id, j.replaces_transaction_id, a.version AS annotation_version, a.category_id, \
                     c.account_id AS correction_account_id, c.before_display_balance AS correction_before, \
                     c.target_display_balance AS correction_target, c.display_delta AS correction_delta, \
                     c.observed_balance_version AS correction_balance_version, c.reason AS correction_reason, \
@@ -179,14 +182,18 @@ impl PgLedgerQueries {
         struct PostingRow {
             id: Uuid,
             account_id: Uuid,
+            account_kind: String,
+            account_authority: String,
             position: i16,
             currency: String,
             account_nature: String,
             signed_amount: Decimal,
         }
         let posting_rows = sqlx::query_as::<_, PostingRow>(
-            "SELECT id, account_id, position, currency, account_nature, signed_amount \
-             FROM ledger.postings WHERE journal_entry_id = $1 AND user_id = $2 ORDER BY position",
+            "SELECT p.id, p.account_id, p.position, p.currency, p.account_nature, p.signed_amount, \
+                    a.kind AS account_kind,a.authority AS account_authority \
+             FROM ledger.postings p JOIN ledger.accounts a ON a.id=p.account_id AND a.user_id=p.user_id \
+             WHERE p.journal_entry_id = $1 AND p.user_id = $2 ORDER BY p.position",
         )
         .bind(id.into_uuid())
         .bind(user_id.into_uuid())
@@ -200,6 +207,9 @@ impl PgLedgerQueries {
                 Ok(PostingView {
                     id: PostingId::new(posting.id),
                     account_id: LedgerAccountId::new(posting.account_id),
+                    account_kind: AccountKind::parse(&posting.account_kind)?,
+                    account_nature: nature,
+                    account_authority: AccountAuthority::parse(&posting.account_authority)?,
                     position: u16::try_from(posting.position)
                         .map_err(|_| LedgerError::persistence("stored position invalid"))?,
                     currency: CurrencyCode::new(posting.currency)
@@ -230,6 +240,7 @@ impl PgLedgerQueries {
                 "reconciliation" => JournalSource::Reconciliation,
                 _ => return Err(LedgerError::persistence("stored source invalid")),
             },
+            purpose: PostingPurpose::parse(&row.purpose)?,
             actor: match row.actor_kind.as_str() {
                 "user" => Actor::User(UserId::new(
                     Uuid::parse_str(row.actor_reference.as_deref().unwrap_or(""))
@@ -258,6 +269,9 @@ impl PgLedgerQueries {
                 .annotation_version
                 .map(AnnotationVersion::new)
                 .transpose()?,
+            category_id: row
+                .category_id
+                .map(crate::contexts::classification::public::CategoryId::new),
             correction: match (
                 row.correction_account_id,
                 row.correction_before,

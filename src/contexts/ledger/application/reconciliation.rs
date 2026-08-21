@@ -344,7 +344,7 @@ async fn approve<U: LedgerUnitOfWork>(
         "approve_reconciliation",
         &journal,
         None,
-        "ledger.entry-posted.v1",
+        "ledger.journal-posted.v1",
     )
     .await?;
     tx.insert_correction_detail(CorrectionDetail {

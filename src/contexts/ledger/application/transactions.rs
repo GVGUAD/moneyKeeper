@@ -178,7 +178,7 @@ async fn record_manual_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
             command.kind.command_name(),
             &journal,
             Some(&annotation),
-            "ledger.entry-posted.v1",
+            "ledger.journal-posted.v1",
         )
         .await?;
         let (signed_balance, balance_version) = tx

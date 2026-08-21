@@ -439,3 +439,32 @@ async fn third_migration_installs_the_strict_ledger_baseline() {
         assert_eq!(installed.as_deref(), Some(relation));
     }
 }
+
+#[tokio::test]
+async fn phase_four_migrations_install_context_owned_storage() {
+    let database = fresh_database().await;
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+    for relation in [
+        "mail.connections",
+        "mail.command_receipts",
+        "mail.source_messages",
+        "recurring.subscriptions",
+        "recurring.charge_matching",
+        "recurring.match_allocations",
+        "reference_data.fx_observations",
+        "reference_data.fx_sync_state",
+        "reporting.consumed_events",
+        "reporting.account_balances",
+        "reporting.bill_positions",
+        "reporting.loan_summaries",
+        "reporting.portfolio_valuations",
+    ] {
+        let installed: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(relation)
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        assert_eq!(installed.as_deref(), Some(relation), "missing {relation}");
+    }
+}

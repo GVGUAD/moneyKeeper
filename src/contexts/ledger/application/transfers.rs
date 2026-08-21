@@ -219,7 +219,7 @@ async fn transfer<U: LedgerUnitOfWork>(
             "transfer_funds",
             &journal,
             None,
-            "ledger.entry-posted.v1",
+            "ledger.journal-posted.v1",
         )
         .await?;
 

@@ -5,6 +5,8 @@ use crate::shared_kernel::CurrencyCode;
 
 use super::domain::CurrencyDefinition;
 use super::public::CurrencyError;
+pub(crate) mod fx_repository;
+pub(crate) mod nbu;
 
 #[derive(sqlx::FromRow)]
 struct CurrencyRow {

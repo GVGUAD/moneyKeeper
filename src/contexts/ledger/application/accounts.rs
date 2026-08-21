@@ -255,7 +255,7 @@ async fn open_account<U: LedgerUnitOfWork>(
                 "open_account",
                 &journal,
                 None,
-                "ledger.entry-posted.v1",
+                "ledger.journal-posted.v1",
             )
             .await?;
             Some(journal.id())

@@ -57,6 +57,27 @@ fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
         "/provider-events/{id}",
         "/accounting-processes/{id}",
         "/balance-observations/{id}",
+        "/me/email-connections/gmail/oauth/start",
+        "/oauth/gmail/callback",
+        "/me/email-connections",
+        "/me/email-connections/{connection_id}/status",
+        "/me/email-connections/{connection_id}/disconnect",
+        "/me/email-connections/{connection_id}/resync",
+        "/subscriptions",
+        "/subscriptions/{subscription_id}",
+        "/subscriptions/{subscription_id}/charges",
+        "/subscriptions/forecast",
+        "/subscription-charges/{charge_evidence_id}/matches",
+        "/subscription-charges/{charge_evidence_id}/rejections",
+        "/subscription-charges/{charge_evidence_id}/matches/{match_id}/unmatches",
+        "/fx-rates",
+        "/reports/balance-history",
+        "/reports/cashflow",
+        "/reports/spending",
+        "/reports/liabilities",
+        "/reports/reconciliations",
+        "/reports/recurring",
+        "/reports/net-worth",
     ]);
     assert_eq!(actual, expected);
     assert!(actual.iter().all(|path| !path.starts_with("/v2")));
@@ -73,10 +94,15 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
                 continue;
             }
             operation_count += 1;
-            assert_eq!(
-                operation["security"][0]["bearerAuth"],
-                serde_json::json!([])
-            );
+            let operation_id = operation["operationId"].as_str().unwrap();
+            if operation_id != "completeGmailOauth" {
+                assert_eq!(
+                    operation["security"][0]["bearerAuth"],
+                    serde_json::json!([])
+                );
+            } else {
+                assert!(operation.get("security").is_none());
+            }
             assert_eq!(
                 operation["responses"]["500"]["$ref"],
                 "#/components/responses/InternalServerError"
@@ -93,14 +119,13 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
                     .is_some_and(|description| !description.trim().is_empty()),
                 "{method} operation is missing a description"
             );
-            let operation_id = operation["operationId"].as_str().unwrap();
             assert!(
                 operation_ids.insert(operation_id),
                 "duplicate {operation_id}"
             );
         }
     }
-    assert_eq!(operation_count, 44);
+    assert_eq!(operation_count, 66);
 }
 
 #[test]

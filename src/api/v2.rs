@@ -21,6 +21,7 @@ use crate::shared_kernel::UserId;
 /// Composes the parallel supporting-context routes from a verified V2 pool.
 pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
     let banking = contexts.banking.clone();
+    let mail = contexts.mail.clone();
     let authenticated = Router::new()
         .merge(crate::contexts::ledger::api::routes::router(
             crate::api::v2_state::LedgerApiState {
@@ -35,6 +36,15 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
         .merge(crate::contexts::reference_data::api::routes::router(
             contexts.currencies.clone(),
         ))
+        .merge(crate::contexts::mail::api::routes::authenticated_router(
+            mail.clone(),
+        ))
+        .merge(crate::contexts::recurring::api::routes::router(
+            contexts.recurring,
+        ))
+        .merge(crate::contexts::reporting::api::routes::router(
+            contexts.reporting,
+        ))
         .merge(crate::contexts::classification::api::routes::router(
             contexts.categories,
         ))
@@ -46,7 +56,9 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
             V2AuthState { jwks },
             authenticate,
         ));
-    crate::contexts::banking::webhook_router(banking).merge(authenticated)
+    crate::contexts::mail::api::routes::callback_router(mail)
+        .merge(crate::contexts::banking::webhook_router(banking))
+        .merge(authenticated)
 }
 
 #[derive(Clone)]
@@ -123,6 +135,34 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/provider-events/{id}"),
     ("GET", "/accounting-processes/{id}"),
     ("GET", "/balance-observations/{id}"),
+    ("POST", "/me/email-connections/gmail/oauth/start"),
+    ("GET", "/oauth/gmail/callback"),
+    ("GET", "/me/email-connections"),
+    ("GET", "/me/email-connections/{connection_id}/status"),
+    ("POST", "/me/email-connections/{connection_id}/disconnect"),
+    ("POST", "/me/email-connections/{connection_id}/resync"),
+    ("GET", "/subscriptions"),
+    ("GET", "/subscriptions/{subscription_id}"),
+    ("PATCH", "/subscriptions/{subscription_id}"),
+    ("GET", "/subscriptions/{subscription_id}/charges"),
+    ("GET", "/subscriptions/forecast"),
+    ("POST", "/subscription-charges/{charge_evidence_id}/matches"),
+    (
+        "POST",
+        "/subscription-charges/{charge_evidence_id}/rejections",
+    ),
+    (
+        "POST",
+        "/subscription-charges/{charge_evidence_id}/matches/{match_id}/unmatches",
+    ),
+    ("GET", "/fx-rates"),
+    ("GET", "/reports/balance-history"),
+    ("GET", "/reports/cashflow"),
+    ("GET", "/reports/spending"),
+    ("GET", "/reports/liabilities"),
+    ("GET", "/reports/reconciliations"),
+    ("GET", "/reports/recurring"),
+    ("GET", "/reports/net-worth"),
 ];
 
 /// Authenticated tenant identity extracted from the existing auth boundary.
@@ -194,6 +234,13 @@ impl V2ApiError {
     pub(crate) fn conflict(message: &'static str) -> Self {
         Self {
             status: StatusCode::CONFLICT,
+            message,
+        }
+    }
+
+    pub(crate) fn bad_gateway(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message,
         }
     }
