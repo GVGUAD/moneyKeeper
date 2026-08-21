@@ -18,9 +18,9 @@ use super::super::{
         ControlAccountRole, ControlDirection, EnsureTypedControlAccount, ImportProviderTransaction,
         InternalAccountingResult, ProjectionVersion, ProviderTransactionState,
         ReclassifyExpenseToReceivableOrPayable, RecordCashControlSettlement,
-        RecordExpenseAndControlBalances, RecordInterestAndFee, RecordPrincipalDisbursement,
-        RecordPrincipalRepayment, ReverseProviderTransaction, ReverseTransaction,
-        SettleReceivableOrPayable, TransitionProviderTransactionState,
+        RecordExpenseAndControlBalances, RecordInterestAndFee, RecordInterestOrFeeAccrual,
+        RecordPrincipalDisbursement, RecordPrincipalRepayment, ReverseProviderTransaction,
+        ReverseTransaction, SettleReceivableOrPayable, TransitionProviderTransactionState,
         WriteOffLiabilityOrReceivable,
     },
 };
@@ -186,6 +186,35 @@ impl LedgerFacade {
             control_sign,
             command.amount,
             "Record interest or fee",
+        )
+        .await
+    }
+
+    /// Posts a closed manual accrual recipe. The caller identifies only the
+    /// typed control account and component; Ledger owns the offset account.
+    pub async fn record_interest_or_fee_accrual(
+        &self,
+        command: RecordInterestOrFeeAccrual,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        if command.component == super::super::public::PrincipalOrAccrual::Principal {
+            return Err(LedgerError::invalid_state(
+                "principal cannot use an accrual recipe",
+            ));
+        }
+        let (control_sign, role) = match command.direction {
+            ControlDirection::Receivable => (1, SystemAccountRole::UncategorizedIncome),
+            ControlDirection::Payable => (-1, SystemAccountRole::UncategorizedExpense),
+        };
+        post_with_system(
+            &self.uow,
+            self.clock.as_ref(),
+            command.metadata,
+            "record_interest_or_fee_accrual",
+            command.accrual_control_account_id,
+            control_sign,
+            role,
+            command.amount,
+            "Accrue loan interest or fee",
         )
         .await
     }

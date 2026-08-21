@@ -1,3 +1,4 @@
+mod loan_projection;
 pub(crate) mod projections;
 pub(crate) mod queries;
 use super::public::{

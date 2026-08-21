@@ -8,6 +8,7 @@ use jsonwebtoken::jwk::JwkSet;
 use crate::contexts::banking::public::{Aes256CredentialCipher, BankingFacade, MonobankClient};
 use crate::contexts::classification::public::CategoryCatalogFacade;
 use crate::contexts::ledger::public::LedgerFacade;
+use crate::contexts::loans::public::LoansFacade;
 use crate::contexts::mail::public::MailFacade;
 use crate::contexts::preferences::public::PreferencesFacade;
 use crate::contexts::recurring::public::RecurringFacade;
@@ -27,6 +28,7 @@ pub struct SupportingContexts {
     pub mail: MailFacade,
     pub recurring: RecurringFacade,
     pub reporting: ReportingFacade,
+    pub loans: LoansFacade,
 }
 
 /// Builds all Phase 1 supporting capabilities from a verified database.
@@ -54,6 +56,7 @@ pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
         mail: crate::contexts::mail::build(pool),
         recurring: crate::contexts::recurring::build(pool),
         reporting: crate::contexts::reporting::build(pool),
+        loans: crate::contexts::loans::build(pool),
     }
 }
 
@@ -175,5 +178,82 @@ pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
             recurring,
             reporting,
         ),
+    }
+}
+
+/// Explicit Phase 6 worker entry points. They are constructed only by the V2
+/// composition root and are never started by the legacy runtime.
+pub struct Phase6Workers {
+    opening: crate::integration::process_managers::loan_opening::LoanOpeningWorker,
+    accounting: crate::integration::process_managers::loan_accounting::LoanAccountingWorker,
+    reversal: crate::integration::process_managers::loan_reversal::LoanReversalWorker,
+    replacement: crate::integration::process_managers::loan_replacement::LoanReplacementWorker,
+}
+
+impl Phase6Workers {
+    pub async fn run_opening_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.opening.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed,
+            records: u32::from(report.posted),
+            replayed: 0,
+            retry_scheduled: report.retry_due,
+            fenced: false,
+        })
+    }
+    pub async fn run_accounting_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.accounting.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed,
+            records: u32::from(report.posted),
+            replayed: 0,
+            retry_scheduled: report.retry_due,
+            fenced: false,
+        })
+    }
+    pub async fn run_reversal_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.reversal.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed,
+            records: u32::from(report.posted),
+            replayed: 0,
+            retry_scheduled: report.retry_due,
+            fenced: false,
+        })
+    }
+    pub async fn run_replacement_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.replacement.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed,
+            records: u32::from(report.original_reversed),
+            replayed: 0,
+            retry_scheduled: report.retry_due,
+            fenced: false,
+        })
+    }
+}
+
+pub fn phase6_workers(pool: &VerifiedV2Pool) -> Phase6Workers {
+    let categories = crate::contexts::classification::build(pool);
+    let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
+    let loans = crate::contexts::loans::build(pool);
+    Phase6Workers {
+        opening: crate::integration::process_managers::loan_opening::LoanOpeningWorker::new(
+            loans.clone(),
+            ledger.clone(),
+        ),
+        accounting:
+            crate::integration::process_managers::loan_accounting::LoanAccountingWorker::new(
+                loans.clone(),
+                ledger.clone(),
+            ),
+        reversal: crate::integration::process_managers::loan_reversal::LoanReversalWorker::new(
+            loans.clone(),
+            ledger.clone(),
+        ),
+        replacement:
+            crate::integration::process_managers::loan_replacement::LoanReplacementWorker::new(
+                loans, ledger,
+            ),
     }
 }
