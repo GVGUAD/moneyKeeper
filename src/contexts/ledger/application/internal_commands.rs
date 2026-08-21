@@ -354,7 +354,7 @@ impl LedgerFacade {
             "cancel_cash_control_settlement",
             &journal,
             None,
-            "ledger.entry-reversed.v1",
+            "ledger.journal-reversed.v1",
         )
         .await?;
         let mut cancelled = accounting_result(

@@ -319,9 +319,9 @@ async fn schema_uses_timestamptz_and_no_foreign_context_keys() {
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(rows.last().unwrap().get::<i64, _>("version"), 4);
-    assert_eq!(
-        rows.last().unwrap().get::<String, _>("description"),
-        "banking"
-    );
+    let banking = rows
+        .iter()
+        .find(|row| row.get::<i64, _>("version") == 4)
+        .expect("migration 0004 must remain the Banking baseline");
+    assert_eq!(banking.get::<String, _>("description"), "banking");
 }

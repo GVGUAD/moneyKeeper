@@ -4,6 +4,13 @@ use serde::Serialize;
 use crate::contexts::reference_data::public::CurrencyDefinition;
 use crate::shared_kernel::CurrencyCode;
 
+#[derive(serde::Deserialize)]
+pub(crate) struct FxRateQuery {
+    pub base_currency: String,
+    pub quote_currency: String,
+    pub as_of: DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct CurrencyResponse {
     code: CurrencyCode,

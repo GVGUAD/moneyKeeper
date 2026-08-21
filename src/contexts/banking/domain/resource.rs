@@ -106,28 +106,30 @@ impl ExternalResource {
         if !self.kind.is_cash_like() || self.funding_model == FundingModel::Unknown {
             return MappingDecision::NeedsReview;
         }
-        let allowed = match (self.kind, self.funding_model, kind, nature) {
+        let allowed = matches!(
+            (self.kind, self.funding_model, kind, nature),
             (
                 ResourceKind::Card,
                 FundingModel::OwnFunds,
                 AccountKind::DebitCard,
                 AccountNature::Asset,
-            )
-            | (
+            ) | (
                 ResourceKind::CurrentAccount,
                 FundingModel::OwnFunds,
                 AccountKind::Current,
                 AccountNature::Asset,
-            )
-            | (ResourceKind::Jar, FundingModel::OwnFunds, AccountKind::Jar, AccountNature::Asset)
-            | (
+            ) | (
+                ResourceKind::Jar,
+                FundingModel::OwnFunds,
+                AccountKind::Jar,
+                AccountNature::Asset
+            ) | (
                 ResourceKind::Card,
                 FundingModel::RevolvingCredit,
                 AccountKind::CreditCard,
                 AccountNature::Liability,
-            ) => true,
-            _ => false,
-        };
+            )
+        );
         if allowed {
             MappingDecision::Allowed
         } else {

@@ -82,6 +82,9 @@ async fn every_supporting_route_requires_an_authenticated_user() {
 
     let id = Uuid::new_v4().to_string();
     for (method, route) in moneykeeper::api::v2::ROUTE_MANIFEST {
+        if *route == "/oauth/gmail/callback" {
+            continue;
+        }
         let path = route
             .replace("{code}", "USD")
             .replace("{id}", &id)
@@ -95,6 +98,9 @@ async fn every_supporting_route_requires_an_authenticated_user() {
             "{method} {path} accepted an unauthenticated request"
         );
     }
+
+    let callback = server.get("/oauth/gmail/callback").await;
+    assert_ne!(callback.status_code(), StatusCode::UNAUTHORIZED);
 
     let invalid = server
         .get("/currencies")

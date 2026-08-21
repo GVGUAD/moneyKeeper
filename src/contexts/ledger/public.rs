@@ -78,6 +78,7 @@ pub enum ProviderAccountBindingRejection {
 /// Closed result of validating one provider account binding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "outcome", content = "reason")]
+#[allow(clippy::large_enum_variant)]
 pub enum ProviderAccountBindingResult {
     Accepted(AccountView),
     Rejected(ProviderAccountBindingRejection),
@@ -331,6 +332,9 @@ pub struct ActivityCursor {
 pub struct PostingView {
     pub id: PostingId,
     pub account_id: LedgerAccountId,
+    pub account_kind: AccountKind,
+    pub account_nature: AccountNature,
+    pub account_authority: AccountAuthority,
     pub position: u16,
     pub currency: CurrencyCode,
     #[serde(with = "rust_decimal::serde::str")]
@@ -346,6 +350,7 @@ pub struct JournalView {
     pub user_id: UserId,
     pub ledger_sequence: i64,
     pub source: JournalSource,
+    pub purpose: PostingPurpose,
     pub actor: Actor,
     pub description: String,
     pub occurred_at: DateTime<Utc>,
@@ -354,6 +359,7 @@ pub struct JournalView {
     pub relations: JournalRelations,
     pub postings: Vec<PostingView>,
     pub annotation_version: Option<AnnotationVersion>,
+    pub category_id: Option<CategoryId>,
     pub correction: Option<CorrectionView>,
 }
 

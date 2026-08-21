@@ -216,7 +216,8 @@ impl AccountVersion {
 }
 
 /// Financial purpose used to enforce archive policy at the aggregate boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PostingPurpose {
     Ordinary,
     Correction,
@@ -231,6 +232,18 @@ impl PostingPurpose {
             Self::Correction => "correction",
             Self::Reversal => "reversal",
             Self::ApprovedReconciliation => "approved_reconciliation",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "ordinary" => Ok(Self::Ordinary),
+            "correction" => Ok(Self::Correction),
+            "reversal" => Ok(Self::Reversal),
+            "approved_reconciliation" => Ok(Self::ApprovedReconciliation),
+            _ => Err(LedgerError::persistence(
+                "stored posting purpose is invalid",
+            )),
         }
     }
 }

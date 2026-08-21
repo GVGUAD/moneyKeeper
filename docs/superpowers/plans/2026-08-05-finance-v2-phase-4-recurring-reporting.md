@@ -83,11 +83,11 @@ Mail and Recurring each own a durable command-receipt table in their own schema:
 
 ## Entry gate
 
-- [ ] ledger.journal-posted.v1, ledger.journal-reversed.v1, and ledger.annotation-changed.v1 are frozen.
-- [ ] Ledger exposes a tenant-safe candidate/export façade.
-- [ ] Ledger annotation is idempotent and audit aware.
-- [ ] V2 inbox consumption deduplicates by consumer plus event ID and rejects unknown major versions.
-- [ ] V2 tests use only the blank V2 migrator.
+- [x] ledger.journal-posted.v1, ledger.journal-reversed.v1, and ledger.annotation-changed.v1 are frozen.
+- [x] Ledger exposes a tenant-safe candidate/export façade.
+- [x] Ledger annotation is idempotent and audit aware.
+- [x] V2 inbox consumption deduplicates by consumer plus event ID and rejects unknown major versions.
+- [x] V2 tests use only the blank V2 migrator.
 
 Run:
 
@@ -865,22 +865,22 @@ Keep Mail, Recurring, and Reporting commits independently reviewable. Do not com
 
 ## Exit criteria
 
-- [ ] Gmail credentials/verifiers are encrypted-only; secrets/raw bodies are absent from logs.
-- [ ] Mail exposes only the frozen connect/callback/list/status/disconnect/resync paths; existing-connection commands enforce `expected_version` and resync is a durable idempotent `202` command.
-- [ ] `mail.command_receipts` and `recurring.command_receipts` are context-owned and atomic with effects/outbox; same-key/same-hash calls replay exactly and same-key/different-hash calls return `409 idempotency_conflict` under concurrency and restart.
-- [ ] Messages and attempts are immutable/append-only with durable leases/cursors.
-- [ ] Existing Google Play, Apple, and Netflix fixture behavior passes in V2.
-- [ ] Recurring uses a local Ledger projection and allocated multi-journal matches.
-- [ ] Recurring and Reporting expose exactly the frozen paths and `static/openapi.v2.json` rejects undeclared aliases.
-- [ ] Matches/rejections/unmatches survive duplicates and restart.
-- [ ] Categorization goes only through Ledger public annotation.
-- [ ] External FX observations are immutable Decimal facts; NBU sync is leased/retry-safe and never logs raw bodies.
-- [ ] Reporting projects rates locally, uses historical as-of semantics, and exposes missing conversion instead of silently using a current rate.
-- [ ] Reporting covers balance, cashflow, spending, liabilities, reconciliation, recurring, and net worth.
-- [ ] Reporting rebuild is exact and has no financial write capability.
-- [ ] No Mail, Recurring, or Reporting SQL names a foreign context table.
-- [ ] Parallel OpenAPI validates; default runtime/API/DATABASE_URL remain legacy.
-- [ ] Blank-V2 migration, boundaries, format, clippy, and all Phase 4 tests pass.
+- [x] Gmail credentials/verifiers are encrypted-only; secrets/raw bodies are absent from logs.
+- [x] Mail exposes only the frozen connect/callback/list/status/disconnect/resync paths; existing-connection commands enforce `expected_version` and resync is a durable idempotent `202` command.
+- [x] `mail.command_receipts` and `recurring.command_receipts` are context-owned and atomic with effects/outbox; same-key/same-hash calls replay exactly and same-key/different-hash calls return `409 idempotency_conflict` under concurrency and restart.
+- [x] Messages and attempts are immutable/append-only with durable leases/cursors.
+- [x] Existing Google Play, Apple, and Netflix fixture behavior passes in V2.
+- [x] Recurring uses a local Ledger projection and allocated multi-journal matches.
+- [x] Recurring and Reporting expose exactly the frozen paths and `static/openapi.v2.json` rejects undeclared aliases.
+- [x] Matches/rejections/unmatches survive duplicates and restart.
+- [x] Categorization goes only through Ledger public annotation.
+- [x] External FX observations are immutable Decimal facts; NBU sync is leased/retry-safe and never logs raw bodies.
+- [x] Reporting projects rates locally, uses historical as-of semantics, and exposes missing conversion instead of silently using a current rate.
+- [x] Reporting covers balance, cashflow, spending, liabilities, reconciliation, recurring, and net worth.
+- [x] Reporting rebuild is exact and has no financial write capability.
+- [x] No Mail, Recurring, or Reporting SQL names a foreign context table.
+- [x] Parallel OpenAPI validates; default runtime/API/DATABASE_URL remain legacy.
+- [x] Blank-V2 migration, boundaries, format, clippy, and all Phase 4 tests pass.
 
 ## Out of scope
 

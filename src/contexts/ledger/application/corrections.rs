@@ -156,7 +156,7 @@ async fn correct_balance<U: LedgerUnitOfWork>(
             "correct_balance",
             &journal,
             None,
-            "ledger.entry-posted.v1",
+            "ledger.journal-posted.v1",
         )
         .await?;
         tx.insert_correction_detail(CorrectionDetail {
@@ -275,7 +275,7 @@ async fn reverse_transaction<U: LedgerUnitOfWork>(
             "reverse_transaction",
             &journal,
             None,
-            "ledger.entry-reversed.v1",
+            "ledger.journal-reversed.v1",
         )
         .await?;
         let nature_by_id: BTreeMap<_, _> = accounts
@@ -474,7 +474,7 @@ async fn replace_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
             "replace_transaction_reversal",
             &reversal,
             None,
-            "ledger.entry-reversed.v1",
+            "ledger.journal-reversed.v1",
         )
         .await?;
         commit_journal(
@@ -482,7 +482,7 @@ async fn replace_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
             "replace_transaction",
             &replacement,
             Some(&annotation),
-            "ledger.entry-replaced.v1",
+            "ledger.journal-replaced.v1",
         )
         .await?;
         let nature_by_id: BTreeMap<_, _> = accounts

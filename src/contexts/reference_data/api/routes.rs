@@ -9,5 +9,6 @@ pub(crate) fn router(catalog: CurrencyCatalogFacade) -> Router {
     Router::new()
         .route("/currencies", get(handlers::list))
         .route("/currencies/{code}", get(handlers::get))
+        .route("/fx-rates", get(handlers::fx_rate))
         .with_state(catalog)
 }
