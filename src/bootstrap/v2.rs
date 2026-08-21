@@ -13,6 +13,7 @@ use crate::contexts::preferences::public::PreferencesFacade;
 use crate::contexts::recurring::public::RecurringFacade;
 use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 use crate::contexts::reporting::public::ReportingFacade;
+use crate::contexts::sharing::public::SharingFacade;
 use crate::infrastructure::v2_db::VerifiedV2Pool;
 
 /// Public supporting-context capabilities assembled only after V2 lineage
@@ -27,6 +28,7 @@ pub struct SupportingContexts {
     pub mail: MailFacade,
     pub recurring: RecurringFacade,
     pub reporting: ReportingFacade,
+    pub sharing: SharingFacade,
 }
 
 /// Builds all Phase 1 supporting capabilities from a verified database.
@@ -54,6 +56,7 @@ pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
         mail: crate::contexts::mail::build(pool),
         recurring: crate::contexts::recurring::build(pool),
         reporting: crate::contexts::reporting::build(pool),
+        sharing: crate::contexts::sharing::build(pool),
     }
 }
 
@@ -175,5 +178,24 @@ pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
             recurring,
             reporting,
         ),
+    }
+}
+
+/// Phase 5 cross-context coordinators, built only for the isolated V2 lineage.
+pub struct Phase5Coordinators {
+    pub accounting:
+        crate::integration::process_managers::sharing_accounting::SharingAccountingCoordinator,
+    pub settlement:
+        crate::integration::process_managers::sharing_settlement::SharingSettlementCoordinator,
+    pub reporting: ReportingFacade,
+}
+
+pub fn phase5_coordinators(pool: &VerifiedV2Pool) -> Phase5Coordinators {
+    let categories = crate::contexts::classification::build(pool);
+    let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
+    Phase5Coordinators {
+        accounting: crate::integration::process_managers::sharing_accounting::SharingAccountingCoordinator::new(ledger.clone()),
+        settlement: crate::integration::process_managers::sharing_settlement::SharingSettlementCoordinator::new(ledger),
+        reporting: crate::contexts::reporting::build(pool),
     }
 }

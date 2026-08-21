@@ -12,6 +12,13 @@
 
 **Spec:** docs/superpowers/specs/2026-08-05-finance-ddd-v2-design.md
 
+## Execution status — 2026-08-21
+
+- [x] Phase 5 implementation and exit verification completed in the working tree.
+- [x] Focused domain, persistence, API/OpenAPI, accounting, settlement, Reporting, and integrated workflow tests pass.
+- [x] Full format, clippy, migration-lineage, boundary, and all-target test gates pass.
+- [x] Changes committed as one cohesive Phase 5 implementation at the repository owner's request.
+
 ---
 
 ## Non-negotiable decisions
@@ -48,11 +55,11 @@ Tests use concrete journals to prove these equations for `C > S`, `C < S`, `C = 
 
 ## Entry gate
 
-- [ ] Ledger contact-control-account provisioning contract is frozen.
-- [ ] Ledger Sharing payment/reclassification/settlement/reversal contracts are frozen.
-- [ ] Ledger query façade returns tenant-safe journal summaries and allocatable amounts.
-- [ ] Process manager exposes durable pending/posted/failed state and crash-safe retries.
-- [ ] Reporting accepts versioned Sharing events without table joins.
+- [x] Ledger contact-control-account provisioning contract is frozen.
+- [x] Ledger Sharing payment/reclassification/settlement/reversal contracts are frozen.
+- [x] Ledger query façade returns tenant-safe journal summaries and allocatable amounts.
+- [x] Process manager exposes durable pending/posted/failed state and crash-safe retries.
+- [x] Reporting accepts versioned Sharing events without table joins.
 
 Run:
 
@@ -122,7 +129,7 @@ Expected: PASS.
 - Create: src/infrastructure/migrations_v2/0009_sharing.sql
 - Create: tests/sharing_persistence.rs
 
-- [ ] **Step 1 — RED: write fresh-database schema tests**
+- [x] **Step 1 — RED: write fresh-database schema tests**
 
 Cover:
 
@@ -145,11 +152,11 @@ SQLX_OFFLINE=true cargo test --test sharing_persistence schema_ -- --nocapture
 
 Expected: FAIL because migration 0009 does not exist.
 
-- [ ] **Step 3 — GREEN: add migration**
+- [x] **Step 3 — GREEN: add migration**
 
 Create schema sharing using bounded NUMERIC, TIMESTAMPTZ, tenant-safe composite constraints, immutable-fact triggers, and deterministic ordering indexes. Aggregate checks that require sums across rows stay in locked application/UoW logic plus deferred database validation where practical.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 SQLX_OFFLINE=true cargo test --test sharing_persistence schema_ -- --nocapture
@@ -157,7 +164,7 @@ SQLX_OFFLINE=true cargo test --test sharing_persistence schema_ -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: inspect foreign ownership**
+- [x] **Step 5 — REFACTOR: inspect foreign ownership**
 
 ~~~bash
 rg -n "REFERENCES (ledger|reporting|banking)\\." src/infrastructure/migrations_v2/0009_sharing.sql
@@ -183,7 +190,7 @@ git commit -m "feat(sharing): add v2 sharing schema"
 - Create: tests/sharing_contacts.rs
 - Modify: src/contexts/mod.rs
 
-- [ ] **Step 1 — RED: write Contact tests**
+- [x] **Step 1 — RED: write Contact tests**
 
 Prove normalized non-empty display name, optional note, immutable owner, archive/restore, stale version conflict, historical bill visibility after archive, and absence of linked-user/invitation semantics.
 
@@ -195,11 +202,11 @@ cargo test --test sharing_contacts domain_
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement Contact**
+- [x] **Step 3 — GREEN: implement Contact**
 
 Use `ContactId` and `UserId`. Archiving prevents selection for a new bill but never rewrites or hides prior bill facts.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_contacts domain_
@@ -207,7 +214,7 @@ cargo test --test sharing_contacts domain_
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: isolate ContactName validation**
+- [x] **Step 5 — REFACTOR: isolate ContactName validation**
 
 Name normalization is a value-object rule, not a persistence or HTTP concern.
 
@@ -228,7 +235,7 @@ git commit -m "feat(sharing): add external Contact aggregate"
 - Modify: src/contexts/sharing/domain/mod.rs
 - Create: tests/sharing_allocations.rs
 
-- [ ] **Step 1 — RED: write arithmetic/property tests**
+- [x] **Step 1 — RED: write arithmetic/property tests**
 
 Cover:
 
@@ -254,11 +261,11 @@ cargo test --test sharing_allocations -- --nocapture
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement pure allocation and obligation engines**
+- [x] **Step 3 — GREEN: implement pure allocation and obligation engines**
 
 Convert Money to integer minor units for equal splitting, then persist resolved Money shares. Do not store only a rule that would be recalculated later.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_allocations -- --nocapture
@@ -266,7 +273,7 @@ cargo test --test sharing_allocations -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: prove deterministic ordering**
+- [x] **Step 5 — REFACTOR: prove deterministic ordering**
 
 Ensure no HashMap iteration order affects shares or obligations. Keep I/O out of domain arithmetic.
 
@@ -287,7 +294,7 @@ git commit -m "feat(sharing): add deterministic multiple-payer allocation"
 - Modify: src/contexts/sharing/domain/mod.rs
 - Modify: tests/sharing_allocations.rs
 
-- [ ] **Step 1 — RED: write aggregate tests**
+- [x] **Step 1 — RED: write aggregate tests**
 
 Cover:
 
@@ -313,11 +320,11 @@ cargo test --test sharing_allocations -- --nocapture
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement aggregates**
+- [x] **Step 3 — GREEN: implement aggregates**
 
 Separate worker lease state from aggregate accounting status. Persist a revision's resolved contributions/shares/obligations as immutable truth.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_allocations -- --nocapture
@@ -325,7 +332,7 @@ cargo test --test sharing_allocations -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: centralize locks/version policy**
+- [x] **Step 5 — REFACTOR: centralize locks/version policy**
 
 Bill revision, settlement creation, and cancellation commands carry the current BillSplit `expected_version`; settlement reversal carries the current Settlement `expected_version`. The UoW later locks the bill and affected settlement/obligation rows in stable order.
 
@@ -348,7 +355,7 @@ git commit -m "feat(sharing): model bill revisions and settlements"
 - Modify: tests/sharing_contacts.rs
 - Modify: tests/sharing_persistence.rs
 
-- [ ] **Step 1 — RED: write repository/UoW/concurrency tests**
+- [x] **Step 1 — RED: write repository/UoW/concurrency tests**
 
 Prove Contact/BillSplit/Settlement round trips, append-only revisions, aggregate plus projection/idempotency/audit/outbox atomicity, rollback on injected outbox failure, optimistic conflict, same key plus the same canonical request hash returning the original durable result, same key plus a different hash returning a typed conflict with no state/outbox change, simultaneous settlement over-consumption allowing one winner, and cross-user rejection. Lease reclaim is covered through the shared integration runtime in the accounting workflow tests.
 
@@ -360,11 +367,11 @@ cargo test --test sharing_persistence -- --nocapture
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement aggregate repositories and Sharing UoW**
+- [x] **Step 3 — GREEN: implement aggregate repositories and Sharing UoW**
 
 One repository per aggregate; no table-shaped status repository. Contact-balance/obligation queries use read stores. The Sharing UoW inserts/locks `sharing.command_receipts` and commits the request hash and durable result atomically with aggregate, projection, audit, and outbox changes.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_persistence -- --nocapture
@@ -372,7 +379,7 @@ cargo test --test sharing_persistence -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: keep cross-context IDs opaque**
+- [x] **Step 5 — REFACTOR: keep cross-context IDs opaque**
 
 Repository code must not import Ledger domain/application/infrastructure types or SQL.
 
@@ -395,7 +402,7 @@ git commit -m "feat(sharing): persist aggregates atomically"
 - Modify: src/bootstrap/v2.rs
 - Modify: static/openapi.v2.json
 
-- [ ] **Step 1 — RED: write API tests**
+- [x] **Step 1 — RED: write API tests**
 
 Cover future unversioned Contact create/list/edit/archive and Bill create/get/list/revise/cancel routes; `Idempotency-Key`; `expected_version`; same-key/same-canonical-hash replay returning the stored status/body; same-key/different-hash returning `409 Conflict` without another outbox/process effect; many contributions; exact/equal share request and resolved response; several Ledger references on one current-user contribution; tenant isolation; decimal-string Money; and `202 Accepted` plus process state for accounting.
 
@@ -426,11 +433,11 @@ cargo test --test sharing_api
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement isolated V2 router/OpenAPI**
+- [x] **Step 3 — GREEN: implement isolated V2 router/OpenAPI**
 
 Compose the routes only in `src/api/v2.rs`; do not mount in the default runtime. Commands save aggregate intent plus process/outbox and return observable PendingAccounting.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_api
@@ -438,7 +445,7 @@ cargo test --test sharing_api
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: edge translation only**
+- [x] **Step 5 — REFACTOR: edge translation only**
 
 HTTP DTOs do not enter domain or persistence ports.
 
@@ -461,7 +468,7 @@ git commit -m "feat(api): add parallel contacts-first sharing API"
 - Modify: src/contexts/sharing/application/ports.rs
 - Modify: src/contexts/sharing/public.rs
 
-- [ ] **Step 1 — RED: write process-manager tests**
+- [x] **Step 1 — RED: write process-manager tests**
 
 Cover:
 
@@ -492,11 +499,11 @@ cargo test --test sharing_accounting
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement durable coordinator**
+- [x] **Step 3 — GREEN: implement durable coordinator**
 
 Use derived keys `sharing-bill-accounting:{bill_id}:{revision}` and `sharing-bill-accounting-reversal:{bill_id}:{prior_revision}`. For a revision, durably reverse the prior revision's accounting before posting the replacement. Never hold a Sharing transaction while calling Ledger. Persist every transition, returned journal/reversal ID, no-financial-effect result, and correlation. Confirm cancellation and append `sharing.bill-cancelled.v1` through the same Sharing UoW only after its accounting reversal is durable or a terminal no-effect receipt is proven. Never let a pending worker post after the bill is marked Cancelled.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_accounting
@@ -504,7 +511,7 @@ cargo test --test sharing_accounting
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: narrow Ledger anti-corruption port**
+- [x] **Step 5 — REFACTOR: narrow Ledger anti-corruption port**
 
 Only contexts::ledger::public is adapted. Sharing's process manager builds typed Sharing intent, not generic postings.
 
@@ -529,7 +536,7 @@ git commit -m "feat(sharing): durably account for shared bills"
 - Modify: src/contexts/sharing/public.rs
 - Modify: static/openapi.v2.json
 
-- [ ] **Step 1 — RED: write settlement workflow tests**
+- [x] **Step 1 — RED: write settlement workflow tests**
 
 Cover manual current-user payment/receipt, linking an existing imported journal, typed reclassification instead of edit, Receivable/Payable reduction without new income/expense, contact-to-contact external settlement, partial amounts, rejection when allocations across contributions/settlements exceed the eligible amount of one Ledger journal, over-settlement rejection under lock, missing/stale BillSplit `expected_version` for settlement creation, missing/stale Settlement `expected_version` for reversal, reversal rejected while settlement accounting is pending/retrying, failed-with-proven-no-effect settlement cancellation without a fake Ledger reversal, crash after Ledger settlement/reversal, once-only reversal, bill revision blocked until all active settlements reverse, and API process status.
 
@@ -543,11 +550,11 @@ cargo test --test sharing_settlements -- --nocapture
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement settlement coordinator**
+- [x] **Step 3 — GREEN: implement settlement coordinator**
 
 Use stable keys sharing-settlement:{settlement_id} and sharing-settlement-reversal:{settlement_id}. Aggregate status and process lease state remain separate.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test sharing_settlements -- --nocapture
@@ -555,7 +562,7 @@ cargo test --test sharing_settlements -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: prove no income/spending inflation**
+- [x] **Step 5 — REFACTOR: prove no income/spending inflation**
 
 Assert Ledger classification/reclassification events mark repayment as settlement/control movement, not new income or duplicate expense.
 
@@ -578,7 +585,7 @@ git commit -m "feat(sharing): add partial settlement and reversal"
 - Modify: src/contexts/reporting/application/projectors.rs
 - Modify: src/contexts/reporting/infrastructure/mod.rs
 
-- [ ] **Step 1 — RED: write projection/rebuild tests**
+- [x] **Step 1 — RED: write projection/rebuild tests**
 
 Cover positive receivables/negative payables, multiple creditor/debtor obligations, contact-to-contact exclusion from current-user net worth, partial/reversed settlement, revision compensation/replacement, current-user contribution counted once, original Ledger expense counted once, settlement excluded from income/spending, archived-contact display retention, `sharing.bill-cancelled.v1` removing the active bill position while retaining historical cancellation metadata, duplicate cancellation/event delivery producing no second change, and byte-equivalent rebuild/replay including cancellation.
 
@@ -590,11 +597,11 @@ cargo test --test reporting_sharing
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: implement Sharing event consumer**
+- [x] **Step 3 — GREEN: implement Sharing event consumer**
 
 Consume versioned Sharing events, including `sharing.bill-cancelled.v1`, through Reporting public contract. Do not query sharing schema. Cancellation deterministically closes the active bill-position projection; duplicate delivery is inbox-idempotent and rebuild derives the same closed projection from the event stream.
 
-- [ ] **Step 4: run focused tests**
+- [x] **Step 4: run focused tests**
 
 ~~~bash
 cargo test --test reporting_sharing
@@ -602,7 +609,7 @@ cargo test --test reporting_sharing
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: no-double-count invariant**
+- [x] **Step 5 — REFACTOR: no-double-count invariant**
 
 Add one report-level assertion reconciling bill position, Ledger cashflow, and net-worth effects after settlement.
 
@@ -624,7 +631,7 @@ git commit -m "feat(reporting): project shared bill positions"
 - Modify: src/integration/process_managers/mod.rs
 - Modify: static/openapi.v2.json
 
-- [ ] **Step 1 — RED: write full multiple-payer workflow**
+- [x] **Step 1 — RED: write full multiple-payer workflow**
 
 Scenario:
 
@@ -652,11 +659,11 @@ cargo test --test phase5_workflow -- --nocapture
 
 Expected: FAIL.
 
-- [ ] **Step 3 — GREEN: wire Sharing in V2 bootstrap**
+- [x] **Step 3 — GREEN: wire Sharing in V2 bootstrap**
 
 Register isolated router, event consumers, and bounded process managers. Do not touch default main/router/DATABASE_URL.
 
-- [ ] **Step 4: run Phase 5 suite**
+- [x] **Step 4: run Phase 5 suite**
 
 ~~~bash
 cargo test --test sharing_contacts
@@ -671,7 +678,7 @@ cargo test --test phase5_workflow
 
 Expected: PASS.
 
-- [ ] **Step 5 — REFACTOR: architecture scan**
+- [x] **Step 5 — REFACTOR: architecture scan**
 
 ~~~bash
 cargo test --test context_boundaries
@@ -718,22 +725,22 @@ Keep pure allocation arithmetic separate from Ledger orchestration and HTTP mapp
 
 ## Exit criteria
 
-- [ ] Contact is an external user-owned person, never application identity.
-- [ ] Multiple contributions are first-class; exact/equal shares persist resolved minor-unit truth.
-- [ ] Contribution/share totals equal total and obligations conserve all net positions.
-- [ ] Bill currency is immutable; every contribution, share, obligation, and settlement uses it.
-- [ ] Current-user contributions support manual payment or several existing outgoing journals.
-- [ ] Contact-to-contact obligations remain Sharing facts.
-- [ ] Current-user obligations use hidden Ledger contact receivable/payable accounts.
-- [ ] Accounting and settlement states survive crash/duplicate delivery.
-- [ ] Sharing command receipts enforce same-key/same-hash durable replay and same-key/different-hash conflict with no duplicate effect.
-- [ ] Partial settlement rejects overpayment under aggregate lock.
-- [ ] Settlement creation and reversal reject missing/stale `expected_version`.
-- [ ] Settlements reverse before bill revision/cancellation.
-- [ ] Cancellation emits one versioned event; Reporting handles duplicate delivery and exact rebuild without retaining an active bill position.
-- [ ] Reporting does not double count payment, share, settlement, income, or expense.
-- [ ] Parallel V2 OpenAPI validates; default runtime/API/DATABASE_URL remain legacy.
-- [ ] Blank migration, domain, DB, API, workflow, format, clippy, and boundary tests pass.
+- [x] Contact is an external user-owned person, never application identity.
+- [x] Multiple contributions are first-class; exact/equal shares persist resolved minor-unit truth.
+- [x] Contribution/share totals equal total and obligations conserve all net positions.
+- [x] Bill currency is immutable; every contribution, share, obligation, and settlement uses it.
+- [x] Current-user contributions support manual payment or several existing outgoing journals.
+- [x] Contact-to-contact obligations remain Sharing facts.
+- [x] Current-user obligations use hidden Ledger contact receivable/payable accounts.
+- [x] Accounting and settlement states survive crash/duplicate delivery.
+- [x] Sharing command receipts enforce same-key/same-hash durable replay and same-key/different-hash conflict with no duplicate effect.
+- [x] Partial settlement rejects overpayment under aggregate lock.
+- [x] Settlement creation and reversal reject missing/stale `expected_version`.
+- [x] Settlements reverse before bill revision/cancellation.
+- [x] Cancellation emits one versioned event; Reporting handles duplicate delivery and exact rebuild without retaining an active bill position.
+- [x] Reporting does not double count payment, share, settlement, income, or expense.
+- [x] Parallel V2 OpenAPI validates; default runtime/API/DATABASE_URL remain legacy.
+- [x] Blank migration, domain, DB, API, workflow, format, clippy, and boundary tests pass.
 
 ## Out of scope
 
