@@ -1,11 +1,9 @@
-//! Isolated Finance V2 router composition.
-//!
-//! It is deliberately not merged into the legacy router during Phase 1.
+//! Finance V2 router composition promoted as the default unversioned API.
 
 use std::sync::Arc;
 
 use axum::extract::{FromRequest, FromRequestParts, Request, State};
-use axum::http::{StatusCode, header::AUTHORIZATION, request::Parts};
+use axum::http::{Method, StatusCode, header::AUTHORIZATION, request::Parts};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
@@ -18,7 +16,7 @@ use crate::api::middleware::AuthUser;
 use crate::bootstrap::v2::SupportingContexts;
 use crate::shared_kernel::UserId;
 
-/// Composes the parallel supporting-context routes from a verified V2 pool.
+/// Composes all supporting and core context routes.
 pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
     let banking = contexts.banking.clone();
     let mail = contexts.mail.clone();
@@ -31,7 +29,7 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
             contexts.currencies.clone(),
         ))
         .merge(crate::contexts::ledger::api::routes::router(
-            crate::api::v2_state::LedgerApiState {
+            crate::api::state::LedgerApiState {
                 ledger: contexts.ledger,
                 currencies: contexts.currencies.clone(),
                 banking: Some(banking.clone()),
@@ -70,6 +68,29 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
     crate::contexts::mail::api::routes::callback_router(mail)
         .merge(crate::contexts::banking::webhook_router(banking))
         .merge(authenticated)
+        .layer(middleware::from_fn(reject_removed_legacy_mutations))
+}
+
+async fn reject_removed_legacy_mutations(request: Request, next: Next) -> Response {
+    let path = request.uri().path().trim_matches('/');
+    let segments: Vec<&str> = path.split('/').collect();
+    let removed_hard_delete = request.method() == Method::DELETE
+        && segments.len() == 2
+        && matches!(segments.first().copied(), Some("accounts" | "transactions"));
+    let removed_balance_setter = request.method() == Method::PATCH
+        && segments.len() == 3
+        && segments.first().copied() == Some("accounts")
+        && segments.last().copied() == Some("balance");
+    let missing_webhook_credential = path == "webhooks/monobank";
+    let versioned_alias = path == "v2" || path.starts_with("v2/");
+    if removed_hard_delete
+        || removed_balance_setter
+        || missing_webhook_credential
+        || versioned_alias
+    {
+        return (StatusCode::NOT_FOUND, Json(json!({"error": "not_found"}))).into_response();
+    }
+    next.run(request).await
 }
 
 #[derive(Clone)]
@@ -94,7 +115,7 @@ async fn authenticate(
     Ok(next.run(request).await)
 }
 
-/// The exact isolated Finance V2 method/path manifest used to validate OpenAPI parity.
+/// The exact Finance V2 method/path manifest used to validate OpenAPI parity.
 pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("POST", "/portfolio-accounts"),
     ("GET", "/portfolio-accounts"),
@@ -238,7 +259,7 @@ where
     }
 }
 
-/// JSON extractor that keeps every V2 request failure on the stable JSON error
+/// JSON extractor that keeps every request failure on the stable JSON error
 /// contract instead of leaking Axum's plain-text rejection responses.
 pub(crate) struct V2Json<T>(pub(crate) T);
 
@@ -257,7 +278,7 @@ where
     }
 }
 
-/// Stable HTTP error translation for the isolated Finance V2 API.
+/// Stable HTTP error translation for the Finance V2 API.
 #[derive(Debug)]
 pub(crate) struct V2ApiError {
     status: StatusCode,

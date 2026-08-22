@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 #[test]
 fn isolated_router_and_openapi_publish_exact_portfolio_paths() {
-    let manifest: BTreeSet<_> = moneykeeper::api::v2::ROUTE_MANIFEST
+    let manifest: BTreeSet<_> = moneykeeper::api::routes::ROUTE_MANIFEST
         .iter()
         .copied()
         .collect();
@@ -18,7 +18,7 @@ fn isolated_router_and_openapi_publish_exact_portfolio_paths() {
         assert!(manifest.contains(&route));
     }
     let document: serde_json::Value =
-        serde_json::from_str(include_str!("../static/openapi.v2.json")).unwrap();
+        serde_json::from_str(include_str!("../static/openapi.json")).unwrap();
     assert!(
         document["paths"]
             .as_object()
@@ -30,7 +30,7 @@ fn isolated_router_and_openapi_publish_exact_portfolio_paths() {
 #[test]
 fn every_portfolio_mutation_documents_idempotency() {
     let d: serde_json::Value =
-        serde_json::from_str(include_str!("../static/openapi.v2.json")).unwrap();
+        serde_json::from_str(include_str!("../static/openapi.json")).unwrap();
     for (path, method) in [
         ("/portfolio-accounts", "post"),
         ("/portfolio-accounts/{id}", "patch"),

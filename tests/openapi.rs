@@ -2,14 +2,14 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-const OPENAPI: &str = include_str!("../static/openapi.v2.json");
+const OPENAPI: &str = include_str!("../static/openapi.json");
 
 fn contract() -> Value {
     serde_json::from_str(OPENAPI).expect("Finance V2 OpenAPI must be valid JSON")
 }
 
 #[test]
-fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
+fn openapi_is_unversioned_and_has_exact_finance_routes() {
     let document = contract();
     assert_eq!(document["openapi"], "3.1.0");
     let actual: BTreeSet<&str> = document["paths"]
@@ -162,7 +162,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
 }
 
 #[test]
-fn openapi_operations_match_the_isolated_router_manifest() {
+fn openapi_operations_match_the_default_router_manifest() {
     let document = contract();
     let actual: BTreeSet<(String, String)> = document["paths"]
         .as_object()
@@ -178,7 +178,7 @@ fn openapi_operations_match_the_isolated_router_manifest() {
                 .map(move |(method, _)| (method.to_ascii_uppercase(), path.clone()))
         })
         .collect();
-    let expected: BTreeSet<(String, String)> = moneykeeper::api::v2::ROUTE_MANIFEST
+    let expected: BTreeSet<(String, String)> = moneykeeper::api::routes::ROUTE_MANIFEST
         .iter()
         .map(|(method, path)| ((*method).to_owned(), (*path).to_owned()))
         .collect();

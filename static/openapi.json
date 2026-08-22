@@ -1,2230 +1,649 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "MoneyKeeper API",
-    "description": "",
-    "license": {
-      "name": ""
-    },
-    "version": "0.1.0"
+    "title": "Moneykeeper Finance V2",
+    "version": "0.1.0-foundation",
+    "description": "Finance V2 context-first contract mounted by the default runtime at unversioned paths."
   },
   "paths": {
-    "/accounts": {
+    "/portfolio-accounts": {
+      "get": {"operationId":"listPortfolioAccounts","summary":"List portfolio accounts","description":"Returns active and archived manual portfolio accounts for the authenticated owner.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio accounts"},"401":{"$ref":"#/components/responses/Unauthorized"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "post": {"operationId":"openPortfolioAccount","summary":"Open a portfolio account","description":"Creates a manual portfolio account at version one using a required idempotency key.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"201":{"description":"Portfolio account opened"},"400":{"$ref":"#/components/responses/BadRequest"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/portfolio-accounts/{id}": {
+      "get": {"operationId":"getPortfolioAccount","summary":"Get a portfolio account","description":"Returns one tenant-owned portfolio account and its optimistic version.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio account"},"404":{"$ref":"#/components/responses/NotFound"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "patch": {"operationId":"renamePortfolioAccount","summary":"Rename a portfolio account","description":"Renames a portfolio account under an expected-version fence and idempotency key.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Portfolio account renamed"},"400":{"$ref":"#/components/responses/BadRequest"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/portfolio-accounts/{id}/archive": {"post":{"operationId":"archivePortfolioAccount","summary":"Archive a portfolio account","description":"Archives an active portfolio account while preserving immutable activity and reversals.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Portfolio account archived"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/portfolio-accounts/{id}/restore": {"post":{"operationId":"restorePortfolioAccount","summary":"Restore a portfolio account","description":"Restores an archived portfolio account under an expected-version fence.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Portfolio account restored"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/portfolio-accounts/{id}/activity": {"get":{"operationId":"listPortfolioActivity","summary":"List portfolio activity","description":"Returns immutable transactions in deterministic effective-time and sequence order.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio activity"},"404":{"$ref":"#/components/responses/NotFound"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/instruments": {"get":{"operationId":"listPortfolioInstruments","summary":"List portfolio instruments","description":"Returns manual tenant-owned security definitions without consulting an external registry.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio instruments"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/instruments/{id}": {"get":{"operationId":"getPortfolioInstrument","summary":"Get a portfolio instrument","description":"Returns one manual instrument with explicit coupon and maturity terms.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio instrument"},"404":{"$ref":"#/components/responses/NotFound"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/instruments/ovdp": {"post":{"operationId":"createManualOvdpInstrument","summary":"Create a manual ОВДП instrument","description":"Records an ОВДП instrument with absolute face value, currency, dates, and explicit coupon knowledge.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"201":{"description":"Instrument created"},"400":{"$ref":"#/components/responses/BadRequest"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/portfolio-transactions": {"post":{"operationId":"recordPortfolioTransaction","summary":"Record immutable portfolio activity","description":"Records an opening, buy, sell, coupon, redemption, or correction with position-version fencing.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"201":{"description":"Portfolio transaction posted"},"400":{"$ref":"#/components/responses/BadRequest"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/portfolio-transactions/{id}/reversals": {"post":{"operationId":"reversePortfolioTransaction","summary":"Reverse portfolio activity","description":"Appends an exact compensating fact and coordinates cancellation or reversal of optional cash settlement.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"201":{"description":"Portfolio reversal posted"},"400":{"$ref":"#/components/responses/BadRequest"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/portfolio-positions": {"get":{"operationId":"listPortfolioPositions","summary":"List portfolio positions","description":"Returns exact quantity, known and unknown cost, realized result, and latest valuation state.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio positions"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/valuations": {
+      "get":{"operationId":"listPortfolioValuations","summary":"List portfolio valuations","description":"Returns append-only absolute price and accrued-interest observations in deterministic order.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Portfolio valuations"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "post":{"operationId":"recordPortfolioValuation","summary":"Record a portfolio valuation","description":"Appends an absolute per-instrument valuation and updates only rebuildable market-value projections.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"201":{"description":"Valuation recorded"},"400":{"$ref":"#/components/responses/BadRequest"},"409":{"$ref":"#/components/responses/Conflict"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/currencies": {
       "get": {
-        "tags": [
-          "accounts"
-        ],
-        "operationId": "list_accounts",
+        "operationId": "listCurrencies",
+        "summary": "List enabled currencies",
+        "description": "Returns the enabled currencies recognized by Reference Data, ordered by currency code. This is a side-effect-free catalog query; disabled currencies are not included.",
+        "security": [{"bearerAuth": []}],
         "responses": {
           "200": {
-            "description": "list of accounts",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/AccountResponse"
-                  }
-                }
-              }
-            }
+            "description": "Enabled currencies",
+            "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Currency"}}}}
           },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "accounts"
-        ],
-        "operationId": "create_account",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAccountRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "account created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid input"
-          },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
       }
     },
-    "/accounts/{id}": {
+    "/currencies/{code}": {
       "get": {
-        "tags": [
-          "accounts"
-        ],
-        "operationId": "get_account",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Account ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
+        "operationId": "getCurrency",
+        "summary": "Get an enabled currency",
+        "description": "Returns one enabled currency by its canonical three-letter uppercase code. Missing and disabled currencies are both reported as not found, and the query does not change catalog state.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "code", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[A-Z]{3}$"}}],
         "responses": {
-          "200": {
-            "description": "account found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "account not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "accounts"
-        ],
-        "operationId": "update_account",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Account ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateAccountRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "account updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid input"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "account not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "accounts"
-        ],
-        "operationId": "delete_account",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Account ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "account deleted"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "account not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/accounts/{id}/transactions": {
-      "get": {
-        "tags": [
-          "transactions"
-        ],
-        "operationId": "list_transactions",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Account ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "kind",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "category_id",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "default": 50
-            }
-          },
-          {
-            "name": "from",
-            "in": "query",
-            "required": false,
-            "description": "Inclusive lower bound on transacted_at, as a Unix timestamp in seconds (UTC).",
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "to",
-            "in": "query",
-            "required": false,
-            "description": "Inclusive upper bound on transacted_at, as a Unix timestamp in seconds (UTC). Must be >= from.",
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "default": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "list of transactions",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TransactionListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "account not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "transactions"
-        ],
-        "operationId": "create_transaction",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Account ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateTransactionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "transaction created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TransactionResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid input"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "account not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
+          "200": {"description": "Enabled currency", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Currency"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
       }
     },
     "/categories": {
-      "get": {
-        "tags": [
-          "categories"
-        ],
-        "operationId": "list_categories",
-        "responses": {
-          "200": {
-            "description": "list of categories",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/CategoryResponse"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
       "post": {
-        "tags": [
-          "categories"
-        ],
-        "operationId": "create_category",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateCategoryRequest"
-              }
-            }
-          },
-          "required": true
-        },
+        "operationId": "createCategory",
+        "summary": "Create a category",
+        "description": "Creates an active category for the authenticated user at version 1. The name is trimmed, must contain 1 to 100 characters, and must be unique among that user's active categories under case-insensitive comparison.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateCategory"}}}},
         "responses": {
-          "201": {
-            "description": "category created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CategoryResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid input"
-          },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
+          "201": {"description": "Created category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      },
+      "get": {
+        "operationId": "listCategories",
+        "summary": "List the user's categories",
+        "description": "Returns all active and archived categories owned by the authenticated user. Archived categories remain visible so historical classifications are never hidden or deleted.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "All active and archived user categories", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Category"}}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
       }
     },
     "/categories/{id}": {
-      "put": {
-        "tags": [
-          "categories"
-        ],
-        "operationId": "update_category",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Category ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateCategoryRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "category updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CategoryResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid input"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "category not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "categories"
-        ],
-        "operationId": "delete_category",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Category ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "category deleted"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "category not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/me/email-connections/gmail/oauth/start": {
-      "post": {
-        "tags": ["email-connections"],
-        "summary": "Start Gmail OAuth flow",
-        "operationId": "gmail_oauth_start",
-        "responses": {
-          "200": {
-            "description": "OAuth authorization URL and state token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": ["authorize_url", "state"],
-                  "properties": {
-                    "authorize_url": { "type": "string" },
-                    "state": { "type": "string" }
-                  }
-                }
-              }
-            }
-          },
-          "401": { "description": "unauthorized" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/oauth/gmail/callback": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
-        "tags": ["email-connections"],
-        "summary": "Complete Gmail OAuth from Google's browser redirect",
-        "description": "Public callback secured by a short-lived, one-time OAuth state. Redirects to the configured application URL when present; otherwise returns a resource-free status page.",
-        "operationId": "gmail_oauth_browser_callback",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": false,
-            "schema": { "type": "string" }
-          },
-          {
-            "name": "state",
-            "in": "query",
-            "required": false,
-            "schema": { "type": "string" }
-          },
-          {
-            "name": "error",
-            "in": "query",
-            "required": false,
-            "schema": { "type": "string" }
-          }
-        ],
+        "operationId": "getCategory",
+        "summary": "Get a category",
+        "description": "Returns an active or archived category owned by the authenticated user. A missing category and a category owned by another user are both reported as not found.",
+        "security": [{"bearerAuth": []}],
         "responses": {
-          "200": {
-            "description": "OAuth completed; safe backend status page returned because no success URL is configured",
-            "content": { "text/html": { "schema": { "type": "string" } } }
-          },
-          "303": { "description": "redirect to the configured success or failure URL" },
-          "400": {
-            "description": "provider denial, missing callback values, expired state, or replayed state"
-          },
-          "502": { "description": "provider rejected the token or profile request" },
-          "503": { "description": "provider is temporarily unavailable" },
-          "500": { "description": "unexpected callback persistence failure" }
+          "200": {"description": "Category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
         }
-      }
-    },
-    "/me/email-connections/gmail/oauth/callback": {
-      "post": {
-        "tags": ["email-connections"],
-        "summary": "Complete Gmail OAuth flow (deprecated compatibility endpoint)",
-        "description": "Uses the same one-time state validation as the public browser callback.",
-        "deprecated": true,
-        "operationId": "gmail_oauth_callback",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/GmailOAuthCallbackRequest" }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "email connection created",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/EmailConnectionResponse" }
-              }
-            }
-          },
-          "400": { "description": "invalid, expired, or replayed state" },
-          "401": { "description": "unauthorized" },
-          "502": { "description": "provider rejected the token, profile, or credentials" },
-          "503": { "description": "provider is temporarily unavailable" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/me/email-connections": {
-      "get": {
-        "tags": ["email-connections"],
-        "summary": "List Gmail connections for current user",
-        "operationId": "list_email_connections",
-        "responses": {
-          "200": {
-            "description": "list of email connections",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/EmailConnectionResponse" }
-                }
-              }
-            }
-          },
-          "401": { "description": "unauthorized" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/me/email-connections/{id}": {
-      "delete": {
-        "tags": ["email-connections"],
-        "summary": "Delete a Gmail connection",
-        "operationId": "delete_email_connection",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "responses": {
-          "204": { "description": "connection deleted" },
-          "400": { "description": "malformed connection id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "connection not found" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/me/email-connections/{id}/resync": {
-      "post": {
-        "tags": ["email-connections"],
-        "summary": "Manually trigger email sync for a connection",
-        "operationId": "resync_email_connection",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "responses": {
-          "202": { "description": "sync accepted" },
-          "400": { "description": "malformed connection id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "connection not found" },
-          "409": { "description": "connection sync is already leased" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/subscriptions": {
-      "get": {
-        "tags": ["subscriptions"],
-        "summary": "List subscriptions",
-        "operationId": "list_subscriptions",
-        "parameters": [
-          {
-            "name": "status",
-            "in": "query",
-            "required": false,
-            "description": "Filter by status: active, inactive, or all (default: all)",
-            "schema": { "type": "string", "enum": ["active", "inactive", "all"] }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "list of subscriptions",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/SubscriptionResponse" }
-                }
-              }
-            }
-          },
-          "400": { "description": "invalid status filter" },
-          "401": { "description": "unauthorized" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/subscriptions/forecast": {
-      "get": {
-        "tags": ["subscriptions"],
-        "summary": "Upcoming charges and normalized subscription costs",
-        "description": "Actual charges due in the returned 30-day window. Weekly occurrences repeat; monthly and yearly charges are included in full only when due.",
-        "operationId": "subscription_forecast",
-        "responses": {
-          "200": {
-            "description": "forecast",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ForecastResponse" }
-              }
-            }
-          },
-          "401": { "description": "unauthorized" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/subscriptions/{id}": {
-      "get": {
-        "tags": ["subscriptions"],
-        "summary": "Get a subscription",
-        "operationId": "get_subscription",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "subscription found",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/SubscriptionResponse" }
-              }
-            }
-          },
-          "400": { "description": "malformed subscription id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "subscription not found" }
-        },
-        "security": [{ "bearer_auth": [] }]
       },
       "patch": {
-        "tags": ["subscriptions"],
-        "summary": "Update a subscription",
-        "operationId": "patch_subscription",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/UpdateSubscriptionRequest" }
-            }
-          },
-          "required": true
-        },
+        "operationId": "renameCategory",
+        "summary": "Rename a category",
+        "description": "Changes a category name when expected_version matches its current version. A real name change increments the version; replaying the same normalized name at the current version is idempotent. Stale versions and active-name collisions return a conflict.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameCategory"}}}},
         "responses": {
-          "200": {
-            "description": "subscription updated",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/SubscriptionResponse" }
-              }
-            }
-          },
-          "400": { "description": "malformed subscription id or request body, invalid override value, invalid status, or malformed category id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "subscription or category not found, including a resource owned by another user" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      },
-      "delete": {
-        "tags": ["subscriptions"],
-        "summary": "Permanently suppress a subscription",
-        "description": "Atomically creates a provider/merchant tombstone and hard-deletes the subscription aggregate and its charges. Future receipt replay cannot recreate it.",
-        "operationId": "delete_subscription",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "responses": {
-          "204": { "description": "subscription deleted" },
-          "400": { "description": "malformed subscription id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "subscription not found" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/subscriptions/{id}/charges": {
-      "get": {
-        "tags": ["subscriptions"],
-        "summary": "List charges for a subscription",
-        "operationId": "list_subscription_charges",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "list of charges",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": { "$ref": "#/components/schemas/SubscriptionChargeResponse" }
-                }
-              }
-            }
-          },
-          "400": { "description": "malformed subscription id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "subscription not found" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/subscription-charges/{id}/link": {
-      "post": {
-        "tags": ["subscriptions"],
-        "summary": "Manually link a charge to a transaction",
-        "operationId": "link_charge",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/LinkChargeRequest" }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": { "description": "charge linked" },
-          "400": { "description": "malformed charge id or request body, malformed transaction id, or transaction is not an expense" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "charge or transaction not found, including a resource owned by another user" },
-          "409": { "description": "charge or transaction is already linked" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/subscription-charges/{id}/unlink": {
-      "post": {
-        "tags": ["subscriptions"],
-        "summary": "Unlink a charge from its transaction",
-        "operationId": "unlink_charge",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "responses": {
-          "204": { "description": "charge unlinked and the rejected charge/transaction pair recorded" },
-          "400": { "description": "malformed charge id" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "charge not found, including a charge owned by another user" },
-          "409": { "description": "charge is not currently linked" }
-        },
-        "security": [{ "bearer_auth": [] }]
-      }
-    },
-    "/monobank/client-info": {
-      "get": {
-        "tags": [
-          "monobank"
-        ],
-        "summary": "GET /monobank/client-info  (requires X-Token header)",
-        "operationId": "get_client_info",
-        "parameters": [
-          {
-            "name": "x-token",
-            "in": "header",
-            "description": "Monobank API token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "list of monobank accounts",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/MonoAccountResponse"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "missing X-Token header"
-          },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/monobank/connect": {
-      "post": {
-        "tags": [
-          "monobank"
-        ],
-        "summary": "POST /monobank/connect",
-        "operationId": "connect",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConnectMonobankRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "connection created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MonobankConnectionResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid input"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "409": {
-            "description": "connection already exists"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/monobank/connections": {
-      "get": {
-        "tags": [
-          "monobank"
-        ],
-        "summary": "GET /monobank/connections",
-        "operationId": "list_connections",
-        "responses": {
-          "200": {
-            "description": "list of monobank connections",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/MonobankConnectionResponse"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/monobank/connections/{id}": {
-      "delete": {
-        "tags": [
-          "monobank"
-        ],
-        "summary": "DELETE /monobank/connections/:id",
-        "operationId": "delete_connection",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Connection ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "connection deleted"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "connection not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/monobank/connections/{id}/resync": {
-      "post": {
-        "tags": [
-          "monobank"
-        ],
-        "summary": "POST /monobank/connections/:id/resync",
-        "description": "Enqueue a re-sync of the given connection over a closed time window [from, to]. Returns 202 immediately; clients poll GET /monobank/connections to watch sync_status. last_synced_at is preserved across the operation.",
-        "operationId": "resync_connection",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Connection ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          },
-          {
-            "name": "from",
-            "in": "query",
-            "description": "Window start (unix seconds, >= 0)",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "to",
-            "in": "query",
-            "description": "Window end (unix seconds, >= from). Clamped to now if in the future.",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "resync enqueued",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResyncJobResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "invalid window"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "connection not found"
-          },
-          "409": {
-            "description": "sync already in progress"
-          },
-          "429": {
-            "description": "rate limited by upstream"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      }
-    },
-    "/monobank/webhook": {
-      "post": {
-        "tags": [
-          "monobank"
-        ],
-        "summary": "POST /monobank/webhook  (public — no auth)",
-        "operationId": "webhook",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MonobankWebhookPayload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "webhook processed"
-          },
-          "400": {
-            "description": "invalid payload"
-          }
+          "200": {"description": "Renamed category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
         }
+      }
+    },
+    "/categories/{id}/archive": {
+      "post": {
+        "operationId": "archiveCategory",
+        "summary": "Archive a category",
+        "description": "Makes a category unavailable for new classifications while preserving its identity and historical use. The command requires the current expected_version and increments the version on the active-to-archived transition; repeating it against an already archived category at the current version is idempotent.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}},
+        "responses": {
+          "200": {"description": "Archived category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories/{id}/restore": {
+      "post": {
+        "operationId": "restoreCategory",
+        "summary": "Restore an archived category",
+        "description": "Makes an archived category active and available for new classifications again without losing its history or identity. The command requires the current expected_version and increments the version on the archived-to-active transition. It conflicts when the version is stale or another active category already has the same name under case-insensitive comparison; repeating it against an already active category at the current version is idempotent.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}},
+        "responses": {
+          "200": {"description": "Restored category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/preferences": {
+      "get": {
+        "operationId": "getPreferences",
+        "summary": "Get effective preferences",
+        "description": "Returns the authenticated user's effective preferences. If no row has been stored, the response uses base currency UAH with version 0 and persisted false without inserting data.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Effective user preferences", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Preferences"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      },
+      "patch": {
+        "operationId": "setBaseCurrency",
+        "summary": "Set the base currency",
+        "description": "Sets the authenticated user's base currency to an enabled catalog currency using optimistic concurrency. expected_version 0 creates the first persisted preference at version 1; later changes must provide the current version and increment it on success.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdatePreferences"}}}},
+        "responses": {
+          "200": {"description": "Updated preferences", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Preferences"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/accounts": {
+      "post": {
+        "operationId": "openLedgerAccount", "summary": "Open a Ledger account",
+        "description": "Opens a tenant-owned manual account and records a non-zero opening balance through an immutable balanced journal. Requires Idempotency-Key.",
+        "security": [{"bearerAuth": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OpenAccount"}}}},
+        "responses": {"201": {"description": "Account opened"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      },
+      "get": {
+        "operationId": "listLedgerAccounts", "summary": "List Ledger accounts",
+        "description": "Lists the authenticated user's visible active and archived accounts with exact signed and display balances.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger accounts"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getLedgerAccount", "summary": "Get a Ledger account",
+        "description": "Returns one tenant-owned account; another user's identity is indistinguishable from a missing account.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger account"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      },
+      "patch": {
+        "operationId": "renameLedgerAccount", "summary": "Rename a Ledger account",
+        "description": "Renames account metadata using expected_version and an Idempotency-Key without changing its currency or accounting facts.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameAccount"}}}},
+        "responses": {"200": {"description": "Account renamed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/archive": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "archiveLedgerAccount", "summary": "Archive a Ledger account",
+        "description": "Archives an account at expected_version while preserving its full balance and immutable journal history.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
+        "responses": {"200": {"description": "Account archived"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/restore": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "restoreLedgerAccount", "summary": "Restore a Ledger account",
+        "description": "Restores an archived account at expected_version without rewriting any historical accounting facts.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
+        "responses": {"200": {"description": "Account restored"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/activity": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "listLedgerAccountActivity", "summary": "List account activity",
+        "description": "Lists immutable journal details with stable occurred-at and ledger-sequence cursor ordering.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Account activity"}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions": {
+      "post": {
+        "operationId": "recordManualTransaction", "summary": "Record income or expense",
+        "description": "Records positive catalog-validated Money through the closed manual income or expense journal recipe.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualTransaction"}}}},
+        "responses": {"201": {"description": "Transaction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      },
       "get": {
-        "tags": [
-          "transactions"
-        ],
-        "operationId": "list_all_transactions",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Maximum results to return (default: 50)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "default": 50
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "description": "Number of results to skip (default: 0)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "default": 0
-            }
-          },
-          {
-            "name": "from",
-            "in": "query",
-            "required": false,
-            "description": "Inclusive lower bound on transacted_at, as a Unix timestamp in seconds (UTC).",
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "to",
-            "in": "query",
-            "required": false,
-            "description": "Inclusive upper bound on transacted_at, as a Unix timestamp in seconds (UTC). Must be >= from.",
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "list of all transactions",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TransactionListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
+        "operationId": "listLedgerTransactions", "summary": "List transactions",
+        "description": "Lists tenant journal facts with stable reverse chronological cursor pagination.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transactions"}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
-        "tags": [
-          "transactions"
-        ],
-        "operationId": "get_transaction",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Transaction ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "transaction found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TransactionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "transaction not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "transactions"
-        ],
-        "operationId": "delete_transaction",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Transaction ID",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "transaction deleted"
-          },
-          "401": {
-            "description": "unauthorized"
-          },
-          "404": {
-            "description": "transaction not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_auth": []
-          }
-        ]
+        "operationId": "getLedgerTransaction", "summary": "Get a transaction",
+        "description": "Returns immutable postings, source, relations, timing, sequence, and annotation version for one tenant journal.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transaction detail"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
-    "/transactions/{id}/subscription": {
-      "post": {
-        "tags": ["subscriptions", "transactions"],
-        "summary": "Create or attach a subscription from an expense transaction",
-        "operationId": "mark_transaction_as_subscription",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Transaction ID",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/MarkTransactionSubscriptionRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "transaction was already linked to the requested subscription",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/MarkTransactionSubscriptionResponse" }
-              }
-            }
-          },
-          "201": {
-            "description": "manual subscription charge created",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/MarkTransactionSubscriptionResponse" }
-              }
-            }
-          },
-          "400": { "description": "invalid body, invalid billing period, or transaction is not an expense" },
-          "401": { "description": "unauthorized" },
-          "404": { "description": "transaction or subscription not found, including another user's resource" },
-          "409": { "description": "transaction is already linked to a different subscription" }
-        },
-        "security": [{ "bearer_auth": [] }]
+    "/transactions/{id}/annotation": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "patch": {
+        "operationId": "updateTransactionAnnotation", "summary": "Update transaction annotation",
+        "description": "Updates mutable transaction metadata at expected_version while keeping the journal and postings immutable.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnnotationUpdate"}}}},
+        "responses": {"200": {"description": "Annotation updated"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
-    }
+    },
+    "/transactions/{id}/reversals": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "reverseLedgerTransaction", "summary": "Reverse a transaction",
+        "description": "Creates exactly one immutable inverse journal linked to the original; the original is never modified.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Reversal posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/{id}/replacements": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "replaceLedgerTransaction", "summary": "Replace a transaction",
+        "description": "Atomically records an exact reversal and a controlled corrected manual transaction linked to the original.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Replacement posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transfers": {
+      "post": {
+        "operationId": "transferLedgerFunds", "summary": "Transfer funds",
+        "description": "Atomically posts a same-currency or FX transfer, optional fee, exact implied rate, and all clearing legs.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Transfer posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounts/{id}/balance-corrections": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "correctLedgerBalance", "summary": "Correct an account balance",
+        "description": "Posts the explicit delta to an observed target display balance under a balance-version fence; zero deltas are rejected.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BalanceCorrection"}}}},
+        "responses": {"201": {"description": "Correction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations": {
+      "get": {
+        "operationId": "listReconciliations", "summary": "List balance reconciliations",
+        "description": "Lists provider-neutral balance observations and their immutable decision state for the authenticated tenant.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Reconciliation cases"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getReconciliation", "summary": "Get a balance reconciliation",
+        "description": "Returns one tenant case including provider values, captured Ledger balance and version, delta, and status.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Reconciliation case"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations/{id}/approve": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "approveReconciliation", "summary": "Approve a balance reconciliation",
+        "description": "Posts a visible correction only when both case expected_version and captured expected_balance_version still match.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApproveReconciliation"}}}},
+        "responses": {"200": {"description": "Reconciliation approved"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/reconciliations/{id}/dismiss": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "dismissReconciliation", "summary": "Dismiss a balance reconciliation",
+        "description": "Dismisses one pending case at expected_version without creating any journal or changing a balance.",
+        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DismissReconciliation"}}}},
+        "responses": {"200": {"description": "Reconciliation dismissed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/monobank": {
+      "post": {
+        "operationId": "connectMonobank", "summary": "Connect Monobank",
+        "description": "Accepts a Monobank token for encrypted validation and resource discovery without returning the secret.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Connection validation queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections": {
+      "get": {
+        "operationId": "listProviderConnections", "summary": "List provider connections",
+        "description": "Lists provider connections and lifecycle versions for the authenticated tenant.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connections"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}": {
+      "get": {
+        "operationId": "getProviderConnection", "summary": "Get a provider connection",
+        "description": "Returns one tenant-scoped provider connection without credential material.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connection"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/disconnect": {
+      "post": {
+        "operationId": "disconnectProviderConnection", "summary": "Disconnect a provider connection",
+        "description": "Disconnects a connection under an optimistic connection-version fence while retaining history.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Connection disconnected"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/credential-replacements": {
+      "post": {
+        "operationId": "replaceProviderCredential", "summary": "Replace a provider credential",
+        "description": "Encrypts a replacement provider token and advances its generation under a version fence.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Replacement validation queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/webhook-rotations": {
+      "post": {
+        "operationId": "rotateProviderWebhook", "summary": "Rotate a webhook credential",
+        "description": "Creates a new high-entropy callback credential and invalidates the previous lookup digest.",
+        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Webhook credential rotated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resources": {
+      "get": {
+        "operationId": "listProviderResources", "summary": "List discovered resources",
+        "description": "Lists external provider resources and their mapping state for one tenant connection.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "External resources"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resource-mappings": {
+      "post": {
+        "operationId": "mapProviderResource", "summary": "Map a provider resource",
+        "description": "Binds a discovered resource to a compatible Ledger account or creates a provider-observed account.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Mapping accepted"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations": {
+      "post": {
+        "operationId": "deactivateProviderResourceMapping", "summary": "Deactivate a resource mapping",
+        "description": "Ends an active mapping under a resource-version fence without deleting mapping history.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Mapping deactivated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements": {
+      "post": {
+        "operationId": "replaceProviderResourceMapping", "summary": "Replace a resource mapping",
+        "description": "Deactivates the current mapping and establishes a versioned replacement.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Replacement accepted"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-connections/{id}/sync-jobs": {
+      "post": {
+        "operationId": "requestProviderSync", "summary": "Request a provider sync",
+        "description": "Creates an idempotent durable sync job for a bounded statement interval.",
+        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Sync queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/sync-jobs/{id}": {
+      "get": {
+        "operationId": "getProviderSync", "summary": "Get a provider sync job",
+        "description": "Returns durable progress and fencing state for one tenant sync job.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Sync job"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/provider-events/{id}": {
+      "get": {
+        "operationId": "getProviderEvent", "summary": "Get a provider event",
+        "description": "Returns one immutable revision-aware provider transaction fact.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider event"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/accounting-processes/{id}": {
+      "get": {
+        "operationId": "getAccountingProcess", "summary": "Get an accounting process",
+        "description": "Returns retry and completion state for the provider-event import process.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Accounting process"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/balance-observations/{id}": {
+      "get": {
+        "operationId": "getBalanceObservation", "summary": "Get a balance observation",
+        "description": "Returns a durable provider balance observation and its comparability decision.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Balance observation"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/me/email-connections/gmail/oauth/start": {"post": {"operationId":"startGmailOauth","summary":"Start Gmail OAuth","description":"Persists encrypted single-use OAuth state and returns the provider redirect.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"OAuth redirect"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/oauth/gmail/callback": {"get": {"operationId":"completeGmailOauth","summary":"Complete Gmail OAuth","description":"Consumes durable single-use OAuth state and redirects to its recorded terminal result.","responses":{"303":{"description":"Terminal redirect"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/me/email-connections": {"get": {"operationId":"listEmailConnections","summary":"List email connections","description":"Returns the authenticated user's email connections without triggering synchronization.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Connections"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/me/email-connections/{connection_id}/status": {"get": {"operationId":"getEmailConnectionStatus","summary":"Get email connection status","description":"Returns durable connection and synchronization status without triggering work.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Connection status"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/me/email-connections/{connection_id}/disconnect": {"post": {"operationId":"disconnectEmailConnection","summary":"Disconnect an email connection","description":"Fences existing credential and synchronization generations with optimistic concurrency.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Disconnected"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/me/email-connections/{connection_id}/resync": {"post": {"operationId":"resyncEmailConnection","summary":"Request email resynchronization","description":"Creates an idempotent durable generation-fenced synchronization job.","security":[{"bearerAuth":[]}],"responses":{"202":{"description":"Sync queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/subscriptions": {"get": {"operationId":"listSubscriptions","summary":"List subscriptions","description":"Returns the tenant's recurring subscription inventory.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Subscriptions"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/subscriptions/{subscription_id}": {
+      "get": {"operationId":"getSubscription","summary":"Get a subscription","description":"Returns one recurring subscription and its current optimistic version.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Subscription"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "patch": {"operationId":"updateSubscription","summary":"Update a subscription","description":"Changes subscription lifecycle or forecast metadata using expected_version.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Updated subscription"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/subscriptions/{subscription_id}/charges": {"get": {"operationId":"listSubscriptionCharges","summary":"List subscription charges","description":"Returns immutable charge evidence and matching versions for a subscription.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Charge evidence"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/subscriptions/forecast": {"get": {"operationId":"getSubscriptionForecast","summary":"Get subscription forecast","description":"Returns expected recurring charges without posting money.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Forecast"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/subscription-charges/{charge_evidence_id}/matches": {"post": {"operationId":"matchSubscriptionCharge","summary":"Allocate a charge match","description":"Appends a version-fenced match with one or more exact Ledger journal allocations.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Match accepted"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/subscription-charges/{charge_evidence_id}/rejections": {"post": {"operationId":"rejectSubscriptionCharge","summary":"Reject a charge match","description":"Appends a version-fenced rejection fact without deleting evidence.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Rejection appended"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/subscription-charges/{charge_evidence_id}/matches/{match_id}/unmatches": {"post": {"operationId":"unmatchSubscriptionCharge","summary":"Unmatch a charge","description":"Appends a once-only unmatch and starts version-checked annotation compensation.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Unmatch appended"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/fx-rates": {"get": {"operationId":"getFxRate","summary":"Get an historical FX rate","description":"Selects an immutable direct or inverted external rate as of the requested timestamp.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Available or explicitly missing rate"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/balance-history": {"get": {"operationId":"getBalanceHistoryReport","summary":"Get balance history","description":"Reads the rebuildable balance history projection for a date range.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Balance history"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/cashflow": {"get": {"operationId":"getCashflowReport","summary":"Get cashflow","description":"Reads financial cash inflow and outflow projections excluding transfers and controls.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Cashflow"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/spending": {"get": {"operationId":"getSpendingReport","summary":"Get spending","description":"Reads categorized expense projections for a date range.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Spending"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/liabilities": {"get": {"operationId":"getLiabilitiesReport","summary":"Get liabilities","description":"Reads liability account balances with their financial display signs.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Liabilities"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/reconciliations": {"get": {"operationId":"getReconciliationsReport","summary":"Get reconciliation report","description":"Reads the monotonic reconciliation lifecycle projection.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Reconciliations"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/recurring": {"get": {"operationId":"getRecurringReport","summary":"Get recurring report","description":"Reads recurring charge totals from public event-fed projections.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Recurring totals"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/reports/net-worth": {"get": {"operationId":"getNetWorthReport","summary":"Get net worth","description":"Reads assets, liabilities, and available portfolio valuations without double counting cash.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Net worth"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans": {
+      "get":{"operationId":"listLoans","summary":"List loans","description":"Returns borrowed and lent agreements with confirmed component balances and accounting status.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Loan agreements"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "post":{"operationId":"openLoan","summary":"Open a loan agreement","description":"Creates immutable contractual terms and queues Ledger liability or receivable account provisioning.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Loan opening queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/loans/{id}":{"get":{"operationId":"getLoan","summary":"Get a loan","description":"Returns one tenant-owned agreement and its confirmed outstanding components.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Loan agreement"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/term-revisions":{
+      "get":{"operationId":"listLoanTermRevisions","summary":"List loan term revisions","description":"Returns the immutable contractual revision history in revision order.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Term revisions"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "post":{"operationId":"reviseLoanTerms","summary":"Revise loan terms","description":"Appends a version-fenced term revision without changing posted accounting.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Terms revised"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/loans/{id}/movements":{"get":{"operationId":"listLoanMovements","summary":"List loan movements","description":"Returns immutable monetary intent and accounting history for an agreement.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Loan movements"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/movements/{movement_id}":{"get":{"operationId":"getLoanMovement","summary":"Get a loan movement","description":"Returns one movement with separated principal, accrued interest, current interest, and fee components.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Loan movement"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/closure":{"post":{"operationId":"closeLoan","summary":"Close a loan","description":"Closes a version-fenced agreement only when all confirmed components are zero and no process is pending.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"200":{"description":"Loan closed"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/disbursements":{"post":{"operationId":"recordLoanDisbursement","summary":"Record a loan disbursement","description":"Queues an exact principal balance-sheet transfer for durable Ledger accounting.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Disbursement queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/repayments":{"post":{"operationId":"recordLoanRepayment","summary":"Record a loan repayment","description":"Queues explicit principal, accrued interest, current interest, and fee allocations without guessing.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Repayment queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/interest-accruals":{"post":{"operationId":"accrueLoanInterest","summary":"Accrue loan interest","description":"Queues a manual interest or contractual fee accrual without creating an amortization schedule.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Accrual queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/write-offs":{"post":{"operationId":"writeOffLoanComponents","summary":"Write off loan components","description":"Queues a reasoned principal, interest, or fee write-off with direction-specific classification.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Write-off queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/movements/{movement_id}/reversals":{"post":{"operationId":"reverseLoanMovement","summary":"Reverse a loan movement","description":"Queues a once-only Ledger reversal before applying exact inverse confirmed component effects.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Reversal queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/loans/{id}/movements/{movement_id}/replacements":{"post":{"operationId":"replaceLoanMovement","summary":"Replace a loan movement","description":"Starts a durable reverse-then-post replacement saga while preserving every original fact.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"responses":{"202":{"description":"Replacement queued"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/contacts": {
+      "post": {"operationId":"createSharingContact","summary":"Create an external contact","description":"Creates a user-owned external person for future shared bills; the contact is never an application identity.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/SharingContactCommand"}}}},"responses":{"201":{"description":"Created contact"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "get": {"operationId":"listSharingContacts","summary":"List external contacts","description":"Lists active contacts and optionally archived contacts while preserving historical identity.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Contacts"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/contacts/{id}": {
+      "get": {"operationId":"getSharingContact","summary":"Get an external contact","description":"Returns one tenant-owned active or archived contact.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Contact"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "patch": {"operationId":"updateSharingContact","summary":"Update an external contact","description":"Updates contact metadata with optimistic concurrency and idempotent replay.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/SharingContactCommand"}}}},"responses":{"200":{"description":"Updated contact"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/contacts/{id}/archive": {"post":{"operationId":"archiveSharingContact","summary":"Archive an external contact","description":"Prevents selection for new bills without hiding historical bill facts.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/SharingExpectedVersion"}}}},"responses":{"200":{"description":"Archived contact"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/bill-splits": {
+      "post":{"operationId":"createBillSplit","summary":"Create a multiple-payer bill","description":"Persists exact resolved shares and deterministic obligations, then starts durable accounting.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/BillSplitCommand"}}}},"responses":{"202":{"description":"Accounting pending"},"500":{"$ref":"#/components/responses/InternalServerError"}}},
+      "get":{"operationId":"listBillSplits","summary":"List shared bills","description":"Lists current and historical shared-bill positions for the authenticated user.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Bills"},"500":{"$ref":"#/components/responses/InternalServerError"}}}
+    },
+    "/bill-splits/{id}": {"get":{"operationId":"getBillSplit","summary":"Get a shared bill","description":"Returns resolved allocation facts, obligations, settlements, and observable process status.","security":[{"bearerAuth":[]}],"responses":{"200":{"description":"Bill"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/bill-splits/{id}/revisions": {"post":{"operationId":"reviseBillSplit","summary":"Revise a shared bill","description":"Appends immutable replacement facts after active settlements have been reversed.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/BillSplitRevisionCommand"}}}},"responses":{"202":{"description":"Replacement accounting pending"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/bill-splits/{id}/settlements": {"post":{"operationId":"createBillSettlement","summary":"Record a partial bill settlement","description":"Records a manual, imported-journal, or external settlement without classifying it as income or expense.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/BillSettlementCommand"}}}},"responses":{"202":{"description":"Settlement accounting pending"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/bill-splits/{id}/settlements/{settlement_id}/reversal": {"post":{"operationId":"reverseBillSettlement","summary":"Reverse a bill settlement","description":"Appends a visible once-only reversal before a bill may be revised or cancelled.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/SharingReversalCommand"}}}},"responses":{"202":{"description":"Reversal pending"},"500":{"$ref":"#/components/responses/InternalServerError"}}}},
+    "/bill-splits/{id}/cancellations": {"post":{"operationId":"cancelBillSplit","summary":"Cancel and reverse a shared bill","description":"Starts durable reversal of active bill accounting and never deletes bill history.","security":[{"bearerAuth":[]}],"parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/SharingReversalCommand"}}}},"responses":{"202":{"description":"Cancellation pending"},"500":{"$ref":"#/components/responses/InternalServerError"}}}}
   },
   "components": {
-    "schemas": {
-      "AccountDetailsDto": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "interest_rate",
-              "compounding_period",
-              "type"
-            ],
-            "properties": {
-              "compounding_period": {
-                "type": "string"
-              },
-              "interest_rate": {
-                "type": "string"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "savings"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "counterparty",
-              "direction",
-              "type"
-            ],
-            "properties": {
-              "counterparty": {
-                "type": "string"
-              },
-              "direction": {
-                "type": "string"
-              },
-              "due_date": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "interest_rate": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "loan"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type"
-            ],
-            "properties": {
-              "broker": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "investment"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type"
-            ],
-            "properties": {
-              "label": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "binance"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "AccountResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "account_type",
-          "currency",
-          "balance",
-          "created_at",
-          "updated_at"
-        ],
-        "properties": {
-          "account_type": {
-            "type": "string"
-          },
-          "balance": {
-            "type": "number",
-            "description": "Current account balance"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "details": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AccountDetailsDto"
-              }
-            ]
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "name": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "CategoryResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "created_at"
-        ],
-        "properties": {
-          "color": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
-      "ConnectMonobankRequest": {
-        "type": "object",
-        "required": [
-          "account_id",
-          "token",
-          "external_account_id"
-        ],
-        "properties": {
-          "account_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "external_account_id": {
-            "type": "string"
-          },
-          "token": {
-            "type": "string"
-          }
-        }
-      },
-      "CreateAccountRequest": {
-        "type": "object",
-        "required": [
-          "name",
-          "account_type",
-          "currency"
-        ],
-        "properties": {
-          "account_type": {
-            "type": "string"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "details": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AccountDetailsDto"
-              }
-            ]
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
-      "CreateCategoryRequest": {
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "color": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
-      "CreateTransactionRequest": {
-        "type": "object",
-        "required": [
-          "amount",
-          "currency",
-          "kind",
-          "transacted_at"
-        ],
-        "properties": {
-          "amount": {
-            "type": "string"
-          },
-          "category_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "uuid"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "details": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/TransactionDetailsDto"
-              }
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "transacted_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "MonoAccountResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "currency_code",
-          "balance",
-          "account_type"
-        ],
-        "properties": {
-          "account_type": {
-            "type": "string"
-          },
-          "balance": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "currency_code": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          },
-          "iban": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          }
-        }
-      },
-      "MonobankConnectionResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "account_id",
-          "provider",
-          "external_account_id",
-          "sync_status",
-          "created_at"
-        ],
-        "properties": {
-          "account_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "external_account_id": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "last_synced_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "sync_status": {
-            "type": "string"
-          }
-        }
-      },
-      "MonobankWebhookData": {
-        "type": "object",
-        "required": [
-          "account",
-          "statementItem"
-        ],
-        "properties": {
-          "account": {
-            "type": "string"
-          },
-          "statementItem": {
-            "type": "object"
-          }
-        }
-      },
-      "MonobankWebhookPayload": {
-        "type": "object",
-        "description": "Webhook payload from Monobank",
-        "required": [
-          "type"
-        ],
-        "properties": {
-          "data": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/MonobankWebhookData"
-              }
-            ]
-          },
-          "type": {
-            "type": "string"
-          }
-        }
-      },
-      "ResyncJobResponse": {
-        "type": "object",
-        "required": [
-          "connection_id",
-          "sync_status",
-          "from",
-          "to",
-          "enqueued_at"
-        ],
-        "properties": {
-          "connection_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "sync_status": {
-            "type": "string"
-          },
-          "from": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "to": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "enqueued_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "TransactionDetailsDto": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "ticker",
-              "quantity",
-              "type"
-            ],
-            "properties": {
-              "fee": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "price_per_unit": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "quantity": {
-                "type": "string"
-              },
-              "ticker": {
-                "type": "string"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "trade"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "to_account_id",
-              "type"
-            ],
-            "properties": {
-              "to_account_id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "type": {
-                "type": "string",
-                "enum": [
-                  "transfer"
-                ]
-              }
-            }
-          }
-        ]
-      },
-      "PaginationInfo": {
-        "type": "object",
-        "required": [
-          "total",
-          "limit",
-          "offset"
-        ],
-        "properties": {
-          "total": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "limit": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "offset": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "TransactionListResponse": {
-        "type": "object",
-        "required": [
-          "items",
-          "pagination"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/TransactionResponse"
-            }
-          },
-          "pagination": {
-            "$ref": "#/components/schemas/PaginationInfo"
-          }
-        }
-      },
-      "TransactionResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "account_id",
-          "amount",
-          "currency",
-          "kind",
-          "transacted_at",
-          "created_at",
-          "subscription_id",
-          "subscription_charge_id"
-        ],
-        "properties": {
-          "account_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "amount": {
-            "type": "string"
-          },
-          "category_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "uuid"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "currency": {
-            "type": "string"
-          },
-          "details": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/TransactionDetailsDto"
-              }
-            ]
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "note": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "subscription_id": {
-            "type": ["string", "null"],
-            "format": "uuid",
-            "description": "Subscription linked through this transaction's charge."
-          },
-          "subscription_charge_id": {
-            "type": ["string", "null"],
-            "format": "uuid"
-          },
-          "transacted_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "UpdateAccountRequest": {
-        "type": "object",
-        "properties": {
-          "currency": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "details": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AccountDetailsDto"
-              }
-            ]
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "UpdateCategoryRequest": {
-        "type": "object",
-        "properties": {
-          "color": {
-            "type": ["string", "null"]
-          },
-          "name": {
-            "type": ["string", "null"]
-          }
-        }
-      },
-      "EmailConnectionResponse": {
-        "type": "object",
-        "required": ["id", "email_address", "provider", "status", "created_at"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "email_address": { "type": "string" },
-          "provider": { "type": "string", "example": "gmail" },
-          "status": {
-            "type": "string",
-            "enum": ["pending", "connected", "failed", "reconnect_required"]
-          },
-          "last_synced_at": { "type": ["string", "null"], "format": "date-time" },
-          "created_at": { "type": "string", "format": "date-time" }
-        }
-      },
-      "GmailOAuthCallbackRequest": {
-        "type": "object",
-        "required": ["code", "state"],
-        "properties": {
-          "code": { "type": "string" },
-          "state": { "type": "string" }
-        }
-      },
-      "SubscriptionResponse": {
-        "type": "object",
-        "required": ["id", "provider", "product_name", "amount", "currency", "billing_period", "status", "started_at", "overrides", "created_at"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "provider": {
-            "type": "string",
-            "enum": ["google_play", "apple_app_store", "netflix", "other"]
-          },
-          "product_name": { "type": "string" },
-          "amount": { "type": "string", "description": "Decimal amount" },
-          "currency": { "type": "string", "example": "USD" },
-          "billing_period": { "type": "string", "enum": ["weekly", "monthly", "yearly"] },
-          "status": { "type": "string", "enum": ["active", "inactive"] },
-          "started_at": { "type": "string", "format": "date-time" },
-          "last_charged_at": { "type": ["string", "null"], "format": "date-time" },
-          "next_expected_at": { "type": ["string", "null"], "format": "date-time" },
-          "category_id": { "type": ["string", "null"], "format": "uuid" },
-          "overrides": { "$ref": "#/components/schemas/SubscriptionOverrides" },
-          "charges": {
-            "type": "array",
-            "description": "The 20 most recent charges; present on the detail endpoint and omitted from list/update responses.",
-            "maxItems": 20,
-            "items": { "$ref": "#/components/schemas/SubscriptionChargeResponse" }
-          },
-          "created_at": { "type": "string", "format": "date-time" }
-        }
-      },
-      "SubscriptionOverrides": {
-        "type": "object",
-        "required": ["product_name", "billing_period", "status"],
-        "properties": {
-          "product_name": { "type": ["string", "null"] },
-          "billing_period": {
-            "oneOf": [
-              { "type": "null" },
-              { "type": "string", "enum": ["weekly", "monthly", "yearly"] }
-            ]
-          },
-          "status": {
-            "oneOf": [
-              { "type": "null" },
-              { "type": "string", "enum": ["active", "inactive"] }
-            ]
-          }
-        }
-      },
-      "UpdateSubscriptionRequest": {
-        "type": "object",
-        "description": "An omitted field is unchanged. Product-name and billing-period nulls clear their overrides; status null is invalid and `auto` clears the status override.",
-        "properties": {
-          "product_name": {
-            "type": ["string", "null"],
-            "description": "A string sets the override; null clears it; omission leaves it unchanged."
-          },
-          "billing_period": {
-            "description": "A value sets the override; null clears it; omission leaves it unchanged.",
-            "oneOf": [
-              { "type": "null" },
-              { "type": "string", "enum": ["weekly", "monthly", "yearly"] }
-            ]
-          },
-          "status": {
-            "type": "string",
-            "enum": ["active", "inactive", "auto"],
-            "description": "active/inactive set a manual override; auto clears it; null is invalid; omission leaves it unchanged."
-          },
-          "category_id": {
-            "description": "A UUID sets a category owned by the current user; null clears it; omission leaves it unchanged.",
-            "oneOf": [
-              { "type": "null" },
-              { "type": "string", "format": "uuid" }
-            ]
-          }
-        }
-      },
-      "SubscriptionChargeResponse": {
-        "type": "object",
-        "required": ["id", "subscription_id", "amount", "currency", "charged_at", "kind", "match_status"],
-        "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "subscription_id": { "type": "string", "format": "uuid" },
-          "amount": { "type": "string", "description": "Decimal amount" },
-          "currency": { "type": "string" },
-          "charged_at": { "type": "string", "format": "date-time" },
-          "kind": { "type": "string", "enum": ["new_subscription", "renewal", "one_time_purchase", "refund"] },
-          "transaction_id": { "type": ["string", "null"], "format": "uuid" },
-          "match_status": { "type": "string", "enum": ["Pending", "Matched", "Unmatched"] }
-        }
-      },
-      "LinkChargeRequest": {
-        "type": "object",
-        "required": ["transaction_id"],
-        "properties": {
-          "transaction_id": { "type": "string", "format": "uuid" }
-        }
-      },
-      "MarkTransactionSubscriptionRequest": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": ["mode", "product_name", "billing_period"],
-            "properties": {
-              "mode": { "type": "string", "const": "create" },
-              "product_name": { "type": "string", "minLength": 1 },
-              "billing_period": {
-                "type": "string",
-                "enum": ["weekly", "monthly", "yearly"]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": ["mode", "subscription_id"],
-            "properties": {
-              "mode": { "type": "string", "const": "attach" },
-              "subscription_id": { "type": "string", "format": "uuid" }
-            }
-          }
-        ]
-      },
-      "MarkTransactionSubscriptionResponse": {
-        "type": "object",
-        "required": ["subscription", "charge", "subscription_created"],
-        "properties": {
-          "subscription": { "$ref": "#/components/schemas/SubscriptionResponse" },
-          "charge": { "$ref": "#/components/schemas/SubscriptionChargeResponse" },
-          "subscription_created": { "type": "boolean" }
-        }
-      },
-      "ForecastResponse": {
-        "type": "object",
-        "required": ["window_start", "window_end", "base_currency", "base_total", "by_currency", "monthly_equivalent_total", "yearly_equivalent_total", "normalized_by_currency", "fx_quotes", "complete", "warnings"],
-        "properties": {
-          "window_start": { "type": "string", "format": "date-time" },
-          "window_end": { "type": "string", "format": "date-time" },
-          "base_currency": { "type": "string", "example": "UAH" },
-          "base_total": { "type": "string", "description": "Actual charges due in the window, converted to base currency when FX is available." },
-          "by_currency": {
-            "type": "object",
-            "description": "Actual charges due in the window, broken down by original currency.",
-            "additionalProperties": { "type": "string" }
-          },
-          "monthly_equivalent_total": { "type": "string" },
-          "yearly_equivalent_total": { "type": "string" },
-          "normalized_by_currency": {
-            "type": "object",
-            "additionalProperties": { "$ref": "#/components/schemas/ForecastNormalizedCurrency" }
-          },
-          "fx_quotes": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/ForecastFxQuote" }
-          },
-          "complete": {
-            "type": "boolean",
-            "description": "False when at least one needed FX quote was unavailable."
-          },
-          "warnings": { "type": "array", "items": { "type": "string" } }
-        }
-      },
-      "ForecastNormalizedCurrency": {
-        "type": "object",
-        "required": ["monthly", "yearly"],
-        "properties": {
-          "monthly": { "type": "string" },
-          "yearly": { "type": "string" }
-        }
-      },
-      "ForecastFxQuote": {
-        "type": "object",
-        "required": ["from_currency", "to_currency", "rate", "requested_date", "rate_date"],
-        "properties": {
-          "from_currency": { "type": "string" },
-          "to_currency": { "type": "string" },
-          "rate": { "type": "string" },
-          "requested_date": { "type": "string", "format": "date" },
-          "rate_date": { "type": "string", "format": "date" }
-        }
-      }
-    },
     "securitySchemes": {
-      "bearer_auth": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
+      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+    },
+    "parameters": {
+      "IdempotencyKey": {"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":200}}
+    },
+    "responses": {
+      "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "Authentication required", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "NotFound": {"description": "Resource not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Conflict": {"description": "Optimistic version or uniqueness conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "InternalServerError": {"description": "Supporting context unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "Currency": {
+        "type": "object",
+        "required": ["code", "name", "minor_unit", "enabled", "as_of"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "numeric_code": {"type": ["string", "null"], "pattern": "^[0-9]{3}$"},
+          "name": {"type": "string"},
+          "minor_unit": {"type": "integer", "minimum": 0, "maximum": 8},
+          "enabled": {"type": "boolean"},
+          "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreateCategory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "kind": {"type": "string", "enum": ["income", "expense", "both"]}
+        }
+      },
+      "RenameCategory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "expected_version"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "expected_version": {"type": "integer", "minimum": 1}
+        }
+      },
+      "ExpectedVersion": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_version"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}}
+      },
+      "Category": {
+        "type": "object",
+        "required": ["id", "name", "kind", "lifecycle", "version", "created_at", "as_of"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "name": {"type": "string"},
+          "kind": {"type": "string", "enum": ["income", "expense", "both"]},
+          "lifecycle": {"type": "string", "enum": ["active", "archived"]},
+          "version": {"type": "integer", "minimum": 1},
+          "created_at": {"type": "string", "format": "date-time"},
+          "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "UpdatePreferences": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["base_currency", "expected_version"],
+        "properties": {
+          "base_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "expected_version": {"type": "integer", "minimum": 0}
+        }
+      },
+      "Preferences": {
+        "type": "object",
+        "required": ["base_currency", "version", "persisted", "as_of"],
+        "properties": {
+          "base_currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "version": {"type": "integer", "minimum": 0},
+          "persisted": {"type": "boolean"},
+          "as_of": {"type": "string", "format": "date-time"}
+        }
+      },
+      "MoneyInput": {
+        "type": "object", "additionalProperties": false, "required": ["amount", "currency"],
+        "properties": {
+          "amount": {"type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$"},
+          "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
+        }
+      },
+      "OpenAccount": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "currency", "kind", "nature", "opening_balance"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 100},
+          "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+          "kind": {"type": "string", "enum": ["cash", "debit_card", "credit_card", "current", "savings", "jar", "loan_payable", "loan_receivable"]},
+          "nature": {"type": "string", "enum": ["asset", "liability"]},
+          "opening_balance": {"type": "string"}, "occurred_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "RenameAccount": {
+        "type": "object", "additionalProperties": false, "required": ["name", "expected_version"],
+        "properties": {"name": {"type": "string"}, "expected_version": {"type": "integer", "minimum": 1}, "occurred_at": {"type": "string", "format": "date-time"}}
+      },
+      "ExpectedAccountVersion": {
+        "type": "object", "additionalProperties": false, "required": ["expected_version"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "occurred_at": {"type": "string", "format": "date-time"}}
+      },
+      "ManualTransaction": {
+        "type": "object", "additionalProperties": false,
+        "required": ["account_id", "kind", "amount", "description"],
+        "properties": {
+          "account_id": {"type": "string", "format": "uuid"}, "kind": {"type": "string", "enum": ["income", "expense"]},
+          "amount": {"$ref": "#/components/schemas/MoneyInput"}, "description": {"type": "string"},
+          "category_id": {"type": ["string", "null"], "format": "uuid"}, "tags": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "AnnotationUpdate": {
+        "type": "object", "additionalProperties": false, "required": ["expected_version"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "description": {"type": "string"}, "category_id": {"type": ["string", "null"], "format": "uuid"}}
+      },
+      "BalanceCorrection": {
+        "type": "object", "additionalProperties": false,
+        "required": ["target_display_balance", "expected_balance_version", "reason", "observed_at"],
+        "properties": {
+          "target_display_balance": {"$ref": "#/components/schemas/MoneyInput"},
+          "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"},
+          "observed_at": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ApproveReconciliation": {
+        "type": "object", "additionalProperties": false,
+        "required": ["expected_version", "expected_balance_version", "reason"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"}}
+      },
+      "DismissReconciliation": {
+        "type": "object", "additionalProperties": false, "required": ["expected_version", "reason"],
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"}}
+      },
+      "SharingExpectedVersion": {"type":"object","required":["expected_version"],"properties":{"expected_version":{"type":"integer","minimum":1}}},
+      "SharingContactCommand": {"type":"object","required":["display_name"],"properties":{"display_name":{"type":"string","minLength":1,"maxLength":200},"note":{"type":["string","null"]},"expected_version":{"type":"integer","minimum":1}}},
+      "BillSplitCommand": {"type":"object","required":["title","occurred_at","total","contributions","shares"],"properties":{"title":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"},"total":{"$ref":"#/components/schemas/MoneyInput"},"contributions":{"type":"array","minItems":1,"items":{"type":"object"}},"shares":{"type":"object"}}},
+      "BillSplitRevisionCommand": {"allOf":[{"$ref":"#/components/schemas/BillSplitCommand"},{"$ref":"#/components/schemas/SharingExpectedVersion"}]},
+      "BillSettlementCommand": {"type":"object","required":["expected_version","debtor","creditor","amount","evidence","occurred_at"],"properties":{"expected_version":{"type":"integer","minimum":1},"debtor":{"type":"object"},"creditor":{"type":"object"},"amount":{"$ref":"#/components/schemas/MoneyInput"},"evidence":{"type":"object"},"occurred_at":{"type":"string","format":"date-time"}}},
+      "SharingReversalCommand": {"type":"object","required":["expected_version","reason"],"properties":{"expected_version":{"type":"integer","minimum":1},"reason":{"type":"string","minLength":1}}},
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {"error": {"type": "string"}}
       }
     }
   }

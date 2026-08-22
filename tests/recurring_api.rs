@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 #[test]
 fn recurring_router_manifest_is_exact() {
-    let routes: BTreeSet<_> = moneykeeper::api::v2::ROUTE_MANIFEST
+    let routes: BTreeSet<_> = moneykeeper::api::routes::ROUTE_MANIFEST
         .iter()
         .copied()
         .filter(|(_, p)| p.starts_with("/subscription"))

@@ -81,7 +81,7 @@ async fn every_supporting_route_requires_an_authenticated_user() {
     .unwrap();
 
     let id = Uuid::new_v4().to_string();
-    for (method, route) in moneykeeper::api::v2::ROUTE_MANIFEST {
+    for (method, route) in moneykeeper::api::routes::ROUTE_MANIFEST {
         if *route == "/oauth/gmail/callback" {
             continue;
         }

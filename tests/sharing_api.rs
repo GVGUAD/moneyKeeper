@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 #[test]
 fn isolated_router_and_openapi_publish_exact_sharing_paths() {
-    let manifest: BTreeSet<_> = moneykeeper::api::v2::ROUTE_MANIFEST
+    let manifest: BTreeSet<_> = moneykeeper::api::routes::ROUTE_MANIFEST
         .iter()
         .copied()
         .collect();
@@ -26,7 +26,7 @@ fn isolated_router_and_openapi_publish_exact_sharing_paths() {
         assert!(manifest.contains(&route));
     }
     let document: serde_json::Value =
-        serde_json::from_str(include_str!("../static/openapi.v2.json")).unwrap();
+        serde_json::from_str(include_str!("../static/openapi.json")).unwrap();
     assert!(
         document["paths"]
             .as_object()
@@ -39,7 +39,7 @@ fn isolated_router_and_openapi_publish_exact_sharing_paths() {
 #[test]
 fn every_sharing_mutation_documents_idempotency() {
     let document: serde_json::Value =
-        serde_json::from_str(include_str!("../static/openapi.v2.json")).unwrap();
+        serde_json::from_str(include_str!("../static/openapi.json")).unwrap();
     for (path, method) in [
         ("/contacts", "post"),
         ("/contacts/{id}", "patch"),

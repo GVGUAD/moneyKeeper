@@ -268,19 +268,19 @@ git commit -m "refactor(cutover): prepare v2 bootstrap and worker barrier"
 - Modify: `static/swagger-ui.html` if needed
 - Replace legacy API test root with V2 contract/smoke suite
 
-- [ ] **Step 1: Write failing route-manifest tests**
+- [x] **Step 1: Write failing route-manifest tests**
 
 Generate an exhaustive operation manifest from every method/path/operation ID in validated `static/openapi.v2.json` and assert the default router has exact parity with the already-tested isolated `src/api/v2.rs` router. This includes Ledger, Banking, Mail, Recurring, Reporting, Sharing, Loans, and Portfolio commands and reads—not only the architecture spec's primary route excerpt. Assert all public operations are mounted at unversioned paths, authenticated where required, and absent beneath `/v2`. Keep a separate explicit manifest entry/test for the deliberately non-public Monobank callback route because it is omitted from public OpenAPI. Assert legacy mutation semantics—including account hard delete, direct balance setter, standalone transaction delete, and a Monobank webhook without its path secret—return `404` rather than silently mapping to V2 behavior.
 
-- [ ] **Step 2: Compose context routers**
+- [x] **Step 2: Compose context routers**
 
 In one green change, point `src/infrastructure/db.rs` at the verified V2 initializer, replace `main.rs` with the tested Phase 8 V2 run entry point, switch module exports/API state, and promote or delegate to the exact router composition already exported by `src/api/v2.rs`; do not manually reconstruct a second list that can drift. The API layer may compose Ledger and Banking/Reporting read DTOs for account balance details, but it cannot query private tables. Keep authentication/error/request-ID middleware centralized and keep context request mapping inside each context API module. There is no commit where the default V2 migrator runs legacy services or where the new bootstrap serves legacy routes.
 
-- [ ] **Step 3: Promote the validated OpenAPI document**
+- [x] **Step 3: Promote the validated OpenAPI document**
 
 Replace `static/openapi.json` with the already validated V2 specification and delete the parallel file. Verify every financial POST declares `Idempotency-Key`, every aggregate metadata mutation declares body `expected_version`, amounts are decimal strings with currency, and posted resources expose reversal/correction/source/as-of fields.
 
-- [ ] **Step 4: Run API tests**
+- [x] **Step 4: Run API tests**
 
 ```bash
 cargo test --test api -- --nocapture
@@ -289,7 +289,7 @@ cargo test bootstrap_ -- --nocapture
 SQLX_OFFLINE=true cargo test --test v2_migrations -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main.rs src/lib.rs src/infrastructure/db.rs src/api static tests/api.rs tests/api
