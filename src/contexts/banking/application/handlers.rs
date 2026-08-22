@@ -296,6 +296,12 @@ impl BankingFacade {
             .await
     }
 
+    pub async fn next_provider_import_candidate(
+        &self,
+    ) -> Result<Option<(UserId, super::super::domain::ProviderEventId)>, BankingError> {
+        self.store.next_provider_import_candidate().await
+    }
+
     pub async fn complete_provider_import(
         &self,
         outcome: ProviderImportOutcome,
@@ -318,6 +324,12 @@ impl BankingFacade {
         self.store
             .claim_balance_observation(user_id, observation_id)
             .await
+    }
+
+    pub async fn next_balance_observation_candidate(
+        &self,
+    ) -> Result<Option<(UserId, super::super::domain::BalanceObservationId)>, BankingError> {
+        self.store.next_balance_observation_candidate().await
     }
 
     pub async fn complete_balance_observation(

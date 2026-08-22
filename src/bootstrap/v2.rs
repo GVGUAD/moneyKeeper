@@ -2,9 +2,17 @@
 
 use std::{sync::Arc, time::Duration};
 
-use axum::Router;
+use anyhow::Context;
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
 use jsonwebtoken::jwk::JwkSet;
+use serde_json::json;
 
+use crate::bootstrap::workers::{Readiness, WorkerRegistry};
 use crate::contexts::banking::public::{Aes256CredentialCipher, BankingFacade, MonobankClient};
 use crate::contexts::classification::public::CategoryCatalogFacade;
 use crate::contexts::ledger::public::LedgerFacade;
@@ -302,5 +310,170 @@ pub fn phase5_coordinators(pool: &VerifiedV2Pool) -> Phase5Coordinators {
         accounting: crate::integration::process_managers::sharing_accounting::SharingAccountingCoordinator::new(ledger.clone()),
         settlement: crate::integration::process_managers::sharing_settlement::SharingSettlementCoordinator::new(ledger),
         reporting: crate::contexts::reporting::build(pool),
+    }
+}
+
+/// Banking accounting and reconciliation retries coordinated only through
+/// public Banking and Ledger contracts.
+pub struct BankingWorkers {
+    banking: BankingFacade,
+    ledger: LedgerFacade,
+}
+
+impl BankingWorkers {
+    pub async fn run_once(&self) -> anyhow::Result<WorkerRunReport> {
+        if let Some((user_id, event_id)) = self.banking.next_provider_import_candidate().await? {
+            let outcome =
+                crate::integration::process_managers::banking_import::import_provider_revision(
+                    &self.banking,
+                    &self.ledger,
+                    user_id,
+                    event_id,
+                )
+                .await?;
+            return Ok(WorkerRunReport {
+                claimed: true,
+                records: u32::from(!outcome.replayed),
+                ..WorkerRunReport::default()
+            });
+        }
+        if let Some((user_id, observation_id)) =
+            self.banking.next_balance_observation_candidate().await?
+        {
+            let outcome = crate::integration::process_managers::banking_observation::deliver_balance_observation(
+                &self.banking,
+                &self.ledger,
+                user_id,
+                observation_id,
+            )
+            .await?;
+            return Ok(WorkerRunReport {
+                claimed: true,
+                records: u32::from(!outcome.replayed),
+                ..WorkerRunReport::default()
+            });
+        }
+        Ok(WorkerRunReport::default())
+    }
+}
+
+pub fn banking_workers(pool: &VerifiedV2Pool) -> BankingWorkers {
+    let contexts = supporting_contexts(pool);
+    BankingWorkers {
+        banking: contexts.banking,
+        ledger: contexts.ledger,
+    }
+}
+
+/// Builds and runs the complete Finance V2 HTTP and worker composition from a
+/// verified database. No unchecked PostgreSQL pool can enter this boundary.
+pub async fn run<F>(
+    listener: tokio::net::TcpListener,
+    pool: &VerifiedV2Pool,
+    jwks: Arc<JwkSet>,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let business_router = crate::api::v2::router(supporting_contexts(pool), jwks);
+    let workers = crate::bootstrap::workers::production(pool)?;
+    serve(
+        listener,
+        business_router,
+        workers,
+        Readiness::default(),
+        shutdown,
+    )
+    .await
+}
+
+/// Serves a prepared Finance V2 router behind the worker/readiness barrier.
+///
+/// The supplied listener begins with readiness false. Worker startup failure
+/// shuts it down without ever allowing business traffic. During shutdown,
+/// readiness is removed before HTTP is drained and workers are stopped.
+pub async fn serve<F>(
+    listener: tokio::net::TcpListener,
+    business_router: Router,
+    workers: WorkerRegistry,
+    readiness: Readiness,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let health = Router::new()
+        .route("/health/live", get(live))
+        .route("/health/ready", get(ready))
+        .with_state(readiness.clone());
+    let business = business_router.layer(middleware::from_fn_with_state(
+        readiness.clone(),
+        require_readiness,
+    ));
+    let application = health.merge(business);
+
+    let (stop_http, mut stop_http_rx) = tokio::sync::watch::channel(false);
+    let http = tokio::spawn(async move {
+        axum::serve(listener, application)
+            .with_graceful_shutdown(async move {
+                while !*stop_http_rx.borrow() {
+                    if stop_http_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+
+    let worker_runtime = match workers.start().await {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            readiness.mark_not_ready();
+            let _ = stop_http.send(true);
+            http.await
+                .context("join not-ready Finance V2 HTTP listener")??;
+            return Err(error.context("Finance V2 worker barrier failed"));
+        }
+    };
+    readiness.mark_ready();
+
+    shutdown.await;
+    readiness.mark_not_ready();
+    let _ = stop_http.send(true);
+    http.await.context("join Finance V2 HTTP listener")??;
+    worker_runtime.shutdown().await
+}
+
+async fn live() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({"status": "live"})))
+}
+
+async fn ready(State(readiness): State<Readiness>) -> Response {
+    if readiness.is_ready() {
+        (StatusCode::OK, Json(json!({"status": "ready"}))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "not_ready"})),
+        )
+            .into_response()
+    }
+}
+
+async fn require_readiness(
+    State(readiness): State<Readiness>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if readiness.is_ready() {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "not_ready"})),
+        )
+            .into_response()
     }
 }

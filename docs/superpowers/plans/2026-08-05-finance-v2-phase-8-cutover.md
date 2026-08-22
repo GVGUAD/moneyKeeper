@@ -216,7 +216,7 @@ Use the actual Phase 1 module path if it differs from `v2_db.rs`; do not create 
 - Modify: `src/bootstrap/workers.rs`
 - Add/modify bootstrap integration tests
 
-- [ ] **Step 1: Write failing bootstrap tests**
+- [x] **Step 1: Write failing bootstrap tests**
 
 Assert:
 
@@ -228,15 +228,15 @@ Assert:
 - shutting down cancels claims gracefully and stops accepting HTTP before worker teardown;
 - no legacy service/repository constructor is reachable.
 
-- [ ] **Step 2: Prepare a small V2 run entry point behind the parallel bootstrap**
+- [x] **Step 2: Prepare a small V2 run entry point behind the parallel bootstrap**
 
 Build a tested `bootstrap::v2::run`/composition function that loads validated configuration, initializes redacted logging, accepts only `VerifiedV2Pool`, builds the app, binds a supplied listener with readiness false, initializes and starts the leased worker registry, flips readiness true only after the barrier succeeds, and handles graceful shutdown. Keep `main.rs`, the default API state/routes, and legacy module exports unchanged in this commit. If worker initialization fails, readiness stays false and the test listener shuts down; business routes never serve during a partial start.
 
-- [ ] **Step 3: Add a readiness barrier**
+- [x] **Step 3: Add a readiness barrier**
 
 Readiness reports false until migrations, marker, cryptographic keys, context construction, listener binding, and dispatcher/worker initialization succeed. The single startup order is: verify database/configuration → construct contexts → bind with readiness false → start/verify workers → readiness true. Shutdown performs the inverse visibility boundary: readiness false → stop accepting business traffic → drain/cancel workers. Expose lag/failed-process health without treating a transient provider outage as database corruption.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cargo test bootstrap_ -- --nocapture
@@ -244,7 +244,7 @@ cargo test worker_registry_ -- --nocapture
 cargo test readiness_ -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/bootstrap tests

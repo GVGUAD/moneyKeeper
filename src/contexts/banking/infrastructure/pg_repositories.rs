@@ -819,6 +819,23 @@ impl PgBankingStore {
         }))
     }
 
+    pub(crate) async fn next_provider_import_candidate(
+        &self,
+    ) -> Result<Option<(UserId, ProviderEventId)>, BankingError> {
+        let row: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+            "SELECT user_id, provider_event_id
+             FROM banking.provider_event_processes
+             WHERE state IN ('ready', 'retry_due', 'posting')
+               AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
+             ORDER BY updated_at, provider_event_id
+             LIMIT 1",
+        )
+        .fetch_optional(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        Ok(row.map(|(user_id, event_id)| (UserId::new(user_id), ProviderEventId::new(event_id))))
+    }
+
     pub(crate) async fn complete_provider_import(
         &self,
         outcome: ProviderImportOutcome,
@@ -982,6 +999,28 @@ impl PgBankingStore {
             },
             user_id,
             ledger_account_id: LedgerAccountId::new(account),
+        }))
+    }
+
+    pub(crate) async fn next_balance_observation_candidate(
+        &self,
+    ) -> Result<Option<(UserId, BalanceObservationId)>, BankingError> {
+        let row: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+            "SELECT user_id, observation_id
+             FROM banking.balance_observation_deliveries
+             WHERE state IN ('pending', 'retry_due')
+               AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
+             ORDER BY updated_at, observation_id
+             LIMIT 1",
+        )
+        .fetch_optional(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        Ok(row.map(|(user_id, observation_id)| {
+            (
+                UserId::new(user_id),
+                BalanceObservationId::new(observation_id),
+            )
         }))
     }
 
