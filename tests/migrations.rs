@@ -20,6 +20,7 @@ async fn postgres() -> &'static SharedPostgres {
         .get_or_init(|| async {
             let container = Postgres::default()
                 .with_tag("16-alpine")
+                .with_startup_timeout(std::time::Duration::from_secs(120))
                 .start()
                 .await
                 .expect("start PostgreSQL 16 testcontainer");

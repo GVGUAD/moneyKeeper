@@ -693,6 +693,7 @@ mod tests {
     async fn fixture_sync_uses_injected_key_and_replays_to_one_evidence_fact() {
         let container = Postgres::default()
             .with_tag("16-alpine")
+            .with_startup_timeout(Duration::from_secs(120))
             .start()
             .await
             .expect("start PostgreSQL 16");
