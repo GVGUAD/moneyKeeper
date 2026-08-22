@@ -49,7 +49,8 @@ pub async fn fresh_v2_runtime() -> (VerifiedV2Pool, PgPool) {
         .initialize()
         .await
         .expect("initialize Finance V2 database");
-    let pool = PgPool::connect(database.database_url())
+    let pool = database
+        .connect()
         .await
         .expect("connect explicit test SQL pool");
     (verified, pool)

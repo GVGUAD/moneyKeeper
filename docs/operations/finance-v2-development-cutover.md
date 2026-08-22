@@ -187,11 +187,19 @@ platform secret, real provider connection, database, or volume.
 | Crash/retry/fencing rehearsal | 24 cases passed for outbox publish-before-ack redelivery, inbox rollback/deduplication, lease fencing, retry/dead-letter redaction, Banking one-effect imports, Sharing append-only state, Loans immutability, and Portfolio post/reverse recovery. | 29.20 s |
 | Process-local stop/start | The loopback readiness test started not-ready, exposed business traffic only after the worker barrier, removed readiness before shutdown, and stopped every worker. | 0.02 s test execution |
 
-The rehearsal found and corrected one candidate defect: Mail's characterized
-Phase 4 adapter still used a static encryption key. Mail now receives the
-validated Finance V2 key and version through its composition boundary; both
-OAuth storage and sync/message encryption use that injected key. No static
-Mail credential key remains in executable source.
+The rehearsal found and corrected two candidate defects:
+
+- Mail's characterized Phase 4 adapter still used a static encryption key.
+  Mail now receives the validated Finance V2 key and version through its
+  composition boundary; OAuth storage and sync/message encryption use that
+  injected key. No static Mail credential key remains in executable source.
+- The first canonical parallel `cargo test` run let ten tests each reserve two
+  default ten-connection pools against one 100-connection PostgreSQL container.
+  Two initializers timed out while all domain assertions that acquired a
+  connection passed. Test-only verified/raw pools are now explicitly bounded
+  to four connections; the same ten-test integration runtime suite then passed
+  10/10 at normal parallelism in 2.68 seconds (14.92 seconds including compile).
+  The production initializer retains its reviewed ten-connection pool.
 
 An actual legacy-service stop, platform `DATABASE_URL` switch, provider
 reconnection, and restoration of the prior binary were intentionally not

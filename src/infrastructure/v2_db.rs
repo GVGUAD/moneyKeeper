@@ -59,14 +59,25 @@ impl VerifiedV2Pool {
 /// legacy or arbitrary schema, fails a migration, or does not match the complete
 /// embedded Finance V2 lineage after migration.
 pub async fn initialize_v2(database_url: &str) -> anyhow::Result<VerifiedV2Pool> {
-    let pool = create_v2_pool(database_url).await?;
+    initialize_v2_with_pool_limit(database_url, 10).await
+}
+
+pub(crate) async fn initialize_v2_with_pool_limit(
+    database_url: &str,
+    maximum_connections: u32,
+) -> anyhow::Result<VerifiedV2Pool> {
+    ensure!(
+        maximum_connections > 0,
+        "database pool limit must be positive"
+    );
+    let pool = create_v2_pool(database_url, maximum_connections).await?;
     migrate_v2(&pool).await?;
     Ok(VerifiedV2Pool { pool })
 }
 
-async fn create_v2_pool(database_url: &str) -> anyhow::Result<PgPool> {
+async fn create_v2_pool(database_url: &str, maximum_connections: u32) -> anyhow::Result<PgPool> {
     PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(maximum_connections)
         .connect(database_url)
         .await
         .context("connect to Finance V2 PostgreSQL database")

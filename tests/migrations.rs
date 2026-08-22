@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use moneykeeper::infrastructure::test_db::{FreshV2Database, create_fresh_database};
-use moneykeeper::infrastructure::v2_db::{V2_MIGRATOR, initialize_v2};
+use moneykeeper::infrastructure::v2_db::V2_MIGRATOR;
 use sqlx::{Executor, PgPool};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, ImageExt};
@@ -42,7 +42,8 @@ async fn fresh_database() -> FreshV2Database {
 }
 
 async fn assert_rejected_before_v2_migrations(database: &FreshV2Database) {
-    let error = initialize_v2(database.database_url())
+    let error = database
+        .initialize()
         .await
         .expect_err("unmarked non-empty database must be rejected");
     assert!(
@@ -75,9 +76,7 @@ async fn database_generation_empty_database_migrates_to_complete_v2() {
 async fn database_generation_complete_v2_reopens_idempotently() {
     let database = fresh_database().await;
     database.initialize().await.expect("initialize V2 DB");
-    initialize_v2(database.database_url())
-        .await
-        .expect("reopen marked V2 DB");
+    database.initialize().await.expect("reopen marked V2 DB");
 }
 
 #[tokio::test]
@@ -89,7 +88,8 @@ async fn nonempty_unmarked_database_is_rejected_before_v2_migrations_run() {
         .unwrap();
     pool.close().await;
 
-    let error = initialize_v2(database.database_url())
+    let error = database
+        .initialize()
         .await
         .expect_err("arbitrary non-empty database must be rejected");
     assert!(
@@ -166,7 +166,7 @@ async fn empty_database_is_initialized_as_finance_v2() {
 async fn already_marked_v2_database_is_reopened_idempotently() {
     let database = fresh_database().await;
     database.initialize().await.unwrap();
-    let verified = initialize_v2(database.database_url()).await.unwrap();
+    let verified = database.initialize().await.unwrap();
     let mut connection = verified.acquire().await.unwrap();
 
     let marker_count: i64 =
@@ -197,7 +197,8 @@ async fn database_generation_wrong_lineage_marker_is_rejected_before_migration()
     .unwrap();
     pool.close().await;
 
-    let error = initialize_v2(database.database_url())
+    let error = database
+        .initialize()
         .await
         .expect_err("wrong marker must be rejected");
     assert!(
@@ -231,7 +232,8 @@ async fn database_generation_partial_lineage_resumes_to_the_embedded_baseline() 
     assert_eq!(before, vec![1, 2, 3, 4]);
     pool.close().await;
 
-    let verified = initialize_v2(database.database_url())
+    let verified = database
+        .initialize()
         .await
         .expect("marked partial V2 lineage should resume");
     let mut connection = verified.acquire().await.unwrap();
@@ -263,7 +265,8 @@ async fn database_generation_failure_returns_no_pool_and_redacts_database_passwo
         .unwrap();
     pool.close().await;
 
-    let error = initialize_v2(database.database_url())
+    let error = database
+        .initialize()
         .await
         .expect_err("conflicting partial database must not produce a verified pool");
     let message = format!("{error:#}");

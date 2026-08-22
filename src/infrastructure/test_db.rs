@@ -7,10 +7,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, ensure};
+use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
-use super::v2_db::{VerifiedV2Pool, initialize_v2};
+use super::v2_db::{VerifiedV2Pool, initialize_v2_with_pool_limit};
+
+const TEST_POOL_MAX_CONNECTIONS: u32 = 4;
 
 static DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -28,7 +31,16 @@ impl FreshV2Database {
 
     /// Runs the guarded Finance V2 initialization path.
     pub async fn initialize(&self) -> anyhow::Result<VerifiedV2Pool> {
-        initialize_v2(&self.database_url).await
+        initialize_v2_with_pool_limit(&self.database_url, TEST_POOL_MAX_CONNECTIONS).await
+    }
+
+    /// Opens a bounded raw pool for integration assertions.
+    pub async fn connect(&self) -> anyhow::Result<sqlx::PgPool> {
+        PgPoolOptions::new()
+            .max_connections(TEST_POOL_MAX_CONNECTIONS)
+            .connect(&self.database_url)
+            .await
+            .context("connect to isolated Finance V2 test database")
     }
 }
 
