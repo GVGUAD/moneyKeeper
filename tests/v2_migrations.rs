@@ -1,4 +1,6 @@
-use moneykeeper::infrastructure::v2_db::initialize_v2;
+use std::borrow::Cow;
+
+use moneykeeper::infrastructure::v2_db::{V2_MIGRATOR, initialize_v2};
 use moneykeeper::infrastructure::v2_test_db::{FreshV2Database, create_fresh_database};
 use sqlx::{Executor, PgPool};
 use testcontainers::runners::AsyncRunner;
@@ -64,13 +66,13 @@ async fn assert_rejected_before_v2_migrations(database: &FreshV2Database) {
 }
 
 #[tokio::test]
-async fn empty_database_passes_v2_preflight() {
+async fn database_generation_empty_database_migrates_to_complete_v2() {
     let database = fresh_database().await;
     database.initialize().await.expect("initialize empty V2 DB");
 }
 
 #[tokio::test]
-async fn marked_v2_database_passes_v2_preflight() {
+async fn database_generation_complete_v2_reopens_idempotently() {
     let database = fresh_database().await;
     database.initialize().await.expect("initialize V2 DB");
     initialize_v2(database.database_url())
@@ -79,7 +81,7 @@ async fn marked_v2_database_passes_v2_preflight() {
 }
 
 #[tokio::test]
-async fn legacy_sqlx_database_is_rejected_before_v2_migrations_run() {
+async fn database_generation_legacy_database_is_rejected_before_v2_migrations_run() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url())
         .await
@@ -211,6 +213,109 @@ async fn already_marked_v2_database_is_reopened_idempotently() {
             .await
             .unwrap();
     assert_eq!(marker_count, 1);
+}
+
+#[tokio::test]
+async fn database_generation_wrong_lineage_marker_is_rejected_before_migration() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    sqlx::query("CREATE SCHEMA shared_kernel")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE shared_kernel.database_lineage (singleton BOOLEAN, lineage TEXT)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO shared_kernel.database_lineage (singleton, lineage) VALUES (TRUE, 'legacy')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let error = initialize_v2(database.database_url())
+        .await
+        .expect_err("wrong marker must be rejected");
+    assert!(
+        format!("{error:#}").contains("invalid Finance V2 lineage marker"),
+        "unexpected error: {error:#}"
+    );
+
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let migration_history: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(migration_history.is_none());
+}
+
+#[tokio::test]
+async fn database_generation_partial_lineage_resumes_to_the_embedded_baseline() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let partial = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(V2_MIGRATOR.iter().take(4).cloned().collect()),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    partial.run(&pool).await.unwrap();
+    let before: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(before, vec![1, 2, 3, 4]);
+    pool.close().await;
+
+    let verified = initialize_v2(database.database_url())
+        .await
+        .expect("marked partial V2 lineage should resume");
+    let mut connection = verified.acquire().await.unwrap();
+    let after: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+    let expected: Vec<i64> = V2_MIGRATOR
+        .iter()
+        .filter(|migration| migration.migration_type.is_up_migration())
+        .map(|migration| migration.version)
+        .collect();
+    assert_eq!(after, expected);
+}
+
+#[tokio::test]
+async fn database_generation_failure_returns_no_pool_and_redacts_database_password() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let root_only = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(V2_MIGRATOR.iter().take(1).cloned().collect()),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    root_only.run(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE integration.outbox_messages (conflict BOOLEAN)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+
+    let error = initialize_v2(database.database_url())
+        .await
+        .expect_err("conflicting partial database must not produce a verified pool");
+    let message = format!("{error:#}");
+    assert!(message.contains("run Finance V2 migrations"), "{message}");
+    assert!(!message.contains("postgres:postgres"), "{message}");
+    assert!(!message.contains(database.database_url()), "{message}");
+
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let versions: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(versions, vec![1]);
 }
 
 #[tokio::test]

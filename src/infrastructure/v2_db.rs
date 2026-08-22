@@ -8,7 +8,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{Postgres, Transaction};
 
-/// The immutable Finance V2 migration lineage through the parallel Banking baseline.
+/// The immutable, complete Finance V2 migration lineage embedded in this binary.
 pub static V2_MIGRATOR: Migrator = sqlx::migrate!("src/infrastructure/migrations_v2");
 
 const DATABASE_LINEAGE: &str = "finance-v2";
@@ -64,7 +64,7 @@ pub async fn initialize_v2(database_url: &str) -> anyhow::Result<VerifiedV2Pool>
     Ok(VerifiedV2Pool { pool })
 }
 
-pub(crate) async fn create_v2_pool(database_url: &str) -> anyhow::Result<PgPool> {
+async fn create_v2_pool(database_url: &str) -> anyhow::Result<PgPool> {
     PgPoolOptions::new()
         .max_connections(10)
         .connect(database_url)
@@ -72,7 +72,7 @@ pub(crate) async fn create_v2_pool(database_url: &str) -> anyhow::Result<PgPool>
         .context("connect to Finance V2 PostgreSQL database")
 }
 
-pub(crate) async fn migrate_v2(pool: &PgPool) -> anyhow::Result<()> {
+async fn migrate_v2(pool: &PgPool) -> anyhow::Result<()> {
     preflight(pool).await?;
     V2_MIGRATOR
         .run(pool)
@@ -241,6 +241,11 @@ async fn verify_complete_lineage(pool: &PgPool) -> anyhow::Result<()> {
         .filter(|migration| migration.migration_type.is_up_migration())
         .map(|migration| migration.version)
         .collect();
+
+    ensure!(
+        !expected.is_empty(),
+        "Finance V2 binary contains no embedded migration baseline"
+    );
 
     ensure!(
         applied == expected,

@@ -169,7 +169,7 @@ git commit -m "docs(cutover): add finance v2 development runbook"
 - Modify: `tests/v2_migrations.rs`
 - Create/modify: startup database-generation tests in the Phase 1 test location
 
-- [ ] **Step 1: Write failing generation-guard tests**
+- [x] **Step 1: Write failing generation-guard tests**
 
 Test startup against:
 
@@ -181,22 +181,22 @@ Test startup against:
 
 The empty database must migrate to the complete baseline before construction; the complete V2 database reopens idempotently; and a correctly marked partial V2 lineage may resume migrations but cannot reach construction unless it reaches the exact latest baseline. Legacy/unmarked non-empty/wrong-marker databases are rejected before any V2 SQL mutates them. An injected migration failure leaves listeners and workers stopped. Error messages must identify the safety problem without logging the database URL password.
 
-- [ ] **Step 2: Finalize the verified V2 initializer without switching the legacy runtime**
+- [x] **Step 2: Finalize the verified V2 initializer without switching the legacy runtime**
 
 Harden Phase 1's `initialize_v2`/`VerifiedV2Pool` so its embedded migrator and latest-baseline check cannot drift. Keep the default `src/infrastructure/db.rs`, `main.rs`, `v2_test_db`, `src/infrastructure/test_db.rs`, `tests/common/mod.rs`, and old migration/API runtime unchanged in this commit. Task 4 atomically switches the application call site together with bootstrap/router promotion; Task 6 later promotes the test helper after legacy tests are removed. Do not configure `ignore_missing` to tolerate legacy history.
 
-- [ ] **Step 3: Enforce startup order**
+- [x] **Step 3: Enforce startup order**
 
 Encode the pre-bootstrap portion as connect, run V2 migrations, verify generation/latest baseline, and return `VerifiedV2Pool`. The parallel V2 bootstrap tests then run readiness invariants with provider calls disabled. No external provider call happens before the marker check. The default legacy application is still coherent/runnable at this commit.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```bash
 SQLX_OFFLINE=true cargo test --test v2_migrations -- --nocapture
 cargo test database_generation -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/infrastructure/v2_db.rs tests/v2_migrations.rs
