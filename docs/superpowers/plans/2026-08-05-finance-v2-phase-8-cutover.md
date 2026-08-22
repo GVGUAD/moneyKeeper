@@ -354,11 +354,11 @@ git commit -m "refactor(cutover): remove legacy finance runtime"
 - Create: `scripts/check_no_legacy_finance_sql.sh`
 - Modify/create: repository CI workflow
 
-- [ ] **Step 1: Preserve legacy checksums without executing legacy SQL**
+- [x] **Step 1: Preserve legacy checksums without executing legacy SQL**
 
 The checksum test reads all 25 files, verifies the frozen version/name/checksum manifest, and fails on addition, removal, or byte change. It must not run those migrations against a V2 database.
 
-- [ ] **Step 2: Promote the V2 test helper and make fresh-baseline invariants the migration suite**
+- [x] **Step 2: Promote the V2 test helper and make fresh-baseline invariants the migration suite**
 
 Only after Tasks 4–5 have replaced/deleted legacy API/runtime tests, switch `src/infrastructure/test_db.rs` and `tests/common/mod.rs` to the single V2 migrator/helper; remove or rename the temporary parallel helper without duplicating container logic. On PostgreSQL 16, migrate an empty database through the complete V2 lineage and test:
 
@@ -374,15 +374,15 @@ Only after Tasks 4–5 have replaced/deleted legacy API/runtime tests, switch `s
 
 Delete the old deployed-0011/upgrade/backfill/concurrent-index scenarios; they describe the legacy lineage only.
 
-- [ ] **Step 3: Add executable-SQL and import guards**
+- [x] **Step 3: Add executable-SQL and import guards**
 
 The script/test scans Rust source and active V2 SQL for legacy table names such as `accounts`, `transactions`, `transfer_links`, `bank_connections`, `subscription_charges`, and legacy unqualified queries. Use token-aware patterns and an explicit allowlist for the frozen legacy migration directory, checksum test, and documentation. It also rejects `contexts::<x>::infrastructure`/repository imports from another context.
 
-- [ ] **Step 4: Wire CI gates**
+- [x] **Step 4: Wire CI gates**
 
 CI runs format, clippy with warnings denied, full tests, fresh V2 migration tests, architecture/legacy SQL scans, OpenAPI validation, and secret/logging tests.
 
-- [ ] **Step 5: Run locally**
+- [x] **Step 5: Run locally**
 
 ```bash
 ./scripts/check_no_legacy_finance_sql.sh
@@ -391,7 +391,7 @@ SQLX_OFFLINE=true cargo test --test migrations -- --nocapture
 cargo test --test context_boundaries -- --nocapture
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/infrastructure/test_db.rs tests/common/mod.rs tests scripts .github
