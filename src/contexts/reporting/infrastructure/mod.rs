@@ -1,4 +1,5 @@
 mod loan_projection;
+mod portfolio_projection;
 pub(crate) mod projections;
 pub(crate) mod queries;
 pub(crate) mod sharing_projection;

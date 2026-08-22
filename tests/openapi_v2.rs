@@ -19,6 +19,18 @@ fn openapi_v2_is_unversioned_and_has_exact_finance_routes() {
         .map(String::as_str)
         .collect();
     let expected = BTreeSet::from([
+        "/portfolio-accounts",
+        "/portfolio-accounts/{id}",
+        "/portfolio-accounts/{id}/archive",
+        "/portfolio-accounts/{id}/restore",
+        "/portfolio-accounts/{id}/activity",
+        "/instruments",
+        "/instruments/{id}",
+        "/instruments/ovdp",
+        "/portfolio-transactions",
+        "/portfolio-transactions/{id}/reversals",
+        "/portfolio-positions",
+        "/valuations",
         "/currencies",
         "/currencies/{code}",
         "/categories",
@@ -146,7 +158,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 92);
+    assert_eq!(operation_count, 107);
 }
 
 #[test]

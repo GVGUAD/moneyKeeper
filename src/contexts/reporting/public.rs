@@ -1,5 +1,7 @@
 //! Stable read-only Reporting contracts.
-pub use super::application::projectors::{ProjectionAction, classify};
+pub use super::application::projectors::{
+    PortfolioProjectionAction, ProjectionAction, classify, classify_portfolio,
+};
 use super::infrastructure::PgReportingStore;
 use crate::shared_kernel::CurrencyCode;
 use chrono::{DateTime, Utc};
@@ -51,6 +53,24 @@ impl ReportingFacade {
         event: crate::contexts::loans::public::LoanEventV1,
     ) -> Result<ProjectionApplyResult, sqlx::Error> {
         self.store.apply_loan_event(event).await
+    }
+    pub async fn apply_portfolio_event(
+        &self,
+        event: crate::contexts::portfolio::public::PortfolioEventV1,
+    ) -> Result<ProjectionApplyResult, sqlx::Error> {
+        self.store.apply_portfolio_event(event).await
+    }
+    pub async fn portfolio_summary(
+        &self,
+        user: crate::shared_kernel::UserId,
+    ) -> Result<Vec<PortfolioSummary>, sqlx::Error> {
+        self.store.portfolio_summary(user).await
+    }
+    pub async fn rebuild_portfolio(
+        &self,
+        events: Vec<crate::contexts::portfolio::public::PortfolioEventV1>,
+    ) -> Result<(), sqlx::Error> {
+        self.store.rebuild_portfolio(events).await
     }
     pub async fn loan_summary(
         &self,
@@ -134,5 +154,21 @@ pub struct LoanSummary {
     #[serde(with = "rust_decimal::serde::str")]
     pub fees: rust_decimal::Decimal,
     pub status: String,
+    pub source_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PortfolioSummary {
+    pub account_id: crate::contexts::portfolio::public::PortfolioAccountId,
+    pub instrument_id: crate::contexts::portfolio::public::InstrumentId,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub quantity: rust_decimal::Decimal,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub remaining_known_cost: rust_decimal::Decimal,
+    pub realized_gain_loss: Option<rust_decimal::Decimal>,
+    pub market_value: Option<rust_decimal::Decimal>,
+    pub currency: CurrencyCode,
+    pub valuation_as_of: Option<DateTime<Utc>>,
+    pub incomplete: bool,
     pub source_sequence: u64,
 }

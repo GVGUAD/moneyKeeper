@@ -21,6 +21,11 @@ use crate::{
             RECEIPT_EVIDENCE_RECORDED_V1, ReceiptEvidenceId, ReceiptEvidenceKind,
             ReceiptEvidenceRecordedV1, SourceMessageId,
         },
+        portfolio::public::{
+            AccountLifecycle as PortfolioAccountLifecycle, InstrumentId, PortfolioAccountId,
+            PortfolioEventFactV1, PortfolioEventMetadataV1, PortfolioEventV1,
+            PortfolioTransactionId, PortfolioTransactionKind, ValuationSnapshotId,
+        },
         recurring::public::{
             CHARGE_EVIDENCE_RECORDED_V1, ChargeEvidenceId, ChargeEvidenceRecordedV1,
             RecurringFacade, SubscriptionId,
@@ -297,6 +302,13 @@ impl Phase4EventRouter {
                     .map_err(RouteError::Database)?;
                 Ok(true)
             }
+            event_type if event_type.starts_with("portfolio.") => {
+                self.reporting
+                    .apply_portfolio_event(portfolio_event(event)?)
+                    .await
+                    .map_err(RouteError::Database)?;
+                Ok(true)
+            }
             _ => Ok(false),
         }
     }
@@ -316,6 +328,132 @@ fn sharing_event(event: &RoutedEvent, fact: SharingEventFactV1) -> SharingEventV
         },
         fact,
     }
+}
+
+fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> {
+    let text = |key: &str| {
+        event
+            .payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or(RouteError::InvalidPayload)
+    };
+    let decimal = |key: &str| {
+        text(key)?
+            .parse::<Decimal>()
+            .map_err(|_| RouteError::InvalidPayload)
+    };
+    let account = || payload_uuid(&event.payload, "account_id").map(PortfolioAccountId::new);
+    let instrument = || payload_uuid(&event.payload, "instrument_id").map(InstrumentId::new);
+    let transaction =
+        || payload_uuid(&event.payload, "transaction_id").map(PortfolioTransactionId::new);
+    let fact = match event.event_type.as_str() {
+        "portfolio.instrument-created.v1" => PortfolioEventFactV1::InstrumentCreated {
+            instrument_id: instrument()?,
+        },
+        "portfolio.account-changed.v1" => PortfolioEventFactV1::AccountChanged {
+            account_id: account()?,
+            lifecycle: if text("lifecycle")? == "active" {
+                PortfolioAccountLifecycle::Active
+            } else {
+                PortfolioAccountLifecycle::Archived
+            },
+        },
+        "portfolio.transaction-posted.v1" => PortfolioEventFactV1::TransactionPosted {
+            transaction_id: transaction()?,
+            account_id: account()?,
+            instrument_id: instrument()?,
+            kind: transaction_kind(text("kind")?)?,
+            quantity: decimal("quantity")?,
+            currency: text("currency")?.to_owned(),
+        },
+        "portfolio.transaction-reversed.v1" => PortfolioEventFactV1::TransactionReversed {
+            transaction_id: transaction()?,
+            original_transaction_id: payload_uuid(&event.payload, "original_transaction_id")
+                .map(PortfolioTransactionId::new)?,
+        },
+        "portfolio.position-changed.v1" => PortfolioEventFactV1::PositionChanged {
+            account_id: account()?,
+            instrument_id: instrument()?,
+            quantity: decimal("quantity")?,
+            known_cost_quantity: decimal("known_cost_quantity")?,
+            unknown_cost_quantity: decimal("unknown_cost_quantity")?,
+            remaining_known_cost: decimal("remaining_known_cost")?,
+            realized_gain_loss: event
+                .payload
+                .get("realized_gain_loss")
+                .and_then(serde_json::Value::as_str)
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| RouteError::InvalidPayload)?,
+            currency: text("currency")?.to_owned(),
+            position_version: event
+                .payload
+                .get("position_version")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or(RouteError::InvalidPayload)?,
+        },
+        "portfolio.valuation-recorded.v1" => PortfolioEventFactV1::ValuationRecorded {
+            snapshot_id: payload_uuid(&event.payload, "snapshot_id")
+                .map(ValuationSnapshotId::new)?,
+            account_id: account()?,
+            instrument_id: instrument()?,
+            quantity: decimal("quantity")?,
+            price_per_instrument: decimal("price_per_instrument")?,
+            accrued_interest_per_instrument: decimal("accrued_interest_per_instrument")?,
+            market_value: decimal("market_value")?,
+            currency: text("currency")?.to_owned(),
+            quoted_at: serde_json::from_value(
+                event
+                    .payload
+                    .get("quoted_at")
+                    .cloned()
+                    .ok_or(RouteError::InvalidPayload)?,
+            )
+            .map_err(|_| RouteError::InvalidPayload)?,
+            source: text("source")?.to_owned(),
+        },
+        "portfolio.cash-settlement-posted.v1" => PortfolioEventFactV1::CashSettlementPosted {
+            transaction_id: transaction()?,
+            journal_id: payload_uuid(&event.payload, "journal_id").map(JournalEntryId::new)?,
+        },
+        "portfolio.cash-settlement-reversed.v1" => PortfolioEventFactV1::CashSettlementReversed {
+            transaction_id: transaction()?,
+            journal_id: payload_uuid(&event.payload, "journal_id").map(JournalEntryId::new)?,
+            reversal_journal_id: payload_uuid(&event.payload, "reversal_journal_id")
+                .map(JournalEntryId::new)?,
+        },
+        "portfolio.cash-settlement-cancelled-without-effect.v1" => {
+            PortfolioEventFactV1::CashSettlementCancelledWithoutEffect {
+                transaction_id: transaction()?,
+            }
+        }
+        _ => return Err(RouteError::InvalidPayload),
+    };
+    Ok(PortfolioEventV1 {
+        metadata: PortfolioEventMetadataV1 {
+            schema_version: event.schema_version,
+            event_id: EventId::new(event.event_id),
+            user_id: UserId::new(event.user_id),
+            sequence: event.sequence,
+            correlation_id: CorrelationId::new(event.correlation_id),
+            occurred_at: event.occurred_at,
+            recorded_at: event.occurred_at,
+        },
+        fact,
+    })
+}
+fn transaction_kind(value: &str) -> Result<PortfolioTransactionKind, RouteError> {
+    Ok(match value {
+        "opening_position" => PortfolioTransactionKind::OpeningPosition,
+        "buy" => PortfolioTransactionKind::Buy,
+        "sell" => PortfolioTransactionKind::Sell,
+        "coupon" => PortfolioTransactionKind::Coupon,
+        "redemption" => PortfolioTransactionKind::Redemption,
+        "position_correction" => PortfolioTransactionKind::PositionCorrection,
+        "reversal" => PortfolioTransactionKind::Reversal,
+        _ => return Err(RouteError::InvalidPayload),
+    })
 }
 
 fn json_to_tagged_fact(kind: &str, payload: &serde_json::Value) -> serde_json::Value {
@@ -474,6 +612,7 @@ fn is_phase4_event(event_type: &str) -> bool {
         || event_type.starts_with("mail.")
         || event_type.starts_with("recurring.")
         || event_type.starts_with("loans.")
+        || event_type.starts_with("portfolio.")
         || event_type == FX_OBSERVED_V1
 }
 
