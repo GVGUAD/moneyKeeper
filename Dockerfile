@@ -29,8 +29,8 @@ COPY --from=builder /app/target/release/moneykeeper .
 
 ENV RUST_LOG=info
 ENV BIND_ADDR=0.0.0.0:8080
-# DATABASE_URL and SUPABASE_JWT_SECRET are injected via fly secrets — not set here
-# Removed: DATABASE_URL default, JWT_SECRET, VOLUME /data
+# Database, Finance V2 cryptographic keys, and Gmail OAuth credentials are
+# injected by the platform. No secret or database default is baked into image.
 
 EXPOSE 8080
 ENTRYPOINT ["./moneykeeper"]

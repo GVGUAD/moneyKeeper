@@ -414,27 +414,27 @@ If the repository uses a CI directory other than `.github`, stage that actual pa
 - Create: `docs/operations/integration-reconnection.md`
 - Create: `docs/architecture/finance-v2-context-map.md`
 
-- [ ] **Step 1: Give the V2 database and volume distinct identities**
+- [x] **Step 1: Give the V2 database and volume distinct identities**
 
 Use explicit names such as `moneykeeper_v2` and a new V2 volume. Do not reuse the current named volume. Document how to select the old versus new URL without printing secrets.
 
-- [ ] **Step 2: Document configuration**
+- [x] **Step 2: Document configuration**
 
 Include database generation expectation, encryption key/key version, Supabase/JWKS, public URL, Monobank webhook base URL, Gmail OAuth redirect, worker lease/backoff settings, and safe logging. Example values must not be usable credentials.
 
-- [ ] **Step 3: Document reconnection**
+- [x] **Step 3: Document reconnection**
 
 Explain that no token/OAuth state is migrated. Users reconnect Monobank, review every discovered card/current account/jar and native currency before mapping, then reconnect Gmail and request a sync. Failed provider events/reconciliation cases are visible and should be resolved before relying on reports.
 
-- [ ] **Step 4: Document rollback and preservation**
+- [x] **Step 4: Document rollback and preservation**
 
 Rollback stops V2, restores the prior binary/config, and points back to the untouched legacy database. Explicitly state that V2-created data is not copied back. Keep both database identifiers and backups until the development owner chooses a later manual cleanup outside this plan.
 
-- [ ] **Step 5: Add a context ownership guide**
+- [x] **Step 5: Add a context ownership guide**
 
 List each schema/module owner, allowed public dependency direction, event contracts, and the rule against repository/private-table imports.
 
-- [ ] **Step 6: Validate Compose/config without starting against a real DB**
+- [x] **Step 6: Validate Compose/config without starting against a real DB**
 
 Use the repository's non-mutating configuration-validation commands, then commit.
 
