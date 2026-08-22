@@ -1,6 +1,6 @@
 //! Guarded database initialization for the parallel Finance V2 lineage.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use anyhow::{Context, bail, ensure};
 use sqlx::migrate::Migrator;
@@ -20,6 +20,7 @@ const DATABASE_LINEAGE: &str = "finance-v2";
 #[derive(Clone)]
 pub struct VerifiedV2Pool {
     pool: PgPool,
+    _lifetime_guards: Vec<Arc<dyn Send + Sync>>,
 }
 
 impl fmt::Debug for VerifiedV2Pool {
@@ -59,12 +60,13 @@ impl VerifiedV2Pool {
 /// legacy or arbitrary schema, fails a migration, or does not match the complete
 /// embedded Finance V2 lineage after migration.
 pub async fn initialize_v2(database_url: &str) -> anyhow::Result<VerifiedV2Pool> {
-    initialize_v2_with_pool_limit(database_url, 10).await
+    initialize_v2_with_pool_limit_and_guards(database_url, 10, Vec::new()).await
 }
 
-pub(crate) async fn initialize_v2_with_pool_limit(
+pub(crate) async fn initialize_v2_with_pool_limit_and_guards(
     database_url: &str,
     maximum_connections: u32,
+    lifetime_guards: Vec<Arc<dyn Send + Sync>>,
 ) -> anyhow::Result<VerifiedV2Pool> {
     ensure!(
         maximum_connections > 0,
@@ -72,7 +74,10 @@ pub(crate) async fn initialize_v2_with_pool_limit(
     );
     let pool = create_v2_pool(database_url, maximum_connections).await?;
     migrate_v2(&pool).await?;
-    Ok(VerifiedV2Pool { pool })
+    Ok(VerifiedV2Pool {
+        pool,
+        _lifetime_guards: lifetime_guards,
+    })
 }
 
 async fn create_v2_pool(database_url: &str, maximum_connections: u32) -> anyhow::Result<PgPool> {

@@ -542,7 +542,7 @@ No commit is created for environment-only state unless the rehearsal reveals a d
 
 ## Task 10: Final hardening gate
 
-- [ ] **Step 1: Run source/migration checks**
+- [x] **Step 1: Run source/migration checks**
 
 ```bash
 cargo fmt --check
@@ -552,7 +552,7 @@ cargo test --test legacy_migration_checksums -- --nocapture
 SQLX_OFFLINE=true cargo test --test migrations -- --nocapture
 ```
 
-- [ ] **Step 2: Run the complete suite and OpenAPI validation**
+- [x] **Step 2: Run the complete suite and OpenAPI validation**
 
 ```bash
 cargo test
@@ -564,7 +564,7 @@ cargo test --test openapi -- --nocapture
 
 Confirm projection rebuild equality, no failed/dead process manager without an operator-visible reason, provider/mail cursor health, webhook authentication, expected worker lease ownership, and database marker/version.
 
-- [ ] **Step 4: Verify repository cleanliness**
+- [x] **Step 4: Verify repository cleanliness**
 
 `git status --short` contains no generated secrets, raw provider payloads, database dumps, or unintended edits to `src/infrastructure/migrations`.
 
@@ -602,14 +602,14 @@ The environment switch itself is not a source-code commit. Deploy only the exact
 
 ## Exit criteria
 
-- [ ] V2 refuses legacy/wrong databases before migration and refuses any still-partial post-migration database before starting workers or serving readiness.
-- [ ] All runtime and test SQLx migrators use `src/infrastructure/migrations_v2`.
-- [ ] `src/infrastructure/migrations` remains byte-for-byte unchanged and protected by a file-only checksum test.
-- [ ] The application uses context façades/process managers; legacy finance handlers/services/repositories are absent from executable code.
-- [ ] Replacement endpoints are unversioned; there is no compatibility `/v2` and no dual write.
-- [ ] No direct balance setter, hard financial delete, or arbitrary posting endpoint exists.
-- [ ] Fresh-baseline invariant, architecture, legacy-SQL, OpenAPI, security, format, clippy, and full suites pass.
+- [x] V2 refuses legacy/wrong databases before migration and refuses any still-partial post-migration database before starting workers or serving readiness.
+- [x] All runtime and test SQLx migrators use `src/infrastructure/migrations_v2`.
+- [x] `src/infrastructure/migrations` remains byte-for-byte unchanged and protected by a file-only checksum test.
+- [x] The application uses context façades/process managers; legacy finance handlers/services/repositories are absent from executable code.
+- [x] Replacement endpoints are unversioned; there is no compatibility `/v2` and no dual write.
+- [x] No direct balance setter, hard financial delete, or arbitrary posting endpoint exists.
+- [x] Fresh-baseline invariant, architecture, legacy-SQL, OpenAPI, security, format, clippy, and full suites pass.
 - [ ] Legacy workers were stopped before `DATABASE_URL` changed; V2 workers started only after readiness gates.
-- [ ] Monobank and Gmail reconnection requirements and current status are visible.
+- [x] Monobank and Gmail reconnection requirements and current status are visible.
 - [ ] The old database/volume is preserved, and rollback was rehearsed without a reverse data migration.
 - [ ] The development deployment's balances, histories, process states, projections, and reports pass the golden smoke scenario.

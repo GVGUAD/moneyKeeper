@@ -1,45 +1,13 @@
+mod v2_test_support;
+
 use std::borrow::Cow;
 
-use moneykeeper::infrastructure::test_db::{FreshV2Database, create_fresh_database};
+use moneykeeper::infrastructure::test_db::FreshV2Database;
 use moneykeeper::infrastructure::v2_db::V2_MIGRATOR;
 use sqlx::{Executor, PgPool};
-use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, ImageExt};
-use testcontainers_modules::postgres::Postgres;
-use tokio::sync::OnceCell;
-
-static CONTAINER: OnceCell<SharedPostgres> = OnceCell::const_new();
-
-struct SharedPostgres {
-    _container: ContainerAsync<Postgres>,
-    admin_url: String,
-}
-
-async fn postgres() -> &'static SharedPostgres {
-    CONTAINER
-        .get_or_init(|| async {
-            let container = Postgres::default()
-                .with_tag("16-alpine")
-                .with_startup_timeout(std::time::Duration::from_secs(120))
-                .start()
-                .await
-                .expect("start PostgreSQL 16 testcontainer");
-            let port = container
-                .get_host_port_ipv4(5432)
-                .await
-                .expect("resolve PostgreSQL test port");
-            SharedPostgres {
-                _container: container,
-                admin_url: format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres"),
-            }
-        })
-        .await
-}
 
 async fn fresh_database() -> FreshV2Database {
-    create_fresh_database(&postgres().await.admin_url)
-        .await
-        .expect("create an isolated database")
+    v2_test_support::fresh_v2_database().await
 }
 
 async fn assert_rejected_before_v2_migrations(database: &FreshV2Database) {

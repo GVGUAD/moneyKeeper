@@ -5,23 +5,26 @@
 //! database through an already-running PostgreSQL admin endpoint.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, ensure};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
-use super::v2_db::{VerifiedV2Pool, initialize_v2_with_pool_limit};
+use super::v2_db::{VerifiedV2Pool, initialize_v2_with_pool_limit_and_guards};
 
-const TEST_POOL_MAX_CONNECTIONS: u32 = 2;
-static DATABASE_LIFETIME_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+const TEST_POOL_MAX_CONNECTIONS: u32 = 3;
+static DATABASE_INITIALIZATION_PERMITS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
 
 static DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A uniquely named empty PostgreSQL database owned by a test container.
 pub struct FreshV2Database {
     database_url: String,
-    _lifetime_permit: tokio::sync::SemaphorePermit<'static>,
+    initialization_permit: Arc<Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
+    lifetime_guards: Vec<Arc<dyn Send + Sync>>,
 }
 
 impl FreshV2Database {
@@ -32,7 +35,17 @@ impl FreshV2Database {
 
     /// Runs the guarded Finance V2 initialization path.
     pub async fn initialize(&self) -> anyhow::Result<VerifiedV2Pool> {
-        initialize_v2_with_pool_limit(&self.database_url, TEST_POOL_MAX_CONNECTIONS).await
+        let result = initialize_v2_with_pool_limit_and_guards(
+            &self.database_url,
+            TEST_POOL_MAX_CONNECTIONS,
+            self.lifetime_guards.clone(),
+        )
+        .await;
+        self.initialization_permit
+            .lock()
+            .expect("Finance V2 test initialization permit mutex poisoned")
+            .take();
+        result
     }
 
     /// Opens a bounded raw pool for integration assertions.
@@ -43,6 +56,12 @@ impl FreshV2Database {
             .await
             .context("connect to isolated Finance V2 test database")
     }
+
+    #[doc(hidden)]
+    pub fn with_lifetime_guard(mut self, guard: Arc<dyn Send + Sync>) -> Self {
+        self.lifetime_guards.push(guard);
+        self
+    }
 }
 
 /// Creates a unique empty database through `admin_database_url`.
@@ -52,8 +71,8 @@ impl FreshV2Database {
 /// Returns an error when the admin URL is malformed or PostgreSQL cannot create
 /// or connect to the database.
 pub async fn create_fresh_database(admin_database_url: &str) -> anyhow::Result<FreshV2Database> {
-    let lifetime_permit = DATABASE_LIFETIME_PERMITS
-        .acquire()
+    let initialization_permit = Arc::clone(&DATABASE_INITIALIZATION_PERMITS)
+        .acquire_owned()
         .await
         .context("acquire Finance V2 test database concurrency permit")?;
     let sequence = DATABASE_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -70,7 +89,8 @@ pub async fn create_fresh_database(admin_database_url: &str) -> anyhow::Result<F
 
     Ok(FreshV2Database {
         database_url: replace_database_name(admin_database_url, &database_name)?,
-        _lifetime_permit: lifetime_permit,
+        initialization_permit: Arc::new(Mutex::new(Some(initialization_permit))),
+        lifetime_guards: Vec::new(),
     })
 }
 
