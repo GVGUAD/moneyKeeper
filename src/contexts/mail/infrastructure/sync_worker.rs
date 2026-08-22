@@ -2,13 +2,8 @@
 
 use std::time::Duration;
 
-use aes_gcm::{
-    Aes256Gcm, KeyInit, Nonce,
-    aead::{Aead, Payload},
-};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use rand::{RngCore, rngs::OsRng};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -18,10 +13,7 @@ use crate::contexts::mail::application::ports::{GmailMessage, GmailOAuth, GmailS
 
 use super::oauth::OAuthProviderError;
 use super::parsers::{ParserRegistry, RawEmail};
-use super::repository::EncryptedOAuthCredential;
-
-const CREDENTIAL_KEY: [u8; 32] = [0x53; 32];
-const CREDENTIAL_KEY_ID: &str = "parallel-v2-mail";
+use super::repository::{EncryptedOAuthCredential, MailCrypto};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SyncError {
@@ -50,6 +42,7 @@ pub(crate) struct MailSyncWorker<S, O> {
     pool: PgPool,
     source: S,
     oauth: O,
+    crypto: MailCrypto,
     holder: String,
     lease_ttl: Duration,
 }
@@ -63,6 +56,7 @@ where
         pool: PgPool,
         source: S,
         oauth: O,
+        crypto: MailCrypto,
         holder: impl Into<String>,
         lease_ttl: Duration,
     ) -> Result<Self, SyncError> {
@@ -75,6 +69,7 @@ where
             pool,
             source,
             oauth,
+            crypto,
             holder,
             lease_ttl,
         })
@@ -84,10 +79,10 @@ where
         let Some(claim) = self.claim().await? else {
             return Ok(SyncReport::default());
         };
-        let token = match decrypt_credential(
+        let token = match self.crypto.decrypt(
             &claim.credential_ciphertext,
             &claim.credential_nonce,
-            claim.connection_id,
+            claim.connection_id.as_bytes(),
         ) {
             Ok(token) => token,
             Err(_) => {
@@ -198,7 +193,10 @@ where
         credential: &EncryptedOAuthCredential,
     ) -> Result<bool, SyncError> {
         let plaintext = serde_json::to_vec(credential).map_err(|_| SyncError::Credential)?;
-        let (ciphertext, nonce) = encrypt_credential(&plaintext, claim.connection_id)?;
+        let (ciphertext, nonce) = self
+            .crypto
+            .encrypt(&plaintext, claim.connection_id.as_bytes())
+            .map_err(|_| SyncError::Credential)?;
         let updated = sqlx::query(
             r#"
             UPDATE mail.connections c SET credential_ciphertext=$7,credential_nonce=$8,
@@ -261,7 +259,7 @@ where
         .await?;
         row.map(|row| {
             let key_id: String = row.get("credential_key_id");
-            if key_id != CREDENTIAL_KEY_ID {
+            if key_id != self.crypto.key_id() {
                 return Err(SyncError::Credential);
             }
             Ok(SyncClaim {
@@ -373,7 +371,7 @@ where
         let mut recorded = 0_u32;
         let mut evidence = 0_u32;
         for message in messages {
-            let result = record_message(&mut transaction, claim, message).await?;
+            let result = record_message(&mut transaction, claim, message, &self.crypto).await?;
             recorded += u32::from(result.recorded);
             evidence += u32::from(result.evidence_recorded);
         }
@@ -479,6 +477,7 @@ async fn record_message(
     transaction: &mut Transaction<'_, Postgres>,
     claim: &SyncClaim,
     message: GmailMessage,
+    crypto: &MailCrypto,
 ) -> Result<RecordResult, SyncError> {
     let raw = RawEmail {
         provider_message_id: message.provider_id.clone(),
@@ -494,7 +493,9 @@ async fn record_message(
         .expect("normalized mail payload serializes");
     let digest: [u8; 32] = Sha256::digest(&plaintext).into();
     let message_id = Uuid::new_v4();
-    let (ciphertext, nonce) = encrypt_payload(&plaintext, message_id)?;
+    let (ciphertext, nonce) = crypto
+        .encrypt(&plaintext, message_id.as_bytes())
+        .map_err(|_| SyncError::Credential)?;
     let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM mail.source_messages WHERE connection_id=$1 AND provider_message_id=$2 AND payload_digest=$3")
         .bind(claim.connection_id).bind(&raw.provider_message_id).bind(digest.as_slice())
         .fetch_optional(&mut **transaction).await?;
@@ -523,7 +524,7 @@ async fn record_message(
     .bind(digest.as_slice())
     .bind(ciphertext)
     .bind(nonce)
-    .bind(CREDENTIAL_KEY_ID)
+    .bind(crypto.key_id())
     .bind(raw.received_at)
     .bind(Utc::now())
     .bind(revision)
@@ -607,26 +608,6 @@ async fn record_message(
     }
 }
 
-fn decrypt_credential(
-    ciphertext: &[u8],
-    nonce: &[u8],
-    connection_id: Uuid,
-) -> Result<Vec<u8>, SyncError> {
-    if nonce.len() != 12 {
-        return Err(SyncError::Credential);
-    }
-    Aes256Gcm::new_from_slice(&CREDENTIAL_KEY)
-        .map_err(|_| SyncError::Credential)?
-        .decrypt(
-            Nonce::from_slice(nonce),
-            Payload {
-                msg: ciphertext,
-                aad: connection_id.as_bytes(),
-            },
-        )
-        .map_err(|_| SyncError::Credential)
-}
-
 fn gmail_requires_reauth(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<reqwest::Error>()
@@ -634,41 +615,6 @@ fn gmail_requires_reauth(error: &anyhow::Error) -> bool {
         .is_some_and(|status| {
             status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
         })
-}
-
-fn encrypt_credential(
-    plaintext: &[u8],
-    connection_id: Uuid,
-) -> Result<(Vec<u8>, Vec<u8>), SyncError> {
-    let cipher = Aes256Gcm::new_from_slice(&CREDENTIAL_KEY).map_err(|_| SyncError::Credential)?;
-    let mut nonce = [0_u8; 12];
-    OsRng.fill_bytes(&mut nonce);
-    let ciphertext = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad: connection_id.as_bytes(),
-            },
-        )
-        .map_err(|_| SyncError::Credential)?;
-    Ok((ciphertext, nonce.to_vec()))
-}
-
-fn encrypt_payload(plaintext: &[u8], message_id: Uuid) -> Result<(Vec<u8>, Vec<u8>), SyncError> {
-    let cipher = Aes256Gcm::new_from_slice(&CREDENTIAL_KEY).map_err(|_| SyncError::Credential)?;
-    let mut nonce = [0_u8; 12];
-    OsRng.fill_bytes(&mut nonce);
-    let ciphertext = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad: message_id.as_bytes(),
-            },
-        )
-        .map_err(|_| SyncError::Credential)?;
-    Ok((ciphertext, nonce.to_vec()))
 }
 
 #[derive(Serialize)]
@@ -695,5 +641,148 @@ impl<'a> From<&'a RawEmail> for SerializableEmail<'a> {
             body_text: &email.body_text,
             body_html: &email.body_html,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contexts::mail::application::ports::{GmailPage, OAuthTokens};
+    use crate::infrastructure::v2_db::initialize_v2;
+    use testcontainers::ImageExt;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::postgres::Postgres;
+
+    #[derive(Clone)]
+    struct FixtureSource {
+        message: GmailMessage,
+    }
+
+    impl GmailSource for FixtureSource {
+        async fn fetch_page(
+            &self,
+            _access_token: &str,
+            _cursor: Option<&str>,
+        ) -> anyhow::Result<GmailPage> {
+            Ok(GmailPage {
+                messages: vec![self.message.clone()],
+                next_cursor: None,
+            })
+        }
+    }
+
+    #[derive(Clone)]
+    struct NoRefresh;
+
+    #[async_trait::async_trait]
+    impl GmailOAuth for NoRefresh {
+        fn authorization_url(&self, _state: &str, _challenge: &str) -> anyhow::Result<String> {
+            anyhow::bail!("not used by sync")
+        }
+
+        async fn exchange(&self, _code: &str, _verifier: &str) -> anyhow::Result<OAuthTokens> {
+            anyhow::bail!("not used by sync")
+        }
+
+        async fn refresh(&self, _refresh_token: &str) -> anyhow::Result<OAuthTokens> {
+            anyhow::bail!("unexpired fixture credential must not refresh")
+        }
+    }
+
+    #[tokio::test]
+    async fn fixture_sync_uses_injected_key_and_replays_to_one_evidence_fact() {
+        let container = Postgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await
+            .expect("start PostgreSQL 16");
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+        let verified = initialize_v2(&database_url).await.unwrap();
+        let pool = verified.pool();
+
+        let user_id = Uuid::new_v4();
+        let connection_id = Uuid::new_v4();
+        let job_id = Uuid::new_v4();
+        let crypto = MailCrypto::new("rehearsal-mail-key-v1", [0xA7; 32]).unwrap();
+        let credential = EncryptedOAuthCredential {
+            access_token: "fixture-access-token".to_owned(),
+            refresh_token: Some("fixture-refresh-token".to_owned()),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+        };
+        let plaintext = serde_json::to_vec(&credential).unwrap();
+        let (ciphertext, nonce) = crypto
+            .encrypt(&plaintext, connection_id.as_bytes())
+            .unwrap();
+        sqlx::query("INSERT INTO mail.connections(id,user_id,state,credential_ciphertext,credential_nonce,credential_key_id,created_at,updated_at) VALUES($1,$2,'active',$3,$4,$5,clock_timestamp(),clock_timestamp())")
+            .bind(connection_id)
+            .bind(user_id)
+            .bind(ciphertext)
+            .bind(nonce)
+            .bind(crypto.key_id())
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO mail.sync_jobs(id,user_id,connection_id,state,connection_version,credential_generation,sync_generation) VALUES($1,$2,$3,'requested',1,1,1)")
+            .bind(job_id)
+            .bind(user_id)
+            .bind(connection_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let source = FixtureSource {
+            message: GmailMessage {
+                provider_id: "gmail-rehearsal-netflix-1".to_owned(),
+                from: "Netflix <info@account.netflix.com>".to_owned(),
+                subject: "Your Netflix payment".to_owned(),
+                body_text: Some(
+                    std::fs::read_to_string("tests/fixtures/receipts/netflix/renewal.txt").unwrap(),
+                ),
+                body_html: None,
+                received_at: Utc::now(),
+            },
+        };
+        let worker = MailSyncWorker::new(
+            pool.clone(),
+            source,
+            NoRefresh,
+            crypto.clone(),
+            "mail-rehearsal-worker",
+            Duration::from_secs(30),
+        )
+        .unwrap();
+
+        let first = worker.run_once().await.unwrap();
+        assert_eq!(
+            first,
+            SyncReport {
+                claimed: true,
+                messages_recorded: 1,
+                evidence_recorded: 1,
+                completed: true,
+                retry_scheduled: false,
+                fenced: false,
+            }
+        );
+        assert_eq!(worker.run_once().await.unwrap(), SyncReport::default());
+
+        for relation in [
+            "mail.source_messages",
+            "mail.receipt_evidence",
+            "integration.outbox_messages",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {relation}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "unexpected replay count for {relation}");
+        }
+        let stored_key_id: String = sqlx::query_scalar("SELECT key_id FROM mail.source_messages")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(stored_key_id, crypto.key_id());
+        assert!(!format!("{crypto:?}").contains("a7a7"));
     }
 }

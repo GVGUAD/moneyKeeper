@@ -55,12 +55,84 @@ pub(crate) struct EncryptedOAuthCredential {
     pub expires_at: DateTime<Utc>,
 }
 #[derive(Clone)]
+pub(crate) struct MailCrypto {
+    key_id: String,
+    key: [u8; 32],
+}
+
+impl std::fmt::Debug for MailCrypto {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MailCrypto")
+            .field("key_id", &self.key_id)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl MailCrypto {
+    pub(crate) fn new(key_id: impl Into<String>, key: [u8; 32]) -> anyhow::Result<Self> {
+        let key_id = key_id.into();
+        anyhow::ensure!(
+            !key_id.is_empty()
+                && key_id.len() <= 100
+                && key_id.trim() == key_id
+                && !key_id.chars().any(char::is_control),
+            "invalid Mail encryption key id"
+        );
+        Ok(Self { key_id, key })
+    }
+
+    pub(crate) fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    pub(crate) fn encrypt(&self, plaintext: &[u8], aad: &[u8]) -> Result<(Vec<u8>, Vec<u8>), ()> {
+        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| ())?;
+        let mut nonce = [0_u8; 12];
+        OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad,
+                },
+            )
+            .map_err(|_| ())?;
+        Ok((ciphertext, nonce.to_vec()))
+    }
+
+    pub(crate) fn decrypt(
+        &self,
+        ciphertext: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, ()> {
+        if nonce.len() != 12 {
+            return Err(());
+        }
+        Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|_| ())?
+            .decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad,
+                },
+            )
+            .map_err(|_| ())
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct PgMailStore {
     pool: PgPool,
+    crypto: MailCrypto,
 }
 impl PgMailStore {
-    pub(crate) fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub(crate) fn new(pool: PgPool, crypto: MailCrypto) -> Self {
+        Self { pool, crypto }
     }
     pub(crate) async fn list_connections(
         &self,
@@ -325,8 +397,11 @@ impl PgMailStore {
         OsRng.fill_bytes(&mut verifier_bytes);
         let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        let (ciphertext, nonce) = encrypt(verifier.as_bytes(), &state_digest)?;
-        sqlx::query("INSERT INTO mail.oauth_states(state_digest,user_id,verifier_ciphertext,verifier_nonce,key_id,replacement_connection_id,expected_version,expires_at,created_at) VALUES($1,$2,$3,$4,'parallel-v2-mail',$5,$6,$7,$8)").bind(state_digest.as_slice()).bind(user.into_uuid()).bind(ciphertext).bind(nonce).bind(replacement).bind(expected.map(|v|i64::try_from(v).unwrap_or(i64::MAX))).bind(now+chrono::Duration::minutes(10)).bind(now).execute(&mut *tx).await?;
+        let (ciphertext, nonce) = self
+            .crypto
+            .encrypt(verifier.as_bytes(), &state_digest)
+            .map_err(|_| MailStoreError::InvalidOauthState)?;
+        sqlx::query("INSERT INTO mail.oauth_states(state_digest,user_id,verifier_ciphertext,verifier_nonce,key_id,replacement_connection_id,expected_version,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind(state_digest.as_slice()).bind(user.into_uuid()).bind(ciphertext).bind(nonce).bind(self.crypto.key_id()).bind(replacement).bind(expected.map(|v|i64::try_from(v).unwrap_or(i64::MAX))).bind(now+chrono::Duration::minutes(10)).bind(now).execute(&mut *tx).await?;
         let authorization_url = oauth_provider
             .authorization_url(&state, &challenge)
             .map_err(|_| MailStoreError::OAuthProvider)?;
@@ -363,14 +438,17 @@ impl PgMailStore {
         {
             return Err(MailStoreError::InvalidOauthState);
         }
-        if oauth.get::<String, _>("key_id") != "parallel-v2-mail" {
+        if oauth.get::<String, _>("key_id") != self.crypto.key_id() {
             return Err(MailStoreError::InvalidOauthState);
         }
-        let verifier = decrypt(
-            &oauth.get::<Vec<u8>, _>("verifier_ciphertext"),
-            &oauth.get::<Vec<u8>, _>("verifier_nonce"),
-            &state_digest,
-        )?;
+        let verifier = self
+            .crypto
+            .decrypt(
+                &oauth.get::<Vec<u8>, _>("verifier_ciphertext"),
+                &oauth.get::<Vec<u8>, _>("verifier_nonce"),
+                &state_digest,
+            )
+            .map_err(|_| MailStoreError::InvalidOauthState)?;
         let verifier =
             String::from_utf8(verifier).map_err(|_| MailStoreError::InvalidOauthState)?;
         if verifier.is_empty() {
@@ -422,9 +500,9 @@ impl PgMailStore {
             }
             if let Some(row)=sqlx::query("SELECT credential_ciphertext,credential_nonce,credential_key_id FROM mail.connections WHERE user_id=$1 AND id=$2 FOR UPDATE")
                 .bind(user_id).bind(connection_id).fetch_optional(&mut *tx).await?
-                && row.get::<String,_>("credential_key_id") == "parallel-v2-mail"
+                && row.get::<String,_>("credential_key_id") == self.crypto.key_id()
             {
-                let plaintext=decrypt(&row.get::<Vec<u8>,_>("credential_ciphertext"),&row.get::<Vec<u8>,_>("credential_nonce"),connection_id.as_bytes())?;
+                let plaintext=self.crypto.decrypt(&row.get::<Vec<u8>,_>("credential_ciphertext"),&row.get::<Vec<u8>,_>("credential_nonce"),connection_id.as_bytes()).map_err(|_| MailStoreError::InvalidOauthState)?;
                 if let Ok(existing)=serde_json::from_slice::<EncryptedOAuthCredential>(&plaintext) {
                     tokens.refresh_token=existing.refresh_token;
                 }
@@ -442,14 +520,17 @@ impl PgMailStore {
             serde_json::to_vec(&credential).map_err(|_| MailStoreError::OAuthProvider)?;
         // Connection credentials use a stable, non-secret AAD so a sync worker
         // can decrypt them after the one-time OAuth state has been consumed.
-        let (ciphertext, nonce) = encrypt(&plaintext, connection_id.as_bytes())?;
+        let (ciphertext, nonce) = self
+            .crypto
+            .encrypt(&plaintext, connection_id.as_bytes())
+            .map_err(|_| MailStoreError::InvalidOauthState)?;
         if replacement.is_some() {
             let expected: Option<i64> = oauth.get("expected_version");
-            let row=sqlx::query("UPDATE mail.connections SET state='active',credential_ciphertext=$4,credential_nonce=$5,credential_key_id='parallel-v2-mail',credential_generation=credential_generation+1,sync_generation=sync_generation+1,version=version+1,updated_at=$6 WHERE user_id=$1 AND id=$2 AND version=$3 RETURNING id").bind(user_id).bind(connection_id).bind(expected).bind(&ciphertext).bind(&nonce).bind(now).fetch_optional(&mut *tx).await?;
+            let row=sqlx::query("UPDATE mail.connections SET state='active',credential_ciphertext=$4,credential_nonce=$5,credential_key_id=$6,credential_generation=credential_generation+1,sync_generation=sync_generation+1,version=version+1,updated_at=$7 WHERE user_id=$1 AND id=$2 AND version=$3 RETURNING id").bind(user_id).bind(connection_id).bind(expected).bind(&ciphertext).bind(&nonce).bind(self.crypto.key_id()).bind(now).fetch_optional(&mut *tx).await?;
             row.ok_or(MailStoreError::VersionConflict)?;
             cancel_connection_jobs(&mut tx, user_id, connection_id, now).await?;
         } else {
-            sqlx::query("INSERT INTO mail.connections(id,user_id,state,credential_ciphertext,credential_nonce,credential_key_id,created_at,updated_at) VALUES($1,$2,'active',$3,$4,'parallel-v2-mail',$5,$5)").bind(connection_id).bind(user_id).bind(&ciphertext).bind(&nonce).bind(now).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO mail.connections(id,user_id,state,credential_ciphertext,credential_nonce,credential_key_id,created_at,updated_at) VALUES($1,$2,'active',$3,$4,$5,$6,$6)").bind(connection_id).bind(user_id).bind(&ciphertext).bind(&nonce).bind(self.crypto.key_id()).bind(now).execute(&mut *tx).await?;
         }
         let connection = sqlx::query(
             "SELECT version,credential_generation,sync_generation FROM mail.connections WHERE id=$1 AND user_id=$2",
@@ -503,39 +584,6 @@ async fn cancel_connection_jobs(
     sqlx::query("UPDATE mail.sync_jobs SET state='cancelled',lease_holder=NULL,lease_expires_at=NULL,next_retry_at=NULL,updated_at=$3 WHERE user_id=$1 AND connection_id=$2 AND state IN ('requested','running','retry_due')")
         .bind(user_id).bind(connection_id).bind(now).execute(&mut **tx).await?;
     Ok(())
-}
-
-fn encrypt(plaintext: &[u8], aad: &[u8]) -> Result<(Vec<u8>, Vec<u8>), MailStoreError> {
-    let cipher =
-        Aes256Gcm::new_from_slice(&[0x53; 32]).map_err(|_| MailStoreError::InvalidOauthState)?;
-    let mut nonce = [0_u8; 12];
-    OsRng.fill_bytes(&mut nonce);
-    let ciphertext = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        .map_err(|_| MailStoreError::InvalidOauthState)?;
-    Ok((ciphertext, nonce.to_vec()))
-}
-
-fn decrypt(ciphertext: &[u8], nonce: &[u8], aad: &[u8]) -> Result<Vec<u8>, MailStoreError> {
-    if nonce.len() != 12 {
-        return Err(MailStoreError::InvalidOauthState);
-    }
-    Aes256Gcm::new_from_slice(&[0x53; 32])
-        .map_err(|_| MailStoreError::InvalidOauthState)?
-        .decrypt(
-            Nonce::from_slice(nonce),
-            Payload {
-                msg: ciphertext,
-                aad,
-            },
-        )
-        .map_err(|_| MailStoreError::InvalidOauthState)
 }
 
 #[allow(clippy::too_many_arguments)]

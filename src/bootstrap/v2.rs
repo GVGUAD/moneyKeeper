@@ -209,7 +209,11 @@ pub fn supporting_contexts_with_secrets(
         preferences: crate::contexts::preferences::build(pool),
         ledger,
         banking,
-        mail: crate::contexts::mail::build(pool),
+        mail: crate::contexts::mail::build_with_key(
+            pool,
+            &secrets.banking_key_id,
+            secrets.banking_key,
+        ),
         recurring: crate::contexts::recurring::build(pool),
         reporting: crate::contexts::reporting::build(pool),
         loans: crate::contexts::loans::build(pool),
@@ -298,6 +302,13 @@ impl Phase4Workers {
 
 /// Constructs workers without spawning them or changing the legacy runtime.
 pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
+    phase4_workers_with_secrets(pool, &V2Secrets::ephemeral())
+}
+
+pub(crate) fn phase4_workers_with_secrets(
+    pool: &VerifiedV2Pool,
+    secrets: &V2Secrets,
+) -> Phase4Workers {
     let categories = crate::contexts::classification::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
     let recurring = crate::contexts::recurring::build(pool);
@@ -309,6 +320,11 @@ pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
                 "https://gmail.googleapis.com",
             ),
             crate::contexts::mail::infrastructure::oauth::GoogleOAuthClient::from_environment(),
+            crate::contexts::mail::infrastructure::MailCrypto::new(
+                &secrets.banking_key_id,
+                secrets.banking_key,
+            )
+            .expect("validated Finance V2 Mail key configuration"),
             "finance-v2-mail",
             Duration::from_secs(30),
         )
@@ -521,7 +537,7 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let contexts = supporting_contexts_with_secrets(pool, secrets);
-    let workers = crate::bootstrap::workers::production(pool, &contexts)?;
+    let workers = crate::bootstrap::workers::production(pool, &contexts, secrets)?;
     let business_router = crate::api::routes::router(contexts, jwks);
     serve(
         listener,

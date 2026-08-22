@@ -18,7 +18,7 @@ Monobank and Gmail must be reconnected after the switch.
 | Intended V2 database | `postgresql://<redacted-host>/moneykeeper_v2` with a distinct V2 volume |
 | Legacy migration lineage | 25 files, `0001`–`0025`; aggregate SHA-256 `b94005731a18053094ab32030b47abe3ccfdb0646f567e9237660ff0d9106274` |
 | V2 migration lineage | 11 files, `0001`–`0011`; aggregate SHA-256 `aa5e8a663bacf43416f1e93864b4194323d4824a2e2828c20bad7758e9672bc1` |
-| Final candidate SHA | Pending Task 8 rehearsal and refreeze |
+| Final candidate SHA | Recorded in the Task 8 operator handoff after the candidate commit and full gate; a commit cannot safely contain its own SHA |
 
 The aggregate checksums are the SHA-256 of the sorted per-file `shasum -a
 256` output. The executable checksum guard stores and checks every legacy file
@@ -45,8 +45,8 @@ Required startup configuration:
 - `SUPABASE_URL`: HTTPS project base used to resolve the JWKS document.
 - `BIND_ADDR`: HTTP listen address; defaults to `0.0.0.0:8080`.
 - `FINANCE_V2_ENCRYPTION_KEY_ID`: stable, non-secret key version label.
-- `FINANCE_V2_ENCRYPTION_KEY`: base64-encoded 32 random bytes for Banking
-  credential envelopes.
+- `FINANCE_V2_ENCRYPTION_KEY`: base64-encoded 32 random bytes for Banking and
+  Mail credential/content envelopes.
 - `FINANCE_V2_WEBHOOK_DIGEST_KEY`: a different base64-encoded 32-byte key for
   Monobank webhook lookup digests.
 - `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, and `GMAIL_REDIRECT_URI`: required
@@ -175,6 +175,27 @@ in `docs/architecture/finance-v2-context-map.md`.
 
 ## Rehearsal observations
 
-Pending disposable-infrastructure rehearsal. Record start/stop, migration,
-readiness, golden workflow, crash-recovery, and rollback timings here without
-credentials or provider response bodies.
+Rehearsal used only disposable PostgreSQL 16 Testcontainers, provider fakes,
+fixture messages, and loopback HTTP. It did not change a development service,
+platform secret, real provider connection, database, or volume.
+
+| Rehearsal | Observed result | Wall time |
+|---|---|---:|
+| Fresh baseline, wrong/unmarked/partial lineage refusal, redaction, and readiness barrier | 17 migration cases and 4 bootstrap cases passed. Empty databases reached all 11 V2 migrations and the `finance-v2` marker; wrong/non-empty databases were unchanged; failed worker initialization never reached readiness. | 87.51 s including compile; migration cases 64.76 s |
+| Gmail fixture with injected runtime key | Netflix fixture produced one encrypted source-message revision, one receipt-evidence fact, and one outbox message; replay produced no second effect. The stored key version matched the injected version and debug output remained redacted. | 3.73 s test execution |
+| Cross-context golden workflow and rebuilds | 22 cases passed for preferences/categories, Ledger income/expense/transfer/correction/reversal/reconciliation, Banking revisions, Recurring matching, multi-payer Sharing, borrowed Loans, ОВДП Portfolio, supporting APIs, and exact Reporting rebuilds. | 49.32 s |
+| Crash/retry/fencing rehearsal | 24 cases passed for outbox publish-before-ack redelivery, inbox rollback/deduplication, lease fencing, retry/dead-letter redaction, Banking one-effect imports, Sharing append-only state, Loans immutability, and Portfolio post/reverse recovery. | 29.20 s |
+| Process-local stop/start | The loopback readiness test started not-ready, exposed business traffic only after the worker barrier, removed readiness before shutdown, and stopped every worker. | 0.02 s test execution |
+
+The rehearsal found and corrected one candidate defect: Mail's characterized
+Phase 4 adapter still used a static encryption key. Mail now receives the
+validated Finance V2 key and version through its composition boundary; both
+OAuth storage and sync/message encryption use that injected key. No static
+Mail credential key remains in executable source.
+
+An actual legacy-service stop, platform `DATABASE_URL` switch, provider
+reconnection, and restoration of the prior binary were intentionally not
+performed in this source rehearsal. Those are Task 9 environment changes and
+require the authenticated development operator, the final candidate SHA from
+the handoff, and a write freeze. The configuration-only rollback sequence is
+documented above and the legacy migration bytes remain unchanged.

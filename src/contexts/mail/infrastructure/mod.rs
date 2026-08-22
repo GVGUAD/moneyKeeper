@@ -6,5 +6,6 @@ mod repository;
 pub(crate) mod sync_worker;
 pub(crate) mod unit_of_work;
 pub(crate) use repository::{
-    CallbackResult, MailStoreError, OauthCallbackPreparation, OauthStartResult, PgMailStore,
+    CallbackResult, MailCrypto, MailStoreError, OauthCallbackPreparation, OauthStartResult,
+    PgMailStore,
 };

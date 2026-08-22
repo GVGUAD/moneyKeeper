@@ -454,19 +454,19 @@ Only stage files that exist or were intentionally changed.
 - Modify: `docs/operations/finance-v2-development-cutover.md` with observed timings/results
 - Add only redacted automated smoke tests/scripts if gaps are found
 
-- [ ] **Step 1: Start from a separate disposable PostgreSQL 16 instance**
+- [x] **Step 1: Start from a separate disposable PostgreSQL 16 instance**
 
 Verify it has no legacy `_sqlx_migrations` history. Apply the candidate V2 binary/migrator and confirm all expected V2 schemas and the generation marker.
 
-- [ ] **Step 2: Prove wrong-database refusal**
+- [x] **Step 2: Prove wrong-database refusal**
 
 With a non-production copy or fixture of the legacy schema, start the V2 binary and assert it exits before provider calls, workers, or HTTP readiness. Do not run V2 migrations on that fixture.
 
-- [ ] **Step 3: Exercise the golden workflow**
+- [x] **Step 3: Exercise the golden workflow**
 
 Create a user preference/base currency; create cash/card/liability accounts; post income/expense/transfer/correction/reversal; connect provider fakes; ingest Gmail fixtures; split/settle a multi-payer bill; record borrowed/lent loan flows; record/settle/value ОВДП; rebuild all projections; compare API balances/net worth exactly.
 
-- [ ] **Step 4: Exercise crash recovery**
+- [x] **Step 4: Exercise crash recovery**
 
 Interrupt dispatch after source commit, after Ledger commit, and before process completion for Banking, Sharing, Loans, and Portfolio. Restart and confirm one financial effect, completed process state, no skipped cursor, and no duplicate report row.
 
@@ -474,14 +474,14 @@ Interrupt dispatch after source commit, after Ledger commit, and before process 
 
 Time and document the exact sequence. Verify the old DB/volume remains intact and the old application can be restored by configuration only.
 
-- [ ] **Step 6: Commit rehearsal corrections**
+- [x] **Step 6: Commit rehearsal corrections**
 
 ```bash
 git add docs/operations tests scripts
 git commit -m "test(cutover): rehearse finance v2 reset"
 ```
 
-- [ ] **Step 7: Refreeze and gate the deployable candidate**
+- [x] **Step 7: Refreeze and gate the deployable candidate**
 
 After every rehearsal correction is committed, require a clean worktree, record `git rev-parse HEAD` as the **final candidate SHA** in the operator/deployment record, and rerun the complete integrated gate against that exact commit:
 

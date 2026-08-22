@@ -240,11 +240,12 @@ impl crate::integration::outbox::EventPublisher for InProcessPublisher {
 pub fn production(
     pool: &crate::infrastructure::v2_db::VerifiedV2Pool,
     contexts: &super::v2::SupportingContexts,
+    secrets: &super::v2::V2Secrets,
 ) -> anyhow::Result<WorkerRegistry> {
     use crate::integration::outbox::{DispatcherConfig, OutboxDispatcher};
 
     let banking = Arc::new(super::v2::banking_workers(contexts));
-    let phase4 = Arc::new(super::v2::phase4_workers(pool));
+    let phase4 = Arc::new(super::v2::phase4_workers_with_secrets(pool, secrets));
     let phase6 = Arc::new(super::v2::phase6_workers(pool));
     let phase7 = Arc::new(super::v2::phase7_workers(pool));
     let outbox = Arc::new(OutboxDispatcher::new(
