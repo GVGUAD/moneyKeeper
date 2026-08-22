@@ -3,8 +3,8 @@ use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::OnceCell;
 
+use moneykeeper::infrastructure::test_db::{FreshV2Database, create_fresh_database};
 use moneykeeper::infrastructure::v2_db::VerifiedV2Pool;
-use moneykeeper::infrastructure::v2_test_db::{FreshV2Database, create_fresh_database};
 
 static CONTAINER: OnceCell<SharedPostgres> = OnceCell::const_new();
 

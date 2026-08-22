@@ -309,30 +309,30 @@ git commit -m "feat(cutover): atomically promote v2 runtime and unversioned api"
 - Preserve: `src/infrastructure/migrations/**`
 - Preserve/move only redacted receipt fixtures still used by V2 Mail tests
 
-- [ ] **Step 1: Produce an equivalence checklist before each deletion group**
+- [x] **Step 1: Produce an equivalence checklist before each deletion group**
 
 Map legacy behavior to a passing V2 test for accounts/transactions, Monobank, Gmail, subscriptions, preferences/reference data, and reporting. If a current capability lacks an agreed V2 equivalent, stop and implement it in its owning phase rather than keeping a legacy repository wired to V2.
 
-- [ ] **Step 2: Delete horizontal legacy domain/application modules**
+- [x] **Step 2: Delete horizontal legacy domain/application modules**
 
 Remove `src/domain/` and `src/application/` only after `rg` shows all needed types/use cases exist under `shared_kernel` or `contexts`. Update `lib.rs` so the old module paths cannot compile.
 
-- [ ] **Step 3: Delete legacy handlers and repositories**
+- [x] **Step 3: Delete legacy handlers and repositories**
 
 Remove the table-coupled files listed in the file map. Retain/move generic authentication, error, HTTP middleware, token encryption, and provider parsing only where their V2 owner is explicit. Remove the combined credential-rotation binary unless it has already become context-safe.
 
-- [ ] **Step 4: Remove unused dependencies and build**
+- [x] **Step 4: Remove unused dependencies and build**
 
 ```bash
 cargo check --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-- [ ] **Step 5: Prove legacy migrations remain unchanged**
+- [x] **Step 5: Prove legacy migrations remain unchanged**
 
 Run the file-only checksum test. The old SQL exists only under the preserved migration directory and documentation/fixtures allowlists.
 
-- [ ] **Step 6: Commit deletion separately**
+- [x] **Step 6: Commit deletion separately**
 
 ```bash
 git add -A src Cargo.toml Cargo.lock tests

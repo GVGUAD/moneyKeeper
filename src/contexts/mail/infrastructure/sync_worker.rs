@@ -14,13 +14,10 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::{
-    contexts::mail::application::ports::{GmailMessage, GmailOAuth, GmailSource},
-    domain::email::RawEmail,
-};
+use crate::contexts::mail::application::ports::{GmailMessage, GmailOAuth, GmailSource};
 
 use super::oauth::OAuthProviderError;
-use super::parsers::ParserRegistry;
+use super::parsers::{ParserRegistry, RawEmail};
 use super::repository::EncryptedOAuthCredential;
 
 const CREDENTIAL_KEY: [u8; 32] = [0x53; 32];
