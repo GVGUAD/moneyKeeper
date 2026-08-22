@@ -1,0 +1,124 @@
+# Finance V2 development cutover
+
+This runbook is for the breaking development-only switch from the frozen legacy
+database lineage to Finance V2. It never migrates legacy rows or credentials.
+Monobank and Gmail must be reconnected after the switch.
+
+## Operator record
+
+| Item | Recorded value |
+|---|---|
+| Preflight date | 2026-08-22 (Europe/Kyiv) |
+| Responsible operator | Development owner / Phase 8 operator (Volodymyr) |
+| Initial integrated baseline | `2e9b39846f5b66c83b9f8a2aa9af46b6fa7e377c` |
+| Initial baseline tree | `bc1339c7485038b693745f097e815823e8c11a1e` |
+| Rust toolchain | `rustc 1.94.0`, `cargo 1.94.0`, Rust 2024 |
+| PostgreSQL target | PostgreSQL 16 (`postgres:16-alpine`) |
+| Legacy database | `postgresql://<redacted-host>/moneykeeper` with legacy volume `moneykeeper_pg` |
+| Intended V2 database | `postgresql://<redacted-host>/moneykeeper_v2` with a distinct V2 volume |
+| Legacy migration lineage | 25 files, `0001`–`0025`; aggregate SHA-256 `b94005731a18053094ab32030b47abe3ccfdb0646f567e9237660ff0d9106274` |
+| V2 migration lineage | 11 files, `0001`–`0011`; aggregate SHA-256 `aa5e8a663bacf43416f1e93864b4194323d4824a2e2828c20bad7758e9672bc1` |
+| Final candidate SHA | Pending Task 8 rehearsal and refreeze |
+
+The aggregate checksums are the SHA-256 of the sorted per-file `shasum -a
+256` output. The executable checksum guard stores and checks every legacy file
+individually; this summary is preflight evidence, not a replacement for that
+manifest.
+
+## Pre-cutover gate evidence
+
+The first complete run exposed one stale Phase 1 expectation: it asserted that
+the V2 lineage ended at migration 0010 after Phase 7 had added 0011. The test
+was corrected to expect the integrated 0011 lineage and rerun successfully.
+
+| Gate | Result at initial baseline |
+|---|---|
+| `cargo fmt --check` | Pass |
+| `cargo clippy --all-targets -- -D warnings` | Environment failure: legacy SQLx macros attempted to reach the unavailable configured compile-time database |
+| `SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings` | Pass |
+| `SQLX_OFFLINE=true cargo test` | Pass after correcting the stale 0010 expectation; all unit, integration, migration, workflow, and doc tests pass with Docker-backed PostgreSQL 16 |
+| `SQLX_OFFLINE=true cargo test --test v2_migrations -- --nocapture` | Pass: 15 tests |
+| `cargo test --test context_boundaries -- --nocapture` | Pass: 5 tests |
+| `cargo test --test openapi_v2 -- --nocapture` | Pass: 4 tests |
+| Phase 2 projection/concurrency scenarios | Pass: `ledger_persistence`, `ledger_concurrency`, `ledger_api_v2` |
+| Phase 3 representative workflow | Pass: `phase3_workflow` |
+| Phase 4 representative workflow and rebuilds | Pass: `phase4_workflow`, `reporting_projections`, `reference_fx`, `recurring_matching` |
+| Phase 5 representative workflow | Pass: `phase5_workflow`, `reporting_sharing` |
+| Phase 6 representative workflow | Pass: `phase6_workflow` |
+| Phase 7 golden workflow and rebuild | Pass: `phase7_workflow`, `reporting_portfolio` |
+
+All container-backed checks require access to the local Docker daemon. No
+credential or raw provider payload is stored in this runbook.
+
+## Runtime and migrator inventory before promotion
+
+Legacy `main.rs` starts the HTTP server and embeds Monobank restart, daily FX
+catch-up, Gmail polling, pending-charge matching, and subscription lifecycle
+schedulers. The whole process must be stopped before the database URL changes.
+
+The V2 lineage contains durable/leased entry points for Banking jobs and event
+accounting, Mail sync, Recurring categorization/lifecycle/event routing,
+Reference Data/NBU sync, Reporting consumers, Sharing accounting/settlement,
+Loans opening/accounting/reversal/replacement, Portfolio cash settlement, and
+the transactional outbox. Phase 8 promotes these through one worker registry.
+
+Pre-promotion SQLx migrators are located in:
+
+- `src/infrastructure/db.rs` — legacy runtime;
+- `src/infrastructure/test_db.rs` — legacy unit-test helper;
+- `tests/common/mod.rs` — legacy API-test helper;
+- `tests/migrations.rs` — legacy upgrade suite;
+- `src/infrastructure/v2_db.rs` — guarded V2 runtime candidate;
+- `tests/v2_migrations.rs` and `src/infrastructure/v2_test_db.rs` — parallel V2 test path.
+
+After promotion, every executable/runtime and test migrator must use
+`src/infrastructure/migrations_v2`; the frozen legacy directory is read only.
+
+## Rehearsed switch sequence
+
+Timings and observed results are recorded during Task 8. Do not proceed to an
+environment switch until every line has an observation and the final candidate
+SHA is frozen.
+
+1. Announce a development write freeze and verify the exact candidate SHA.
+2. Stop every legacy HTTP replica and embedded worker; verify no legacy
+   database activity remains.
+3. Provision the distinct PostgreSQL 16 `moneykeeper_v2` database and V2
+   volume. Do not mount or modify `moneykeeper_pg`.
+4. Start the candidate against the blank V2 URL. It applies only
+   `migrations_v2`, verifies the `finance-v2` marker and exact embedded lineage,
+   and keeps readiness false while contexts and workers initialize.
+5. Verify marker, migration versions, constraints, authentication, OpenAPI,
+   correction/reversal behavior, worker leases, and outbox/inbox lag.
+6. Flip service configuration to the verified V2 URL and expose readiness only
+   after the worker barrier succeeds.
+7. Reconnect Monobank and Gmail using the separate reconnection runbook.
+8. End the write freeze and record versions, smoke results, reconnection state,
+   timings, and rollback deadline without recording secrets.
+
+## Wrong-database refusal
+
+The V2 initializer must reject a legacy/unmarked/wrong-lineage non-empty
+database before applying a V2 migration. The error may identify the missing or
+invalid Finance V2 marker but must never include the database URL or password.
+Provider calls, workers, and business readiness remain stopped on failure.
+
+## Rollback
+
+Rollback is configuration-only:
+
+1. Set V2 readiness false and stop accepting business traffic.
+2. Stop/drain V2 workers and then stop the V2 process.
+3. Restore the prior legacy binary and its prior database URL.
+4. Verify the preserved legacy database/volume before starting the legacy
+   process and embedded workers.
+
+Never copy V2 rows back into the legacy database. Preserve both databases,
+volumes, and backups until the development owner authorizes a later manual
+cleanup outside this plan.
+
+## Rehearsal observations
+
+Pending disposable-infrastructure rehearsal. Record start/stop, migration,
+readiness, golden workflow, crash-recovery, and rollback timings here without
+credentials or provider response bodies.

@@ -122,11 +122,11 @@ Delete actions occur only after read-only searches prove the V2 equivalent exist
 - Create: `docs/operations/finance-v2-development-cutover.md`
 - Modify: this plan to record the baseline commit and gate results
 
-- [ ] **Step 1: Record the candidate identity and assumptions**
+- [x] **Step 1: Record the candidate identity and assumptions**
 
 Record the initial baseline SHA, Rust toolchain, PostgreSQL version, current legacy database identifier (redacted hostname), intended new V2 database identifier, migration count/checksum output for both lineages, and responsible operator. Explicitly state that legacy rows and credentials will not be migrated. This is not yet the deployable frozen SHA; Tasks 2–8 are expected to change it.
 
-- [ ] **Step 2: Run all pre-cutover gates on a fresh V2 database**
+- [x] **Step 2: Run all pre-cutover gates on a fresh V2 database**
 
 ```bash
 cargo fmt --check
@@ -139,7 +139,7 @@ cargo test --test openapi_v2 -- --nocapture
 
 Run full projection rebuild and representative end-to-end scenarios from Phases 2–7. Save command names and pass/fail summaries in the runbook; do not save credentials or raw financial payloads.
 
-- [ ] **Step 3: Inventory every runtime worker and SQLx migrator**
+- [x] **Step 3: Inventory every runtime worker and SQLx migrator**
 
 ```bash
 rg -n "tokio::spawn|interval\(|restart_incomplete|claim_|lease" src
@@ -148,11 +148,11 @@ rg -n "sqlx::migrate!|migrations =" src tests
 
 Expected before switch: all intended V2 workers are known, and exactly the four legacy migrator call sites are scheduled for replacement (`src/infrastructure/db.rs`, `src/infrastructure/test_db.rs`, `tests/common/mod.rs`, and migration tests), plus any V2-parallel helpers created since Phase 1.
 
-- [ ] **Step 4: Verify legacy migration files are unchanged**
+- [x] **Step 4: Verify legacy migration files are unchanged**
 
 Compare all 25 files against the recorded checksum manifest. Do not repair a mismatch by changing the manifest; investigate and restore the original bytes through an approved non-destructive source.
 
-- [ ] **Step 5: Commit the reviewed runbook**
+- [x] **Step 5: Commit the reviewed runbook**
 
 ```bash
 git add docs/operations/finance-v2-development-cutover.md docs/superpowers/plans/2026-08-05-finance-v2-phase-8-cutover.md
