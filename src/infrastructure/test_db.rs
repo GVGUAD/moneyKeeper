@@ -13,14 +13,15 @@ use uuid::Uuid;
 
 use super::v2_db::{VerifiedV2Pool, initialize_v2_with_pool_limit};
 
-const TEST_POOL_MAX_CONNECTIONS: u32 = 4;
+const TEST_POOL_MAX_CONNECTIONS: u32 = 2;
+static DATABASE_LIFETIME_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 static DATABASE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A uniquely named empty PostgreSQL database owned by a test container.
-#[derive(Clone)]
 pub struct FreshV2Database {
     database_url: String,
+    _lifetime_permit: tokio::sync::SemaphorePermit<'static>,
 }
 
 impl FreshV2Database {
@@ -51,6 +52,10 @@ impl FreshV2Database {
 /// Returns an error when the admin URL is malformed or PostgreSQL cannot create
 /// or connect to the database.
 pub async fn create_fresh_database(admin_database_url: &str) -> anyhow::Result<FreshV2Database> {
+    let lifetime_permit = DATABASE_LIFETIME_PERMITS
+        .acquire()
+        .await
+        .context("acquire Finance V2 test database concurrency permit")?;
     let sequence = DATABASE_COUNTER.fetch_add(1, Ordering::SeqCst);
     let database_name = format!("finance_v2_test_{}_{}", sequence, Uuid::new_v4().simple());
 
@@ -65,6 +70,7 @@ pub async fn create_fresh_database(admin_database_url: &str) -> anyhow::Result<F
 
     Ok(FreshV2Database {
         database_url: replace_database_name(admin_database_url, &database_name)?,
+        _lifetime_permit: lifetime_permit,
     })
 }
 
