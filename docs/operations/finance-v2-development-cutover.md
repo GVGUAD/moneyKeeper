@@ -216,11 +216,12 @@ The rehearsal found and corrected five candidate defects:
   dedicated parallel suites.
 - The shared Testcontainers handle was retained in a process-wide `OnceCell`,
   so completed test binaries could not drop their disposable PostgreSQL
-  containers. The holder is now weak and each verified pool carries only the
-  container lifetime guard it needs. A four-case integration binary passed in
-  4.14 seconds and the running Testcontainers count returned exactly to its
-  pre-test baseline after process exit. Existing containers from runs before
-  this correction are intentionally left untouched pending explicit operator
+  containers. The holder is now weak, and the verified SQLx pool itself carries
+  the container lifetime guard so context-owned raw pool clones cannot outlive
+  their database. The four-case classification and 17-case migration binaries
+  passed, and the running Testcontainers count returned exactly to its pre-test
+  baseline after each process exited. Existing containers from runs before this
+  correction are intentionally left untouched pending explicit operator
   approval.
 
 An actual legacy-service stop, platform `DATABASE_URL` switch, provider

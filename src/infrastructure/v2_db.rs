@@ -72,7 +72,7 @@ pub(crate) async fn initialize_v2_with_pool_limit_and_guards(
         maximum_connections > 0,
         "database pool limit must be positive"
     );
-    let pool = create_v2_pool(database_url, maximum_connections).await?;
+    let pool = create_v2_pool(database_url, maximum_connections, lifetime_guards.clone()).await?;
     migrate_v2(&pool).await?;
     Ok(VerifiedV2Pool {
         pool,
@@ -80,9 +80,27 @@ pub(crate) async fn initialize_v2_with_pool_limit_and_guards(
     })
 }
 
-async fn create_v2_pool(database_url: &str, maximum_connections: u32) -> anyhow::Result<PgPool> {
-    PgPoolOptions::new()
-        .max_connections(maximum_connections)
+async fn create_v2_pool(
+    database_url: &str,
+    maximum_connections: u32,
+    lifetime_guards: Vec<Arc<dyn Send + Sync>>,
+) -> anyhow::Result<PgPool> {
+    let options = PgPoolOptions::new().max_connections(maximum_connections);
+    let options = if lifetime_guards.is_empty() {
+        options
+    } else {
+        let lifetime_guards = Arc::new(lifetime_guards);
+        options.after_connect(move |_connection, _metadata| {
+            let lifetime_guards = Arc::clone(&lifetime_guards);
+            Box::pin(async move {
+                // SQLx stores this callback in the pool, so every raw pool clone
+                // retained by a context also retains the testcontainer guards.
+                drop(lifetime_guards);
+                Ok(())
+            })
+        })
+    };
+    options
         .connect(database_url)
         .await
         .context("connect to Finance V2 PostgreSQL database")
