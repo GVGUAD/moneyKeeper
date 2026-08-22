@@ -5,13 +5,13 @@ use moneykeeper::contexts::classification::public::{
 use moneykeeper::contexts::ledger::public::{
     AccountKind, AccountLifecycle, AccountNature, AccountVersion, AnnotationChanges,
     ApproveReconciliation, ArchiveAccount, BalanceVersion, BudgetVisibility,
-    CancelOrReverseCashControlSettlement, CashContribution, ControlAccountRole, ControlAmount,
-    CorrectBalance, DismissReconciliation, EnsureTypedControlAccount, InternalCommandMetadata,
-    ManualTransactionKind, NormalizedTags, ObservationId, ObserveProviderBalance, OpenAccount,
-    ReconciliationStatus, ReconciliationVersion, RecordCashControlSettlement,
-    RecordExpenseAndControlBalances, RecordManualTransaction, RenameAccount, ReplaceTransaction,
-    RestoreAccount, ReverseTransaction, SourceReference, TransferFee, TransferFunds,
-    UpdateTransactionAnnotation,
+    CancelOrReverseCashControlSettlement, CashContribution, CashFlowDirection, ControlAccountRole,
+    ControlAmount, CorrectBalance, DismissReconciliation, EnsureTypedControlAccount,
+    InternalCommandMetadata, ManualTransactionKind, NormalizedTags, ObservationId,
+    ObserveProviderBalance, OpenAccount, ReconciliationStatus, ReconciliationVersion,
+    RecordCashControlSettlement, RecordExpenseAndControlBalances, RecordManualTransaction,
+    RenameAccount, ReplaceTransaction, RestoreAccount, ReverseTransaction, SourceReference,
+    TransferFee, TransferFunds, UpdateTransactionAnnotation,
 };
 use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
 use rust_decimal::Decimal;
@@ -143,6 +143,7 @@ async fn internal_command_control_accounts_and_expense_recipe_are_closed_and_bal
         cash_account_id: cash.account.id,
         control_account_id: payable.account_id,
         amount: Money::new(Decimal::ONE, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+        cash_flow: CashFlowDirection::Outgoing,
         source_operation_id: "cash-operation-7".to_owned(),
     };
     let posted = ledger
@@ -180,6 +181,7 @@ async fn internal_command_control_accounts_and_expense_recipe_are_closed_and_bal
             cash_account_id: cash.account.id,
             control_account_id: payable.account_id,
             amount: Money::new(Decimal::ONE, CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+            cash_flow: CashFlowDirection::Outgoing,
             source_operation_id: "cash-operation-8".to_owned(),
         })
         .await

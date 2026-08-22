@@ -23,6 +23,9 @@ pub fn router(contexts: SupportingContexts, jwks: Arc<JwkSet>) -> Router {
     let banking = contexts.banking.clone();
     let mail = contexts.mail.clone();
     let authenticated = Router::new()
+        .merge(crate::contexts::portfolio::api::routes::router(
+            contexts.portfolio,
+        ))
         .merge(crate::contexts::sharing::api::routes::router(
             contexts.sharing,
             contexts.currencies.clone(),
@@ -93,6 +96,21 @@ async fn authenticate(
 
 /// The exact isolated Finance V2 method/path manifest used to validate OpenAPI parity.
 pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
+    ("POST", "/portfolio-accounts"),
+    ("GET", "/portfolio-accounts"),
+    ("GET", "/portfolio-accounts/{id}"),
+    ("PATCH", "/portfolio-accounts/{id}"),
+    ("POST", "/portfolio-accounts/{id}/archive"),
+    ("POST", "/portfolio-accounts/{id}/restore"),
+    ("GET", "/portfolio-accounts/{id}/activity"),
+    ("POST", "/instruments/ovdp"),
+    ("GET", "/instruments"),
+    ("GET", "/instruments/{id}"),
+    ("POST", "/portfolio-transactions"),
+    ("POST", "/portfolio-transactions/{id}/reversals"),
+    ("GET", "/portfolio-positions"),
+    ("POST", "/valuations"),
+    ("GET", "/valuations"),
     ("GET", "/currencies"),
     ("GET", "/currencies/{code}"),
     ("POST", "/categories"),

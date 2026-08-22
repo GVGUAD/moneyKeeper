@@ -14,14 +14,15 @@ use super::super::{
         LedgerAccountId, LedgerError, Posting, PostingId, PostingPurpose, SystemAccountRole,
     },
     public::{
-        AccountEffect, CancelOrReverseCashControlSettlement, ControlAccountResult,
-        ControlAccountRole, ControlDirection, EnsureTypedControlAccount, ImportProviderTransaction,
-        InternalAccountingResult, ProjectionVersion, ProviderTransactionState,
-        ReclassifyExpenseToReceivableOrPayable, ReclassifyImportedSettlement,
-        RecordCashControlSettlement, RecordExpenseAndControlBalances, RecordInterestAndFee,
-        RecordInterestOrFeeAccrual, RecordPrincipalDisbursement, RecordPrincipalRepayment,
-        ReverseProviderTransaction, ReverseTransaction, SettleReceivableOrPayable,
-        TransitionProviderTransactionState, WriteOffLiabilityOrReceivable,
+        AccountEffect, CancelOrReverseCashControlSettlement, CashFlowDirection,
+        ControlAccountResult, ControlAccountRole, ControlDirection, EnsureTypedControlAccount,
+        ImportProviderTransaction, InternalAccountingResult, ProjectionVersion,
+        ProviderTransactionState, ReclassifyExpenseToReceivableOrPayable,
+        ReclassifyImportedSettlement, RecordCashControlSettlement, RecordExpenseAndControlBalances,
+        RecordInterestAndFee, RecordInterestOrFeeAccrual, RecordPrincipalDisbursement,
+        RecordPrincipalRepayment, ReverseProviderTransaction, ReverseTransaction,
+        SettleReceivableOrPayable, TransitionProviderTransactionState,
+        WriteOffLiabilityOrReceivable,
     },
 };
 use super::{
@@ -295,6 +296,7 @@ impl LedgerFacade {
             crate::shared_kernel::IdempotencyKey::new(command.source_operation_id.clone())
                 .map_err(|_| LedgerError::invalid_source_reference())?;
         command.metadata.idempotency_key = operation_key;
+        let inverse = matches!(command.cash_flow, CashFlowDirection::Outgoing);
         post_by_control_nature(
             &self.uow,
             self.clock.as_ref(),
@@ -303,7 +305,7 @@ impl LedgerFacade {
             command.cash_account_id,
             command.control_account_id,
             command.amount,
-            true,
+            inverse,
         )
         .await
     }

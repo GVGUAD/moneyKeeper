@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use chrono::Utc;
 use moneykeeper::contexts::ledger::public::{
-    AccountKind, AccountNature, CancelOrReverseCashControlSettlement, ControlAccountRole,
-    CorrectBalance, EnsureTypedControlAccount, InternalCommandMetadata, ObservationId,
-    ObserveProviderBalance, OpenAccount, ReconciliationStatus, RecordCashControlSettlement,
-    SourceReference, TransferFunds,
+    AccountKind, AccountNature, CancelOrReverseCashControlSettlement, CashFlowDirection,
+    ControlAccountRole, CorrectBalance, EnsureTypedControlAccount, InternalCommandMetadata,
+    ObservationId, ObserveProviderBalance, OpenAccount, ReconciliationStatus,
+    RecordCashControlSettlement, SourceReference, TransferFunds,
 };
 use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
 use rust_decimal::Decimal;
@@ -243,6 +243,7 @@ async fn concurrent_cash_control_cancellations_create_exactly_one_reversal() {
             cash_account_id: cash.account.id,
             control_account_id: payable.account_id,
             amount: Money::new(Decimal::new(1000, 2), currency, 2).unwrap(),
+            cash_flow: CashFlowDirection::Outgoing,
             source_operation_id: "cash-control-operation-9".to_owned(),
         })
         .await

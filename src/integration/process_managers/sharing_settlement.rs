@@ -93,6 +93,11 @@ impl SharingSettlementCoordinator {
                 cash_account_id: cash_account,
                 control_account_id: control_account,
                 amount: settlement.amount().clone(),
+                cash_flow: if settlement.creditor() == Participant::CurrentUser {
+                    CashFlowDirection::Incoming
+                } else {
+                    CashFlowDirection::Outgoing
+                },
                 source_operation_id: format!("sharing-settlement:{}", settlement.id()),
             })
             .await

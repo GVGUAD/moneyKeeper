@@ -10,6 +10,7 @@ use crate::contexts::classification::public::CategoryCatalogFacade;
 use crate::contexts::ledger::public::LedgerFacade;
 use crate::contexts::loans::public::LoansFacade;
 use crate::contexts::mail::public::MailFacade;
+use crate::contexts::portfolio::public::PortfolioFacade;
 use crate::contexts::preferences::public::PreferencesFacade;
 use crate::contexts::recurring::public::RecurringFacade;
 use crate::contexts::reference_data::public::CurrencyCatalogFacade;
@@ -31,6 +32,7 @@ pub struct SupportingContexts {
     pub reporting: ReportingFacade,
     pub loans: LoansFacade,
     pub sharing: SharingFacade,
+    pub portfolio: PortfolioFacade,
 }
 
 /// Builds all Phase 1 supporting capabilities from a verified database.
@@ -60,6 +62,7 @@ pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
         reporting: crate::contexts::reporting::build(pool),
         loans: crate::contexts::loans::build(pool),
         sharing: crate::contexts::sharing::build(pool),
+        portfolio: crate::contexts::portfolio::build(pool),
     }
 }
 
@@ -259,6 +262,28 @@ pub fn phase6_workers(pool: &VerifiedV2Pool) -> Phase6Workers {
                 loans, ledger,
             ),
     }
+}
+
+/// Explicit Phase 7 Portfolio cash worker; never started by the legacy runtime.
+pub struct Phase7Workers {
+    cash: crate::contexts::portfolio::infrastructure::cash_worker::PortfolioCashSettlementWorker,
+}
+impl Phase7Workers {
+    pub async fn run_cash_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let r = self.cash.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: r.claimed,
+            records: u32::from(r.posted),
+            replayed: 0,
+            retry_scheduled: r.retry_due,
+            fenced: false,
+        })
+    }
+}
+pub fn phase7_workers(pool: &VerifiedV2Pool) -> Phase7Workers {
+    let categories = crate::contexts::classification::build(pool);
+    let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
+    Phase7Workers{cash:crate::contexts::portfolio::infrastructure::cash_worker::PortfolioCashSettlementWorker::new(pool.pool().clone(),ledger)}
 }
 
 /// Phase 5 cross-context coordinators, built only for the isolated V2 lineage.

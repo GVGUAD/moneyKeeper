@@ -646,7 +646,15 @@ pub struct RecordCashControlSettlement {
     pub cash_account_id: LedgerAccountId,
     pub control_account_id: LedgerAccountId,
     pub amount: Money,
+    pub cash_flow: CashFlowDirection,
     pub source_operation_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CashFlowDirection {
+    Incoming,
+    Outgoing,
 }
 
 #[derive(Clone, Debug)]

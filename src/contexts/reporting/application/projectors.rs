@@ -11,6 +11,36 @@ pub enum ProjectionAction {
     Reconciliation,
     AccountingProcess,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortfolioProjectionAction {
+    Instrument,
+    Account,
+    Transaction,
+    Position,
+    Valuation,
+    CashWorkflow,
+}
+pub fn classify_portfolio(
+    event: &crate::contexts::portfolio::public::PortfolioEventV1,
+) -> Result<PortfolioProjectionAction, &'static str> {
+    use crate::contexts::portfolio::public::PortfolioEventFactV1 as F;
+    if event.metadata.schema_version != 1 {
+        return Err("unknown portfolio event major version");
+    }
+    Ok(match event.fact {
+        F::InstrumentCreated { .. } => PortfolioProjectionAction::Instrument,
+        F::AccountChanged { .. } => PortfolioProjectionAction::Account,
+        F::TransactionPosted { .. } | F::TransactionReversed { .. } => {
+            PortfolioProjectionAction::Transaction
+        }
+        F::PositionChanged { .. } => PortfolioProjectionAction::Position,
+        F::ValuationRecorded { .. } => PortfolioProjectionAction::Valuation,
+        F::CashSettlementPosted { .. }
+        | F::CashSettlementReversed { .. }
+        | F::CashSettlementCancelledWithoutEffect { .. } => PortfolioProjectionAction::CashWorkflow,
+    })
+}
 pub fn classify(event: &LedgerEventV1) -> Result<ProjectionAction, &'static str> {
     if event.metadata.schema_version != 1 {
         return Err("unknown ledger event major version");

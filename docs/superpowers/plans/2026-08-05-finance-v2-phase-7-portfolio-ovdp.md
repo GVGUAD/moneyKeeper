@@ -89,7 +89,7 @@ Paths assume the context skeleton and `static/openapi.v2.json` were established 
 - Create: `src/infrastructure/migrations_v2/0011_portfolio.sql`
 - Create: `tests/portfolio_persistence.rs`
 
-- [ ] **Step 1: Write failing fresh-database tests**
+- [x] **Step 1: Write failing fresh-database tests**
 
 Cover schema ownership and tenant-safe constraints for:
 
@@ -104,7 +104,7 @@ Cover schema ownership and tenant-safe constraints for:
 
 Tests must reject cross-user account/instrument/transaction/lot relationships, negative or zero quantities where prohibited, currency mismatches, disposal beyond available quantity, duplicate reversal, and update/delete of posted transactions/components/allocations. Concurrent claims for the same scoped key/hash converge on one receipt/result; the same scoped key with a different canonical hash is a conflict, while a distinct documented scope is independent.
 
-- [ ] **Step 2: Run the tests and capture the expected failure**
+- [x] **Step 2: Run the tests and capture the expected failure**
 
 ```bash
 SQLX_OFFLINE=true cargo test --test portfolio_persistence schema_ -- --nocapture
@@ -112,13 +112,13 @@ SQLX_OFFLINE=true cargo test --test portfolio_persistence schema_ -- --nocapture
 
 Expected: FAIL because `portfolio` tables do not exist.
 
-- [ ] **Step 3: Add the migration**
+- [x] **Step 3: Add the migration**
 
 Use bounded `NUMERIC` columns compatible with the shared Decimal policy and `TIMESTAMPTZ`. Create normal transactional indexes because V2 is a blank baseline. Include stable ordering indexes such as `(user_id, effective_at DESC, sequence DESC, id DESC)` and `(account_id, instrument_id, acquired_at, id)` for FIFO.
 
 Do not add a scalar mutable `balance` column to a Portfolio account. Position projection rows are derived caches and must be distinguishable from immutable transaction/lot facts.
 
-- [ ] **Step 4: Make database tests pass**
+- [x] **Step 4: Make database tests pass**
 
 ```bash
 SQLX_OFFLINE=true cargo test --test portfolio_persistence schema_ -- --nocapture
@@ -143,7 +143,7 @@ git commit -m "feat(portfolio): add v2 portfolio schema"
 - Create: `src/contexts/portfolio/domain/mod.rs`
 - Create: `tests/portfolio_domain.rs`
 
-- [ ] **Step 1: Write failing aggregate tests**
+- [x] **Step 1: Write failing aggregate tests**
 
 Test that a manual ОВДП instrument requires:
 
@@ -156,17 +156,17 @@ Test that a manual ОВДП instrument requires:
 
 Test account create/rename/archive/restore transitions and stale `expected_version` rejection. An archived account rejects new ordinary Portfolio activity but still permits reversal.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cargo test --test portfolio_domain -- --nocapture
 ```
 
-- [ ] **Step 3: Implement the aggregates and value objects**
+- [x] **Step 3: Implement the aggregates and value objects**
 
 Keep ISIN validation syntactic in V1; do not claim that an identifier exists in an external registry. Preserve unknown coupon/acquisition information explicitly.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```bash
 cargo test --test portfolio_domain -- --nocapture
@@ -189,7 +189,7 @@ git commit -m "feat(portfolio): model instruments and portfolio accounts"
 - Modify: `src/contexts/portfolio/domain/mod.rs`
 - Modify: `tests/portfolio_domain.rs`
 
-- [ ] **Step 1: Write failing tests for every transaction type**
+- [x] **Step 1: Write failing tests for every transaction type**
 
 Cover:
 
@@ -204,17 +204,17 @@ For an `Ovdp` instrument, quantity must have scale zero (whole bonds) in V1. Acq
 
 All Money components for one instrument transaction must use the instrument currency in V1. Posted transactions expose recorded/effective time, actor, source, correlation, and immutable status.
 
-- [ ] **Step 2: Add reversal-symmetry tests**
+- [x] **Step 2: Add reversal-symmetry tests**
 
 An exact reversal points to one original transaction, negates its position/cost effects, cannot itself be reversed twice, and never overwrites the original. Coupon and cash-settlement reversals retain their correlation chain.
 
-- [ ] **Step 3: Run and verify failure**
+- [x] **Step 3: Run and verify failure**
 
 ```bash
 cargo test --test portfolio_domain -- --nocapture
 ```
 
-- [ ] **Step 4: Implement and make tests pass**
+- [x] **Step 4: Implement and make tests pass**
 
 Use named constructors/commands rather than a caller-provided enum plus arbitrary component list. Keep calculated fields out of constructors; the application service supplies locked lot allocations and projection results.
 
@@ -235,7 +235,7 @@ git commit -m "feat(portfolio): model immutable position activity"
 - Modify: `src/contexts/portfolio/domain/mod.rs`
 - Create: `tests/portfolio_lots.rs`
 
-- [ ] **Step 1: Write property and example tests**
+- [x] **Step 1: Write property and example tests**
 
 Prove:
 
@@ -248,17 +248,17 @@ Prove:
 - unknown-cost quantities remain identifiable and yield `realized_gain_loss = null`, not zero;
 - reversing a disposal restores the exact consumed lot state through compensating allocation facts.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 ```bash
 cargo test --test portfolio_lots -- --nocapture
 ```
 
-- [ ] **Step 3: Implement the pure lot engine**
+- [x] **Step 3: Implement the pure lot engine**
 
 The engine accepts an immutable snapshot and returns allocations/effects. It performs no I/O. Put rounding/remainder allocation in a named helper and preserve the final remainder on the last allocation so cost is conserved exactly.
 
-- [ ] **Step 4: Run focused and randomized tests**
+- [x] **Step 4: Run focused and randomized tests**
 
 ```bash
 cargo test --test portfolio_lots -- --nocapture
@@ -283,19 +283,19 @@ git commit -m "feat(portfolio): add fifo and explicit lot allocation"
 - Create: `src/contexts/portfolio/infrastructure/mod.rs`
 - Modify: `tests/portfolio_persistence.rs`
 
-- [ ] **Step 1: Write failing transactionality/concurrency tests**
+- [x] **Step 1: Write failing transactionality/concurrency tests**
 
 Verify one SQL transaction persists/locks the `portfolio.command_receipts` claim, Portfolio aggregate, lot effects, current projection, durable command result, audit metadata, and outbox event. Inject a failure before commit and assert none remain. Verify same-scope/key/same-hash replay returns the exact stored result with no second effect, same-scope/key/different-hash conflicts, and different scopes are independent. Run concurrent disposal attempts against the same position; exactly one succeeds when combined demand exceeds available quantity.
 
-- [ ] **Step 2: Define aggregate-shaped ports**
+- [x] **Step 2: Define aggregate-shaped ports**
 
 Define repositories/UoW for Instrument, PortfolioAccount, PortfolioTransaction with lot state, PositionProjection, Valuation, a scoped command-receipt store, and outbox. Do not expose per-table `update_quantity` or `delete_transaction` methods.
 
-- [ ] **Step 3: Implement SQLx adapters with stable lock order**
+- [x] **Step 3: Implement SQLx adapters with stable lock order**
 
 Lock `(user_id, portfolio_account_id, instrument_id)` position keys before loading lots. Use the shared idempotency request-hash contract and commit the terminal serialized result/HTTP status in `portfolio.command_receipts`. Posted facts are insert-only.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```bash
 SQLX_OFFLINE=true cargo test --test portfolio_persistence -- --nocapture
@@ -321,7 +321,7 @@ git commit -m "feat(portfolio): persist portfolio aggregates atomically"
 - Modify: `tests/portfolio_domain.rs`
 - Modify: `tests/portfolio_persistence.rs`
 
-- [ ] **Step 1: Write failing handler tests**
+- [x] **Step 1: Write failing handler tests**
 
 Add tests for:
 
@@ -337,15 +337,15 @@ Add tests for:
 
 Test ownership, archived state, currency, duplicate idempotency key/same hash, duplicate key/different hash, stale `expected_account_version`, stale `expected_position_version`, insufficient quantity, duplicate reversal, and correct event payload/version. First acquisition uses expected position version `0`; all later quantity/cost-affecting commands fence the version returned by the position read.
 
-- [ ] **Step 2: Implement command handlers**
+- [x] **Step 2: Implement command handlers**
 
 Handlers validate through aggregates, lock/load state, invoke the lot engine, persist all facts/projections/outbox atomically, and return stable result DTOs. A retry returns the original result including Portfolio transaction ID and processing status.
 
-- [ ] **Step 3: Define the public boundary**
+- [x] **Step 3: Define the public boundary**
 
 `public.rs` exposes opaque command/result/query types and versioned events. It must not expose SQLx repository traits, table rows, or mutable lot internals.
 
-- [ ] **Step 4: Run tests and architecture guard**
+- [x] **Step 4: Run tests and architecture guard**
 
 ```bash
 cargo test --test portfolio_domain
@@ -374,7 +374,7 @@ git commit -m "feat(portfolio): add portfolio application commands"
 - Modify: `src/contexts/portfolio/public.rs`
 - Modify: `tests/portfolio_persistence.rs`
 
-- [ ] **Step 1: Write failing projection tests**
+- [x] **Step 1: Write failing projection tests**
 
 For each account/instrument derive:
 
@@ -389,15 +389,15 @@ Valuation uses `quantity * (price_per_instrument + accrued_interest_per_instrume
 
 Also test the `RecordValuationSnapshot` command: owner/account/instrument/currency validation, positive price, non-negative accrued interest, required source/quote time, `Idempotency-Key` replay and payload conflict, atomic valuation/audit/idempotency/outbox/projection update, and no cash/Ledger process creation.
 
-- [ ] **Step 2: Test append-only valuation and rebuild**
+- [x] **Step 2: Test append-only valuation and rebuild**
 
 Reject update/delete of valuation facts. Delete only projection rows, rebuild from immutable Portfolio facts, and assert exact equality including ordering/checkpoint.
 
-- [ ] **Step 3: Implement the valuation command, projections, and queries**
+- [x] **Step 3: Implement the valuation command, projections, and queries**
 
 `RecordValuationSnapshot` appends the fact through the Portfolio UoW and updates the latest-valuation projection, audit, idempotency result, and outbox atomically. Queries return immutable DTOs for instruments, accounts, activity, positions, lots, and valuations. Include `as_of`, source, and missing-cost/missing-price states.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 SQLX_OFFLINE=true cargo test --test portfolio_persistence -- --nocapture
@@ -422,7 +422,7 @@ git commit -m "feat(portfolio): project positions and manual valuations"
 - Modify: `src/contexts/portfolio/public.rs`
 - Create: `tests/portfolio_cash_settlement.rs`
 
-- [ ] **Step 1: Write failing workflow tests with a fake Ledger façade**
+- [x] **Step 1: Write failing workflow tests with a fake Ledger façade**
 
 Cover outgoing buy cash, incoming sale/coupon/redemption cash, no-cash transaction, wrong account/currency, Ledger business rejection, transient failure/retry, crash after Ledger commit, duplicate event delivery, Portfolio transaction reversal, completion-event replay, and both orderings of reversal versus an original settlement that is pending/in flight.
 
@@ -440,15 +440,15 @@ Assert:
 
 The closed Ledger recipe is debit hidden Portfolio settlement control / credit selected cash for an outgoing buy (including explicitly modeled cash fees), and debit cash / credit that control for incoming sale, coupon, or redemption proceeds. The control account is excluded from account/net-worth totals; Portfolio events—not the control posting—classify acquisition cost, proceeds, coupon income, fees, and realized gain/loss. Reversal posts the exact inverse through Ledger. This keeps the journal balanced without treating a security as cash or counting investment income/expense twice.
 
-- [ ] **Step 2: Implement the durable process manager**
+- [x] **Step 2: Implement the durable process manager**
 
 Persist/claim its inbox and state before invoking Ledger. On restart, retry any leased/expired non-terminal state. Serialize original/cancel/reverse actions by Portfolio transaction and workflow generation. The original uses Ledger's typed `RecordCashControlSettlement`; reversal uses `CancelOrReverseCashControlSettlement` with the same source-operation identity. Ledger's source-operation receipt is the final race arbiter: not-yet-posted becomes `CancelledNoFinancialEffect` with no fabricated journal ID, already-posted becomes `Reversed` with both journal/reversal references, and a late original returns the stored cancelled result. Publish distinct versioned cancellation-without-effect versus reversal completion events so API/Reporting cannot mislabel the outcome. After Ledger returns a durable result, persist the appropriate reference and publish the corresponding completion event.
 
-- [ ] **Step 3: Keep Portfolio commits independent**
+- [x] **Step 3: Keep Portfolio commits independent**
 
 The Portfolio transaction is valid even when optional cash accounting is still pending or failed. Its API result includes accounting status and correlation ID. Do not hold a Portfolio SQL transaction open across the Ledger call.
 
-- [ ] **Step 4: Run workflow tests**
+- [x] **Step 4: Run workflow tests**
 
 ```bash
 cargo test --test portfolio_cash_settlement -- --nocapture
@@ -478,7 +478,7 @@ git commit -m "feat(portfolio): coordinate ledger cash settlements"
 - Modify: `static/openapi.v2.json`
 - Create: `tests/portfolio_api.rs`
 
-- [ ] **Step 1: Write failing API contract tests**
+- [x] **Step 1: Write failing API contract tests**
 
 Cover authentication/tenant isolation, decimal-string serialization, required `Idempotency-Key`, same-scope/key/same-canonical-hash durable response replay, same-scope/key/different-hash `409`, independent command scopes, `expected_version`, stable validation codes, and process status for:
 
@@ -502,15 +502,15 @@ GET  /valuations?portfolio_account_id={id}&instrument_id={id}
 
 These exact reads provide account/instrument/position/activity/valuation detail required by the UI. Every POST/PATCH command requires `Idempotency-Key`. Account rename/archive/restore require body `expected_version` for `PortfolioAccount` and reject missing/stale values; account creation starts at version 1. `POST /portfolio-transactions` and its reversal route require `expected_account_version` to fence account archive/metadata changes and `expected_position_version` for the affected `(portfolio_account, instrument)` position (`0` means no position yet). The reversal locks/rechecks the original immutable transaction plus current position under that fence; duplicate-reversal uniqueness remains final protection. `POST /instruments/ovdp`, `POST /portfolio-accounts`, and append-only `POST /valuations` create new facts and therefore have no existing aggregate `expected_version`. Position reads return their current version. The Portfolio transaction write request uses a discriminated task payload, not arbitrary lot or Ledger postings.
 
-- [ ] **Step 2: Implement DTO mapping and isolated router**
+- [x] **Step 2: Implement DTO mapping and isolated router**
 
 Keep `Money`, quantities, prices, face values, and accrued interest as decimal strings with explicit currencies/units. Return effective/recorded time, source, reversal, cash-accounting status, correlation, version, and `as_of`. Compose the routes only in `src/api/v2.rs`; the default router remains untouched until Phase 8.
 
-- [ ] **Step 3: Update the parallel OpenAPI document**
+- [x] **Step 3: Update the parallel OpenAPI document**
 
 Validate examples and error responses. Do not mount this router in the default legacy application; Phase 8 promotes the assembled V2 router.
 
-- [ ] **Step 4: Run API/OpenAPI tests**
+- [x] **Step 4: Run API/OpenAPI tests**
 
 ```bash
 cargo test --test portfolio_api -- --nocapture
@@ -537,7 +537,7 @@ git commit -m "feat(portfolio): expose manual ovdp api"
 - Modify: `src/bootstrap/v2.rs`
 - Create: `tests/reporting_portfolio.rs`
 
-- [ ] **Step 1: Write failing Reporting tests**
+- [x] **Step 1: Write failing Reporting tests**
 
 Consume Portfolio transaction, reversal, position, valuation, cash-settlement-posted/reversed, and cash-settlement-cancelled-without-effect events through the Reporting inbox. Verify:
 
@@ -550,11 +550,11 @@ Consume Portfolio transaction, reversal, position, valuation, cash-settlement-po
 - missing valuation/cost is represented as incomplete, not zero;
 - replay/rebuild equals the live projection.
 
-- [ ] **Step 2: Implement the consumer/projection**
+- [x] **Step 2: Implement the consumer/projection**
 
 Use versioned public event DTOs only. Register the Portfolio event names/versions in Reporting's central projector dispatch, export the adapter from Reporting infrastructure, and wire that consumer in `bootstrap::v2` with the shared inbox/checkpoint runtime. Add a bootstrap assertion that publishing a Portfolio event through the normal dispatcher—not by calling the projection directly—updates Reporting. No SQL may query `portfolio.*` from Reporting or `ledger.*` from Portfolio.
 
-- [ ] **Step 3: Run Reporting and architecture tests**
+- [x] **Step 3: Run Reporting and architecture tests**
 
 ```bash
 cargo test --test reporting_portfolio -- --nocapture
@@ -571,6 +571,16 @@ git commit -m "feat(reporting): include portfolio valuation in net worth"
 ---
 
 ## Task 11: Phase verification and documentation
+
+**Verification note (2026-08-21):** Tasks 1–10 are implemented. The focused domain, lot,
+persistence, cash-settlement, API/OpenAPI, Reporting, and architecture suites passed, including
+fresh PostgreSQL Testcontainers and a real Ledger post/reversal. `cargo fmt --check` and strict
+Clippy pass. The final event-router/outbox integration and `phase7_workflow` compile cleanly, but
+the final fresh-database scenario and complete `cargo test` rerun remain unchecked because the
+desktop approval service exhausted its Docker-access usage allowance after the focused gates.
+The library suite builds and its 83 non-database tests pass; its remaining 73 tests cannot start
+Testcontainers in the sandbox. Task-boundary and phase-close commits are also left unchecked
+because the same approval limit prevents writing the repository's `.git` metadata.
 
 **Files:**
 
@@ -597,7 +607,7 @@ cargo test
 
 On a fresh V2 database: create UAH ОВДП instrument/account, record two purchase lots, sell across FIFO lots, post a coupon with optional cash, record valuation, redeem/reverse a transaction, rebuild projections, and assert exact Portfolio/Reporting/Ledger correlation.
 
-- [ ] **Step 3: Confirm scope exclusions**
+- [x] **Step 3: Confirm scope exclusions**
 
 Search for broker clients, live pricing, tax calculations, automatic schedules, generic Portfolio posting endpoints, and direct foreign-context SQL. None should have been introduced.
 
