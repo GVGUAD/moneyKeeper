@@ -9,7 +9,7 @@ primary_region = 'fra'
 [build]
 
 [env]
-  SUPABASE_URL = "https://zjegaedvwlyhepmwyckx.supabase.co"
+  SUPABASE_URL = "https://mivavgihqyjofjlzhphp.supabase.co"
   PUBLIC_URL   = "https://moneykeeper.fly.dev"
   MONOBANK_WEBHOOK_BASE_URL = "https://moneykeeper.fly.dev"
   BIND_ADDR    = "0.0.0.0:8080"

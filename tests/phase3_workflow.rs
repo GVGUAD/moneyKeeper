@@ -100,7 +100,10 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
     };
     let banking = build_banking();
     let user_id = UserId::generate();
-    let now = Utc::now();
+    let now = Utc
+        .timestamp_micros(Utc::now().timestamp_micros())
+        .single()
+        .unwrap();
 
     let connection = banking
         .connect_provider(ConnectProvider {
