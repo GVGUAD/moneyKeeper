@@ -1,25 +1,12 @@
-use std::sync::Arc;
+//! Cross-context read capabilities needed by the Ledger HTTP adapter.
 
-use jsonwebtoken::jwk::JwkSet;
+use crate::contexts::ledger::public::LedgerFacade;
+use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 
-use crate::application::accounts::AccountService;
-use crate::application::categories::CategoryService;
-use crate::application::monobank::MonobankService;
-use crate::application::subscription_matching::MatchChargesUseCase;
-use crate::application::subscriptions::SubscriptionService;
-use crate::application::transactions::TransactionService;
-use crate::application::user_settings::UserSettingsService;
-
+/// Capabilities required to compose Ledger account details without private SQL.
 #[derive(Clone)]
-pub struct AppState {
-    pub accounts: Arc<AccountService>,
-    pub transactions: Arc<TransactionService>,
-    pub categories: Arc<CategoryService>,
-    pub monobank: Arc<MonobankService>,
-    pub user_settings: Arc<UserSettingsService>,
-    pub supabase_jwks: Arc<JwkSet>,
-    pub subscriptions: Arc<SubscriptionService>,
-    pub matcher: Arc<MatchChargesUseCase>,
-    pub fx: Arc<dyn crate::domain::fx_rate::FxRateRepository>,
-    pub gmail_oauth: Arc<crate::infrastructure::email::oauth::GmailOAuthService>,
+pub(crate) struct LedgerApiState {
+    pub(crate) ledger: LedgerFacade,
+    pub(crate) currencies: CurrencyCatalogFacade,
+    pub(crate) banking: Option<crate::contexts::banking::public::BankingFacade>,
 }

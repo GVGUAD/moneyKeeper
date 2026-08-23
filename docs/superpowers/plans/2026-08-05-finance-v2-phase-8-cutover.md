@@ -122,11 +122,11 @@ Delete actions occur only after read-only searches prove the V2 equivalent exist
 - Create: `docs/operations/finance-v2-development-cutover.md`
 - Modify: this plan to record the baseline commit and gate results
 
-- [ ] **Step 1: Record the candidate identity and assumptions**
+- [x] **Step 1: Record the candidate identity and assumptions**
 
 Record the initial baseline SHA, Rust toolchain, PostgreSQL version, current legacy database identifier (redacted hostname), intended new V2 database identifier, migration count/checksum output for both lineages, and responsible operator. Explicitly state that legacy rows and credentials will not be migrated. This is not yet the deployable frozen SHA; Tasks 2–8 are expected to change it.
 
-- [ ] **Step 2: Run all pre-cutover gates on a fresh V2 database**
+- [x] **Step 2: Run all pre-cutover gates on a fresh V2 database**
 
 ```bash
 cargo fmt --check
@@ -139,7 +139,7 @@ cargo test --test openapi_v2 -- --nocapture
 
 Run full projection rebuild and representative end-to-end scenarios from Phases 2–7. Save command names and pass/fail summaries in the runbook; do not save credentials or raw financial payloads.
 
-- [ ] **Step 3: Inventory every runtime worker and SQLx migrator**
+- [x] **Step 3: Inventory every runtime worker and SQLx migrator**
 
 ```bash
 rg -n "tokio::spawn|interval\(|restart_incomplete|claim_|lease" src
@@ -148,11 +148,11 @@ rg -n "sqlx::migrate!|migrations =" src tests
 
 Expected before switch: all intended V2 workers are known, and exactly the four legacy migrator call sites are scheduled for replacement (`src/infrastructure/db.rs`, `src/infrastructure/test_db.rs`, `tests/common/mod.rs`, and migration tests), plus any V2-parallel helpers created since Phase 1.
 
-- [ ] **Step 4: Verify legacy migration files are unchanged**
+- [x] **Step 4: Verify legacy migration files are unchanged**
 
 Compare all 25 files against the recorded checksum manifest. Do not repair a mismatch by changing the manifest; investigate and restore the original bytes through an approved non-destructive source.
 
-- [ ] **Step 5: Commit the reviewed runbook**
+- [x] **Step 5: Commit the reviewed runbook**
 
 ```bash
 git add docs/operations/finance-v2-development-cutover.md docs/superpowers/plans/2026-08-05-finance-v2-phase-8-cutover.md
@@ -169,7 +169,7 @@ git commit -m "docs(cutover): add finance v2 development runbook"
 - Modify: `tests/v2_migrations.rs`
 - Create/modify: startup database-generation tests in the Phase 1 test location
 
-- [ ] **Step 1: Write failing generation-guard tests**
+- [x] **Step 1: Write failing generation-guard tests**
 
 Test startup against:
 
@@ -181,22 +181,22 @@ Test startup against:
 
 The empty database must migrate to the complete baseline before construction; the complete V2 database reopens idempotently; and a correctly marked partial V2 lineage may resume migrations but cannot reach construction unless it reaches the exact latest baseline. Legacy/unmarked non-empty/wrong-marker databases are rejected before any V2 SQL mutates them. An injected migration failure leaves listeners and workers stopped. Error messages must identify the safety problem without logging the database URL password.
 
-- [ ] **Step 2: Finalize the verified V2 initializer without switching the legacy runtime**
+- [x] **Step 2: Finalize the verified V2 initializer without switching the legacy runtime**
 
 Harden Phase 1's `initialize_v2`/`VerifiedV2Pool` so its embedded migrator and latest-baseline check cannot drift. Keep the default `src/infrastructure/db.rs`, `main.rs`, `v2_test_db`, `src/infrastructure/test_db.rs`, `tests/common/mod.rs`, and old migration/API runtime unchanged in this commit. Task 4 atomically switches the application call site together with bootstrap/router promotion; Task 6 later promotes the test helper after legacy tests are removed. Do not configure `ignore_missing` to tolerate legacy history.
 
-- [ ] **Step 3: Enforce startup order**
+- [x] **Step 3: Enforce startup order**
 
 Encode the pre-bootstrap portion as connect, run V2 migrations, verify generation/latest baseline, and return `VerifiedV2Pool`. The parallel V2 bootstrap tests then run readiness invariants with provider calls disabled. No external provider call happens before the marker check. The default legacy application is still coherent/runnable at this commit.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```bash
 SQLX_OFFLINE=true cargo test --test v2_migrations -- --nocapture
 cargo test database_generation -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/infrastructure/v2_db.rs tests/v2_migrations.rs
@@ -216,7 +216,7 @@ Use the actual Phase 1 module path if it differs from `v2_db.rs`; do not create 
 - Modify: `src/bootstrap/workers.rs`
 - Add/modify bootstrap integration tests
 
-- [ ] **Step 1: Write failing bootstrap tests**
+- [x] **Step 1: Write failing bootstrap tests**
 
 Assert:
 
@@ -228,15 +228,15 @@ Assert:
 - shutting down cancels claims gracefully and stops accepting HTTP before worker teardown;
 - no legacy service/repository constructor is reachable.
 
-- [ ] **Step 2: Prepare a small V2 run entry point behind the parallel bootstrap**
+- [x] **Step 2: Prepare a small V2 run entry point behind the parallel bootstrap**
 
 Build a tested `bootstrap::v2::run`/composition function that loads validated configuration, initializes redacted logging, accepts only `VerifiedV2Pool`, builds the app, binds a supplied listener with readiness false, initializes and starts the leased worker registry, flips readiness true only after the barrier succeeds, and handles graceful shutdown. Keep `main.rs`, the default API state/routes, and legacy module exports unchanged in this commit. If worker initialization fails, readiness stays false and the test listener shuts down; business routes never serve during a partial start.
 
-- [ ] **Step 3: Add a readiness barrier**
+- [x] **Step 3: Add a readiness barrier**
 
 Readiness reports false until migrations, marker, cryptographic keys, context construction, listener binding, and dispatcher/worker initialization succeed. The single startup order is: verify database/configuration → construct contexts → bind with readiness false → start/verify workers → readiness true. Shutdown performs the inverse visibility boundary: readiness false → stop accepting business traffic → drain/cancel workers. Expose lag/failed-process health without treating a transient provider outage as database corruption.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cargo test bootstrap_ -- --nocapture
@@ -244,7 +244,7 @@ cargo test worker_registry_ -- --nocapture
 cargo test readiness_ -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/bootstrap tests
@@ -268,19 +268,19 @@ git commit -m "refactor(cutover): prepare v2 bootstrap and worker barrier"
 - Modify: `static/swagger-ui.html` if needed
 - Replace legacy API test root with V2 contract/smoke suite
 
-- [ ] **Step 1: Write failing route-manifest tests**
+- [x] **Step 1: Write failing route-manifest tests**
 
 Generate an exhaustive operation manifest from every method/path/operation ID in validated `static/openapi.v2.json` and assert the default router has exact parity with the already-tested isolated `src/api/v2.rs` router. This includes Ledger, Banking, Mail, Recurring, Reporting, Sharing, Loans, and Portfolio commands and reads—not only the architecture spec's primary route excerpt. Assert all public operations are mounted at unversioned paths, authenticated where required, and absent beneath `/v2`. Keep a separate explicit manifest entry/test for the deliberately non-public Monobank callback route because it is omitted from public OpenAPI. Assert legacy mutation semantics—including account hard delete, direct balance setter, standalone transaction delete, and a Monobank webhook without its path secret—return `404` rather than silently mapping to V2 behavior.
 
-- [ ] **Step 2: Compose context routers**
+- [x] **Step 2: Compose context routers**
 
 In one green change, point `src/infrastructure/db.rs` at the verified V2 initializer, replace `main.rs` with the tested Phase 8 V2 run entry point, switch module exports/API state, and promote or delegate to the exact router composition already exported by `src/api/v2.rs`; do not manually reconstruct a second list that can drift. The API layer may compose Ledger and Banking/Reporting read DTOs for account balance details, but it cannot query private tables. Keep authentication/error/request-ID middleware centralized and keep context request mapping inside each context API module. There is no commit where the default V2 migrator runs legacy services or where the new bootstrap serves legacy routes.
 
-- [ ] **Step 3: Promote the validated OpenAPI document**
+- [x] **Step 3: Promote the validated OpenAPI document**
 
 Replace `static/openapi.json` with the already validated V2 specification and delete the parallel file. Verify every financial POST declares `Idempotency-Key`, every aggregate metadata mutation declares body `expected_version`, amounts are decimal strings with currency, and posted resources expose reversal/correction/source/as-of fields.
 
-- [ ] **Step 4: Run API tests**
+- [x] **Step 4: Run API tests**
 
 ```bash
 cargo test --test api -- --nocapture
@@ -289,7 +289,7 @@ cargo test bootstrap_ -- --nocapture
 SQLX_OFFLINE=true cargo test --test v2_migrations -- --nocapture
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main.rs src/lib.rs src/infrastructure/db.rs src/api static tests/api.rs tests/api
@@ -309,30 +309,30 @@ git commit -m "feat(cutover): atomically promote v2 runtime and unversioned api"
 - Preserve: `src/infrastructure/migrations/**`
 - Preserve/move only redacted receipt fixtures still used by V2 Mail tests
 
-- [ ] **Step 1: Produce an equivalence checklist before each deletion group**
+- [x] **Step 1: Produce an equivalence checklist before each deletion group**
 
 Map legacy behavior to a passing V2 test for accounts/transactions, Monobank, Gmail, subscriptions, preferences/reference data, and reporting. If a current capability lacks an agreed V2 equivalent, stop and implement it in its owning phase rather than keeping a legacy repository wired to V2.
 
-- [ ] **Step 2: Delete horizontal legacy domain/application modules**
+- [x] **Step 2: Delete horizontal legacy domain/application modules**
 
 Remove `src/domain/` and `src/application/` only after `rg` shows all needed types/use cases exist under `shared_kernel` or `contexts`. Update `lib.rs` so the old module paths cannot compile.
 
-- [ ] **Step 3: Delete legacy handlers and repositories**
+- [x] **Step 3: Delete legacy handlers and repositories**
 
 Remove the table-coupled files listed in the file map. Retain/move generic authentication, error, HTTP middleware, token encryption, and provider parsing only where their V2 owner is explicit. Remove the combined credential-rotation binary unless it has already become context-safe.
 
-- [ ] **Step 4: Remove unused dependencies and build**
+- [x] **Step 4: Remove unused dependencies and build**
 
 ```bash
 cargo check --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-- [ ] **Step 5: Prove legacy migrations remain unchanged**
+- [x] **Step 5: Prove legacy migrations remain unchanged**
 
 Run the file-only checksum test. The old SQL exists only under the preserved migration directory and documentation/fixtures allowlists.
 
-- [ ] **Step 6: Commit deletion separately**
+- [x] **Step 6: Commit deletion separately**
 
 ```bash
 git add -A src Cargo.toml Cargo.lock tests
@@ -354,11 +354,11 @@ git commit -m "refactor(cutover): remove legacy finance runtime"
 - Create: `scripts/check_no_legacy_finance_sql.sh`
 - Modify/create: repository CI workflow
 
-- [ ] **Step 1: Preserve legacy checksums without executing legacy SQL**
+- [x] **Step 1: Preserve legacy checksums without executing legacy SQL**
 
 The checksum test reads all 25 files, verifies the frozen version/name/checksum manifest, and fails on addition, removal, or byte change. It must not run those migrations against a V2 database.
 
-- [ ] **Step 2: Promote the V2 test helper and make fresh-baseline invariants the migration suite**
+- [x] **Step 2: Promote the V2 test helper and make fresh-baseline invariants the migration suite**
 
 Only after Tasks 4–5 have replaced/deleted legacy API/runtime tests, switch `src/infrastructure/test_db.rs` and `tests/common/mod.rs` to the single V2 migrator/helper; remove or rename the temporary parallel helper without duplicating container logic. On PostgreSQL 16, migrate an empty database through the complete V2 lineage and test:
 
@@ -374,15 +374,15 @@ Only after Tasks 4–5 have replaced/deleted legacy API/runtime tests, switch `s
 
 Delete the old deployed-0011/upgrade/backfill/concurrent-index scenarios; they describe the legacy lineage only.
 
-- [ ] **Step 3: Add executable-SQL and import guards**
+- [x] **Step 3: Add executable-SQL and import guards**
 
 The script/test scans Rust source and active V2 SQL for legacy table names such as `accounts`, `transactions`, `transfer_links`, `bank_connections`, `subscription_charges`, and legacy unqualified queries. Use token-aware patterns and an explicit allowlist for the frozen legacy migration directory, checksum test, and documentation. It also rejects `contexts::<x>::infrastructure`/repository imports from another context.
 
-- [ ] **Step 4: Wire CI gates**
+- [x] **Step 4: Wire CI gates**
 
 CI runs format, clippy with warnings denied, full tests, fresh V2 migration tests, architecture/legacy SQL scans, OpenAPI validation, and secret/logging tests.
 
-- [ ] **Step 5: Run locally**
+- [x] **Step 5: Run locally**
 
 ```bash
 ./scripts/check_no_legacy_finance_sql.sh
@@ -391,7 +391,7 @@ SQLX_OFFLINE=true cargo test --test migrations -- --nocapture
 cargo test --test context_boundaries -- --nocapture
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/infrastructure/test_db.rs tests/common/mod.rs tests scripts .github
@@ -414,27 +414,27 @@ If the repository uses a CI directory other than `.github`, stage that actual pa
 - Create: `docs/operations/integration-reconnection.md`
 - Create: `docs/architecture/finance-v2-context-map.md`
 
-- [ ] **Step 1: Give the V2 database and volume distinct identities**
+- [x] **Step 1: Give the V2 database and volume distinct identities**
 
 Use explicit names such as `moneykeeper_v2` and a new V2 volume. Do not reuse the current named volume. Document how to select the old versus new URL without printing secrets.
 
-- [ ] **Step 2: Document configuration**
+- [x] **Step 2: Document configuration**
 
 Include database generation expectation, encryption key/key version, Supabase/JWKS, public URL, Monobank webhook base URL, Gmail OAuth redirect, worker lease/backoff settings, and safe logging. Example values must not be usable credentials.
 
-- [ ] **Step 3: Document reconnection**
+- [x] **Step 3: Document reconnection**
 
 Explain that no token/OAuth state is migrated. Users reconnect Monobank, review every discovered card/current account/jar and native currency before mapping, then reconnect Gmail and request a sync. Failed provider events/reconciliation cases are visible and should be resolved before relying on reports.
 
-- [ ] **Step 4: Document rollback and preservation**
+- [x] **Step 4: Document rollback and preservation**
 
 Rollback stops V2, restores the prior binary/config, and points back to the untouched legacy database. Explicitly state that V2-created data is not copied back. Keep both database identifiers and backups until the development owner chooses a later manual cleanup outside this plan.
 
-- [ ] **Step 5: Add a context ownership guide**
+- [x] **Step 5: Add a context ownership guide**
 
 List each schema/module owner, allowed public dependency direction, event contracts, and the rule against repository/private-table imports.
 
-- [ ] **Step 6: Validate Compose/config without starting against a real DB**
+- [x] **Step 6: Validate Compose/config without starting against a real DB**
 
 Use the repository's non-mutating configuration-validation commands, then commit.
 
@@ -454,19 +454,19 @@ Only stage files that exist or were intentionally changed.
 - Modify: `docs/operations/finance-v2-development-cutover.md` with observed timings/results
 - Add only redacted automated smoke tests/scripts if gaps are found
 
-- [ ] **Step 1: Start from a separate disposable PostgreSQL 16 instance**
+- [x] **Step 1: Start from a separate disposable PostgreSQL 16 instance**
 
 Verify it has no legacy `_sqlx_migrations` history. Apply the candidate V2 binary/migrator and confirm all expected V2 schemas and the generation marker.
 
-- [ ] **Step 2: Prove wrong-database refusal**
+- [x] **Step 2: Prove wrong-database refusal**
 
 With a non-production copy or fixture of the legacy schema, start the V2 binary and assert it exits before provider calls, workers, or HTTP readiness. Do not run V2 migrations on that fixture.
 
-- [ ] **Step 3: Exercise the golden workflow**
+- [x] **Step 3: Exercise the golden workflow**
 
 Create a user preference/base currency; create cash/card/liability accounts; post income/expense/transfer/correction/reversal; connect provider fakes; ingest Gmail fixtures; split/settle a multi-payer bill; record borrowed/lent loan flows; record/settle/value ОВДП; rebuild all projections; compare API balances/net worth exactly.
 
-- [ ] **Step 4: Exercise crash recovery**
+- [x] **Step 4: Exercise crash recovery**
 
 Interrupt dispatch after source commit, after Ledger commit, and before process completion for Banking, Sharing, Loans, and Portfolio. Restart and confirm one financial effect, completed process state, no skipped cursor, and no duplicate report row.
 
@@ -474,14 +474,14 @@ Interrupt dispatch after source commit, after Ledger commit, and before process 
 
 Time and document the exact sequence. Verify the old DB/volume remains intact and the old application can be restored by configuration only.
 
-- [ ] **Step 6: Commit rehearsal corrections**
+- [x] **Step 6: Commit rehearsal corrections**
 
 ```bash
 git add docs/operations tests scripts
 git commit -m "test(cutover): rehearse finance v2 reset"
 ```
 
-- [ ] **Step 7: Refreeze and gate the deployable candidate**
+- [x] **Step 7: Refreeze and gate the deployable candidate**
 
 After every rehearsal correction is committed, require a clean worktree, record `git rev-parse HEAD` as the **final candidate SHA** in the operator/deployment record, and rerun the complete integrated gate against that exact commit:
 
@@ -542,7 +542,7 @@ No commit is created for environment-only state unless the rehearsal reveals a d
 
 ## Task 10: Final hardening gate
 
-- [ ] **Step 1: Run source/migration checks**
+- [x] **Step 1: Run source/migration checks**
 
 ```bash
 cargo fmt --check
@@ -552,7 +552,7 @@ cargo test --test legacy_migration_checksums -- --nocapture
 SQLX_OFFLINE=true cargo test --test migrations -- --nocapture
 ```
 
-- [ ] **Step 2: Run the complete suite and OpenAPI validation**
+- [x] **Step 2: Run the complete suite and OpenAPI validation**
 
 ```bash
 cargo test
@@ -564,7 +564,7 @@ cargo test --test openapi -- --nocapture
 
 Confirm projection rebuild equality, no failed/dead process manager without an operator-visible reason, provider/mail cursor health, webhook authentication, expected worker lease ownership, and database marker/version.
 
-- [ ] **Step 4: Verify repository cleanliness**
+- [x] **Step 4: Verify repository cleanliness**
 
 `git status --short` contains no generated secrets, raw provider payloads, database dumps, or unintended edits to `src/infrastructure/migrations`.
 
@@ -602,14 +602,14 @@ The environment switch itself is not a source-code commit. Deploy only the exact
 
 ## Exit criteria
 
-- [ ] V2 refuses legacy/wrong databases before migration and refuses any still-partial post-migration database before starting workers or serving readiness.
-- [ ] All runtime and test SQLx migrators use `src/infrastructure/migrations_v2`.
-- [ ] `src/infrastructure/migrations` remains byte-for-byte unchanged and protected by a file-only checksum test.
-- [ ] The application uses context façades/process managers; legacy finance handlers/services/repositories are absent from executable code.
-- [ ] Replacement endpoints are unversioned; there is no compatibility `/v2` and no dual write.
-- [ ] No direct balance setter, hard financial delete, or arbitrary posting endpoint exists.
-- [ ] Fresh-baseline invariant, architecture, legacy-SQL, OpenAPI, security, format, clippy, and full suites pass.
+- [x] V2 refuses legacy/wrong databases before migration and refuses any still-partial post-migration database before starting workers or serving readiness.
+- [x] All runtime and test SQLx migrators use `src/infrastructure/migrations_v2`.
+- [x] `src/infrastructure/migrations` remains byte-for-byte unchanged and protected by a file-only checksum test.
+- [x] The application uses context façades/process managers; legacy finance handlers/services/repositories are absent from executable code.
+- [x] Replacement endpoints are unversioned; there is no compatibility `/v2` and no dual write.
+- [x] No direct balance setter, hard financial delete, or arbitrary posting endpoint exists.
+- [x] Fresh-baseline invariant, architecture, legacy-SQL, OpenAPI, security, format, clippy, and full suites pass.
 - [ ] Legacy workers were stopped before `DATABASE_URL` changed; V2 workers started only after readiness gates.
-- [ ] Monobank and Gmail reconnection requirements and current status are visible.
+- [x] Monobank and Gmail reconnection requirements and current status are visible.
 - [ ] The old database/volume is preserved, and rollback was rehearsed without a reverse data migration.
 - [ ] The development deployment's balances, histories, process states, projections, and reports pass the golden smoke scenario.

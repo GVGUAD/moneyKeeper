@@ -6,9 +6,30 @@ on:
     branches:
       - main
 jobs:
+  quality:
+    name: Finance V2 quality gates
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: ./scripts/check_no_legacy_finance_sql.sh
+      - run: cargo test --all-targets -- --nocapture
+      - run: cargo test --test migrations -- --nocapture
+      - run: cargo test --test legacy_migration_checksums -- --nocapture
+      - run: cargo test --test context_boundaries -- --nocapture
+      - run: cargo test --test openapi -- --nocapture
+
   deploy:
     name: Deploy app
     runs-on: ubuntu-latest
+    needs: quality
     concurrency: deploy-group    # optional: ensure only one action runs at a time
     steps:
       - uses: actions/checkout@v4

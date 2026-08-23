@@ -1,6 +1,6 @@
 //! Guarded database initialization for the parallel Finance V2 lineage.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use anyhow::{Context, bail, ensure};
 use sqlx::migrate::Migrator;
@@ -8,7 +8,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{Postgres, Transaction};
 
-/// The immutable Finance V2 migration lineage through the parallel Banking baseline.
+/// The immutable, complete Finance V2 migration lineage embedded in this binary.
 pub static V2_MIGRATOR: Migrator = sqlx::migrate!("src/infrastructure/migrations_v2");
 
 const DATABASE_LINEAGE: &str = "finance-v2";
@@ -20,6 +20,7 @@ const DATABASE_LINEAGE: &str = "finance-v2";
 #[derive(Clone)]
 pub struct VerifiedV2Pool {
     pool: PgPool,
+    _lifetime_guards: Vec<Arc<dyn Send + Sync>>,
 }
 
 impl fmt::Debug for VerifiedV2Pool {
@@ -59,20 +60,53 @@ impl VerifiedV2Pool {
 /// legacy or arbitrary schema, fails a migration, or does not match the complete
 /// embedded Finance V2 lineage after migration.
 pub async fn initialize_v2(database_url: &str) -> anyhow::Result<VerifiedV2Pool> {
-    let pool = create_v2_pool(database_url).await?;
-    migrate_v2(&pool).await?;
-    Ok(VerifiedV2Pool { pool })
+    initialize_v2_with_pool_limit_and_guards(database_url, 10, Vec::new()).await
 }
 
-pub(crate) async fn create_v2_pool(database_url: &str) -> anyhow::Result<PgPool> {
-    PgPoolOptions::new()
-        .max_connections(10)
+pub(crate) async fn initialize_v2_with_pool_limit_and_guards(
+    database_url: &str,
+    maximum_connections: u32,
+    lifetime_guards: Vec<Arc<dyn Send + Sync>>,
+) -> anyhow::Result<VerifiedV2Pool> {
+    ensure!(
+        maximum_connections > 0,
+        "database pool limit must be positive"
+    );
+    let pool = create_v2_pool(database_url, maximum_connections, lifetime_guards.clone()).await?;
+    migrate_v2(&pool).await?;
+    Ok(VerifiedV2Pool {
+        pool,
+        _lifetime_guards: lifetime_guards,
+    })
+}
+
+async fn create_v2_pool(
+    database_url: &str,
+    maximum_connections: u32,
+    lifetime_guards: Vec<Arc<dyn Send + Sync>>,
+) -> anyhow::Result<PgPool> {
+    let options = PgPoolOptions::new().max_connections(maximum_connections);
+    let options = if lifetime_guards.is_empty() {
+        options
+    } else {
+        let lifetime_guards = Arc::new(lifetime_guards);
+        options.after_connect(move |_connection, _metadata| {
+            let lifetime_guards = Arc::clone(&lifetime_guards);
+            Box::pin(async move {
+                // SQLx stores this callback in the pool, so every raw pool clone
+                // retained by a context also retains the testcontainer guards.
+                drop(lifetime_guards);
+                Ok(())
+            })
+        })
+    };
+    options
         .connect(database_url)
         .await
         .context("connect to Finance V2 PostgreSQL database")
 }
 
-pub(crate) async fn migrate_v2(pool: &PgPool) -> anyhow::Result<()> {
+async fn migrate_v2(pool: &PgPool) -> anyhow::Result<()> {
     preflight(pool).await?;
     V2_MIGRATOR
         .run(pool)
@@ -241,6 +275,11 @@ async fn verify_complete_lineage(pool: &PgPool) -> anyhow::Result<()> {
         .filter(|migration| migration.migration_type.is_up_migration())
         .map(|migration| migration.version)
         .collect();
+
+    ensure!(
+        !expected.is_empty(),
+        "Finance V2 binary contains no embedded migration baseline"
+    );
 
     ensure!(
         applied == expected,

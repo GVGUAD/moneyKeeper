@@ -1,7 +1,7 @@
 use axum::Router;
 use axum::routing::{get, post};
 
-use crate::api::v2_state::LedgerApiState;
+use crate::api::state::LedgerApiState;
 
 use super::handlers;
 

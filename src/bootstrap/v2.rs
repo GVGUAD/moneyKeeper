@@ -2,9 +2,19 @@
 
 use std::{sync::Arc, time::Duration};
 
-use axum::Router;
+use anyhow::Context;
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
+use base64::Engine as _;
 use jsonwebtoken::jwk::JwkSet;
+use rand::RngCore as _;
+use serde_json::json;
 
+use crate::bootstrap::workers::{Readiness, WorkerRegistry};
 use crate::contexts::banking::public::{Aes256CredentialCipher, BankingFacade, MonobankClient};
 use crate::contexts::classification::public::CategoryCatalogFacade;
 use crate::contexts::ledger::public::LedgerFacade;
@@ -17,6 +27,140 @@ use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 use crate::contexts::reporting::public::ReportingFacade;
 use crate::contexts::sharing::public::SharingFacade;
 use crate::infrastructure::v2_db::VerifiedV2Pool;
+
+/// Stable production secrets required to build Banking adapters.
+#[derive(Clone)]
+pub struct V2Secrets {
+    banking_key_id: String,
+    banking_key: [u8; 32],
+    webhook_digest_key: [u8; 32],
+}
+
+impl std::fmt::Debug for V2Secrets {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("V2Secrets")
+            .field("banking_key_id", &self.banking_key_id)
+            .field("banking_key", &"[REDACTED]")
+            .field("webhook_digest_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl V2Secrets {
+    /// Loads and validates the stable Finance V2 cryptographic configuration.
+    pub fn from_environment() -> anyhow::Result<Self> {
+        let banking_key_id = required_environment("FINANCE_V2_ENCRYPTION_KEY_ID")?;
+        anyhow::ensure!(
+            banking_key_id.len() <= 100
+                && banking_key_id.trim() == banking_key_id
+                && !banking_key_id.chars().any(char::is_control),
+            "FINANCE_V2_ENCRYPTION_KEY_ID is invalid"
+        );
+        Ok(Self {
+            banking_key_id,
+            banking_key: decode_key("FINANCE_V2_ENCRYPTION_KEY")?,
+            webhook_digest_key: decode_key("FINANCE_V2_WEBHOOK_DIGEST_KEY")?,
+        })
+    }
+
+    fn ephemeral() -> Self {
+        let mut banking_key = [0_u8; 32];
+        let mut webhook_digest_key = [0_u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut banking_key);
+        rand::rngs::OsRng.fill_bytes(&mut webhook_digest_key);
+        Self {
+            banking_key_id: "ephemeral-v2".to_owned(),
+            banking_key,
+            webhook_digest_key,
+        }
+    }
+}
+
+fn required_environment(name: &str) -> anyhow::Result<String> {
+    let value = std::env::var(name).with_context(|| format!("{name} must be set"))?;
+    anyhow::ensure!(!value.trim().is_empty(), "{name} must not be empty");
+    Ok(value)
+}
+
+fn decode_key(name: &str) -> anyhow::Result<[u8; 32]> {
+    let encoded = required_environment(name)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .with_context(|| format!("{name} must be valid base64"))?;
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{name} must decode to exactly 32 bytes"))
+}
+
+/// Validated process configuration. Debug output intentionally omits secrets
+/// and the database URL.
+pub struct RuntimeConfig {
+    database_url: String,
+    bind_address: std::net::SocketAddr,
+    supabase_url: reqwest::Url,
+    secrets: V2Secrets,
+}
+
+impl std::fmt::Debug for RuntimeConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeConfig")
+            .field("database_url", &"[REDACTED]")
+            .field("bind_address", &self.bind_address)
+            .field("supabase_url", &self.supabase_url)
+            .field("secrets", &self.secrets)
+            .finish()
+    }
+}
+
+impl RuntimeConfig {
+    /// Loads all startup-critical values before database or provider work.
+    pub fn from_environment() -> anyhow::Result<Self> {
+        let database_url = required_environment("DATABASE_URL")?;
+        let bind_address = std::env::var("BIND_ADDR")
+            .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
+            .parse()
+            .context("BIND_ADDR must be a socket address")?;
+        let supabase_url = reqwest::Url::parse(&required_environment("SUPABASE_URL")?)
+            .context("SUPABASE_URL must be an absolute URL")?;
+        anyhow::ensure!(
+            matches!(supabase_url.scheme(), "http" | "https"),
+            "SUPABASE_URL must use HTTP or HTTPS"
+        );
+        for name in [
+            "GMAIL_CLIENT_ID",
+            "GMAIL_CLIENT_SECRET",
+            "GMAIL_REDIRECT_URI",
+        ] {
+            required_environment(name)?;
+        }
+        Ok(Self {
+            database_url,
+            bind_address,
+            supabase_url,
+            secrets: V2Secrets::from_environment()?,
+        })
+    }
+
+    pub fn database_url(&self) -> &str {
+        &self.database_url
+    }
+
+    pub fn bind_address(&self) -> std::net::SocketAddr {
+        self.bind_address
+    }
+
+    pub fn jwks_url(&self) -> reqwest::Url {
+        self.supabase_url
+            .join("auth/v1/.well-known/jwks.json")
+            .expect("validated base URL accepts the static JWKS path")
+    }
+
+    pub fn secrets(&self) -> &V2Secrets {
+        &self.secrets
+    }
+}
 
 /// Public supporting-context capabilities assembled only after V2 lineage
 /// verification. Concrete PostgreSQL adapters remain context-private.
@@ -37,19 +181,27 @@ pub struct SupportingContexts {
 
 /// Builds all Phase 1 supporting capabilities from a verified database.
 pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
+    supporting_contexts_with_secrets(pool, &V2Secrets::ephemeral())
+}
+
+/// Builds all context façades with stable production cryptographic material.
+pub fn supporting_contexts_with_secrets(
+    pool: &VerifiedV2Pool,
+    secrets: &V2Secrets,
+) -> SupportingContexts {
     let categories = crate::contexts::classification::build(pool);
     let currencies = crate::contexts::reference_data::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories.clone());
     let banking = crate::contexts::banking::build_with_ledger(
         pool,
         Arc::new(
-            Aes256CredentialCipher::new("parallel-v2-banking", [0x42; 32])
-                .expect("the static parallel V2 key has the required length"),
+            Aes256CredentialCipher::new(&secrets.banking_key_id, secrets.banking_key)
+                .expect("validated Finance V2 key has the required length"),
         ),
         Arc::new(MonobankClient::new("https://api.monobank.ua")),
         ledger.clone(),
         currencies.clone(),
-        [0x24; 32],
+        secrets.webhook_digest_key,
     );
     SupportingContexts {
         currencies,
@@ -57,7 +209,11 @@ pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
         preferences: crate::contexts::preferences::build(pool),
         ledger,
         banking,
-        mail: crate::contexts::mail::build(pool),
+        mail: crate::contexts::mail::build_with_key(
+            pool,
+            &secrets.banking_key_id,
+            secrets.banking_key,
+        ),
         recurring: crate::contexts::recurring::build(pool),
         reporting: crate::contexts::reporting::build(pool),
         loans: crate::contexts::loans::build(pool),
@@ -146,6 +302,13 @@ impl Phase4Workers {
 
 /// Constructs workers without spawning them or changing the legacy runtime.
 pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
+    phase4_workers_with_secrets(pool, &V2Secrets::ephemeral())
+}
+
+pub(crate) fn phase4_workers_with_secrets(
+    pool: &VerifiedV2Pool,
+    secrets: &V2Secrets,
+) -> Phase4Workers {
     let categories = crate::contexts::classification::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
     let recurring = crate::contexts::recurring::build(pool);
@@ -157,6 +320,11 @@ pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
                 "https://gmail.googleapis.com",
             ),
             crate::contexts::mail::infrastructure::oauth::GoogleOAuthClient::from_environment(),
+            crate::contexts::mail::infrastructure::MailCrypto::new(
+                &secrets.banking_key_id,
+                secrets.banking_key,
+            )
+            .expect("validated Finance V2 Mail key configuration"),
             "finance-v2-mail",
             Duration::from_secs(30),
         )
@@ -302,5 +470,171 @@ pub fn phase5_coordinators(pool: &VerifiedV2Pool) -> Phase5Coordinators {
         accounting: crate::integration::process_managers::sharing_accounting::SharingAccountingCoordinator::new(ledger.clone()),
         settlement: crate::integration::process_managers::sharing_settlement::SharingSettlementCoordinator::new(ledger),
         reporting: crate::contexts::reporting::build(pool),
+    }
+}
+
+/// Banking accounting and reconciliation retries coordinated only through
+/// public Banking and Ledger contracts.
+pub struct BankingWorkers {
+    banking: BankingFacade,
+    ledger: LedgerFacade,
+}
+
+impl BankingWorkers {
+    pub async fn run_once(&self) -> anyhow::Result<WorkerRunReport> {
+        if let Some((user_id, event_id)) = self.banking.next_provider_import_candidate().await? {
+            let outcome =
+                crate::integration::process_managers::banking_import::import_provider_revision(
+                    &self.banking,
+                    &self.ledger,
+                    user_id,
+                    event_id,
+                )
+                .await?;
+            return Ok(WorkerRunReport {
+                claimed: true,
+                records: u32::from(!outcome.replayed),
+                ..WorkerRunReport::default()
+            });
+        }
+        if let Some((user_id, observation_id)) =
+            self.banking.next_balance_observation_candidate().await?
+        {
+            let outcome = crate::integration::process_managers::banking_observation::deliver_balance_observation(
+                &self.banking,
+                &self.ledger,
+                user_id,
+                observation_id,
+            )
+            .await?;
+            return Ok(WorkerRunReport {
+                claimed: true,
+                records: u32::from(!outcome.replayed),
+                ..WorkerRunReport::default()
+            });
+        }
+        Ok(WorkerRunReport::default())
+    }
+}
+
+pub fn banking_workers(contexts: &SupportingContexts) -> BankingWorkers {
+    BankingWorkers {
+        banking: contexts.banking.clone(),
+        ledger: contexts.ledger.clone(),
+    }
+}
+
+/// Builds and runs the complete Finance V2 HTTP and worker composition from a
+/// verified database. No unchecked PostgreSQL pool can enter this boundary.
+pub async fn run<F>(
+    listener: tokio::net::TcpListener,
+    pool: &VerifiedV2Pool,
+    jwks: Arc<JwkSet>,
+    secrets: &V2Secrets,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let contexts = supporting_contexts_with_secrets(pool, secrets);
+    let workers = crate::bootstrap::workers::production(pool, &contexts, secrets)?;
+    let business_router = crate::api::routes::router(contexts, jwks);
+    serve(
+        listener,
+        business_router,
+        workers,
+        Readiness::default(),
+        shutdown,
+    )
+    .await
+}
+
+/// Serves a prepared Finance V2 router behind the worker/readiness barrier.
+///
+/// The supplied listener begins with readiness false. Worker startup failure
+/// shuts it down without ever allowing business traffic. During shutdown,
+/// readiness is removed before HTTP is drained and workers are stopped.
+pub async fn serve<F>(
+    listener: tokio::net::TcpListener,
+    business_router: Router,
+    workers: WorkerRegistry,
+    readiness: Readiness,
+    shutdown: F,
+) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let health = Router::new()
+        .route("/health/live", get(live))
+        .route("/health/ready", get(ready))
+        .with_state(readiness.clone());
+    let business = business_router.layer(middleware::from_fn_with_state(
+        readiness.clone(),
+        require_readiness,
+    ));
+    let application = health.merge(business);
+
+    let (stop_http, mut stop_http_rx) = tokio::sync::watch::channel(false);
+    let http = tokio::spawn(async move {
+        axum::serve(listener, application)
+            .with_graceful_shutdown(async move {
+                while !*stop_http_rx.borrow() {
+                    if stop_http_rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+
+    let worker_runtime = match workers.start().await {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            readiness.mark_not_ready();
+            let _ = stop_http.send(true);
+            http.await
+                .context("join not-ready Finance V2 HTTP listener")??;
+            return Err(error.context("Finance V2 worker barrier failed"));
+        }
+    };
+    readiness.mark_ready();
+
+    shutdown.await;
+    readiness.mark_not_ready();
+    let _ = stop_http.send(true);
+    http.await.context("join Finance V2 HTTP listener")??;
+    worker_runtime.shutdown().await
+}
+
+async fn live() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({"status": "live"})))
+}
+
+async fn ready(State(readiness): State<Readiness>) -> Response {
+    if readiness.is_ready() {
+        (StatusCode::OK, Json(json!({"status": "ready"}))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "not_ready"})),
+        )
+            .into_response()
+    }
+}
+
+async fn require_readiness(
+    State(readiness): State<Readiness>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if readiness.is_ready() {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "not_ready"})),
+        )
+            .into_response()
     }
 }

@@ -203,7 +203,7 @@ async fn account_transaction_annotation_and_correction_routes_preserve_history()
             .delete(&format!("/transactions/{journal_id}"))
             .await
             .status_code(),
-        StatusCode::METHOD_NOT_ALLOWED
+        StatusCode::NOT_FOUND
     );
 }
 

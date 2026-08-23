@@ -1,12 +1,6 @@
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use super::v2_db::{VerifiedV2Pool, initialize_v2};
 
-pub async fn create_pool(database_url: &str) -> anyhow::Result<PgPool> {
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(database_url)
-        .await?;
-    sqlx::migrate!("src/infrastructure/migrations")
-        .run(&pool)
-        .await?;
-    Ok(pool)
+/// Initializes and verifies the only executable Finance V2 database lineage.
+pub async fn create_pool(database_url: &str) -> anyhow::Result<VerifiedV2Pool> {
+    initialize_v2(database_url).await
 }
