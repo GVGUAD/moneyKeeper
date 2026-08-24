@@ -65,7 +65,9 @@ fn openapi_is_unversioned_and_has_exact_finance_routes() {
         "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations",
         "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements",
         "/provider-connections/{id}/sync-jobs",
+        "/provider-connections/{id}/provider-event-conflicts",
         "/sync-jobs/{id}",
+        "/sync-jobs/{id}/pages",
         "/provider-events/{id}",
         "/accounting-processes/{id}",
         "/balance-observations/{id}",
@@ -158,7 +160,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 107);
+    assert_eq!(operation_count, 109);
 }
 
 #[test]

@@ -26,6 +26,7 @@ pub fn build_with_adapters(
         Arc::new(infrastructure::PgBankingStore::new(pool)),
         cipher,
         provider,
+        Arc::new(infrastructure::MonobankAdapter),
         None,
         currencies,
         Arc::new(infrastructure::WebhookSecretManager::new(
@@ -46,6 +47,7 @@ pub fn build_with_ledger(
         Arc::new(infrastructure::PgBankingStore::new(pool)),
         cipher,
         provider,
+        Arc::new(infrastructure::MonobankAdapter),
         Some(ledger),
         currencies,
         Arc::new(infrastructure::WebhookSecretManager::new(

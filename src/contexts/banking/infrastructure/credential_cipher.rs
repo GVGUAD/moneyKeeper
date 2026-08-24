@@ -33,6 +33,25 @@ impl CredentialCipher for Aes256CredentialCipher {
         credential: &ProviderCredential,
         binding: &CredentialBinding,
     ) -> Result<CredentialEnvelope, BankingError> {
+        self.encrypt_payload(credential.expose().as_bytes(), binding)
+    }
+
+    fn decrypt(
+        &self,
+        envelope: &CredentialEnvelope,
+        binding: &CredentialBinding,
+    ) -> Result<ProviderCredential, BankingError> {
+        let plaintext = self.decrypt_payload(envelope, binding)?;
+        let value =
+            String::from_utf8(plaintext).map_err(|_| BankingError::CredentialUnavailable)?;
+        ProviderCredential::new(value)
+    }
+
+    fn encrypt_payload(
+        &self,
+        payload: &[u8],
+        binding: &CredentialBinding,
+    ) -> Result<CredentialEnvelope, BankingError> {
         let cipher = Aes256Gcm::new_from_slice(&self.key)
             .map_err(|_| BankingError::CredentialUnavailable)?;
         let mut nonce_bytes = [0_u8; 12];
@@ -41,7 +60,7 @@ impl CredentialCipher for Aes256CredentialCipher {
             .encrypt(
                 Nonce::from_slice(&nonce_bytes),
                 Payload {
-                    msg: credential.expose().as_bytes(),
+                    msg: payload,
                     aad: &binding.associated_data(),
                 },
             )
@@ -49,11 +68,11 @@ impl CredentialCipher for Aes256CredentialCipher {
         CredentialEnvelope::new(self.key_id.clone(), nonce_bytes.to_vec(), ciphertext)
     }
 
-    fn decrypt(
+    fn decrypt_payload(
         &self,
         envelope: &CredentialEnvelope,
         binding: &CredentialBinding,
-    ) -> Result<ProviderCredential, BankingError> {
+    ) -> Result<Vec<u8>, BankingError> {
         if envelope.key_id() != self.key_id
             || envelope.envelope_version() != 1
             || envelope.nonce().len() != 12
@@ -62,7 +81,7 @@ impl CredentialCipher for Aes256CredentialCipher {
         }
         let cipher = Aes256Gcm::new_from_slice(&self.key)
             .map_err(|_| BankingError::CredentialUnavailable)?;
-        let plaintext = cipher
+        cipher
             .decrypt(
                 Nonce::from_slice(envelope.nonce()),
                 Payload {
@@ -70,9 +89,6 @@ impl CredentialCipher for Aes256CredentialCipher {
                     aad: &binding.associated_data(),
                 },
             )
-            .map_err(|_| BankingError::CredentialUnavailable)?;
-        let value =
-            String::from_utf8(plaintext).map_err(|_| BankingError::CredentialUnavailable)?;
-        ProviderCredential::new(value)
+            .map_err(|_| BankingError::CredentialUnavailable)
     }
 }

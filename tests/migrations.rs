@@ -58,6 +58,36 @@ async fn database_generation_complete_baseline_reopens_idempotently() {
 }
 
 #[tokio::test]
+async fn unknown_or_modified_sqlx_history_is_rejected_by_the_migrator() {
+    for (tamper, expected_error) in [
+        (
+            "INSERT INTO _sqlx_migrations \
+             (version, description, success, checksum, execution_time) \
+             VALUES (9999, 'unknown migration', TRUE, decode('00', 'hex'), 0)",
+            "migration 9999 was previously applied but is missing",
+        ),
+        (
+            "UPDATE _sqlx_migrations SET checksum = decode('00', 'hex') WHERE version = 1",
+            "migration 1 was previously applied but has been modified",
+        ),
+    ] {
+        let database = fresh_database().await;
+        database.initialize().await.unwrap();
+        let pool = PgPool::connect(database.database_url()).await.unwrap();
+        sqlx::query(tamper).execute(&pool).await.unwrap();
+        pool.close().await;
+
+        let error = database
+            .initialize()
+            .await
+            .expect_err("tampered SQLx history must not produce a verified pool");
+        let message = format!("{error:#}");
+        assert!(message.contains("run Moneykeeper migrations"), "{message}");
+        assert!(message.contains(expected_error), "{message}");
+    }
+}
+
+#[tokio::test]
 async fn nonempty_unmarked_database_is_rejected_before_migrations_run() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();
@@ -281,6 +311,122 @@ async fn split_event_consumer_migration_seeds_both_receipts_and_retains_history(
         .find(|migration| migration.version == 12)
         .expect("migration 0012 must remain embedded");
     assert_eq!(split.description, "split event consumer receipts");
+}
+
+#[tokio::test]
+async fn monobank_worker_migration_backfills_replayable_state_additively() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let before_workers = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            DATABASE_MIGRATOR
+                .iter()
+                .filter(|migration| migration.version < 13)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    before_workers.run(&pool).await.unwrap();
+
+    let user_id = uuid::Uuid::new_v4();
+    let connection_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO banking.provider_connections
+         (id,user_id,provider,state,active_credential_ciphertext,
+          active_credential_nonce,active_credential_key_id,active_credential_envelope_version)
+         VALUES ($1,$2,'monobank','pending',$3,$4,'legacy-key',1)",
+    )
+    .bind(connection_id)
+    .bind(user_id)
+    .bind(vec![1_u8])
+    .bind(vec![2_u8; 12])
+    .execute(&pool)
+    .await
+    .unwrap();
+    let receipt_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO banking.webhook_receipts
+         (id,user_id,connection_id,delivery_digest,state)
+         VALUES ($1,$2,$3,$4,'pending')",
+    )
+    .bind(receipt_id)
+    .bind(user_id)
+    .bind(connection_id)
+    .bind(vec![3_u8; 32])
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+    let validation: (String, i32, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT validation_state,validation_attempts,validation_next_retry_at
+         FROM banking.provider_connections WHERE id=$1 AND user_id=$2",
+    )
+    .bind(connection_id)
+    .bind(user_id)
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(validation, ("pending".to_owned(), 0, None));
+    let receipt: (String, Option<String>) = sqlx::query_as(
+        "SELECT state,last_error FROM banking.webhook_receipts WHERE id=$1 AND user_id=$2",
+    )
+    .bind(receipt_id)
+    .bind(user_id)
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(receipt.0, "quarantined");
+    assert!(receipt.1.is_some_and(|error| error.len() <= 500));
+    let worker_tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name FROM information_schema.tables
+         WHERE table_schema='banking'
+           AND table_name IN ('sync_job_resources','sync_page_events')
+         ORDER BY table_name",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        worker_tables,
+        vec!["sync_job_resources", "sync_page_events"]
+    );
+    let worker_constraints: Vec<String> = sqlx::query_scalar(
+        "SELECT conname FROM pg_constraint
+         WHERE connamespace='banking'::regnamespace AND conname IN (
+           'provider_connection_validation_lease',
+           'provider_connection_webhook_lease',
+           'webhook_receipt_provenance_complete',
+           'sync_page_statement_identity'
+         ) ORDER BY conname",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        worker_constraints,
+        vec![
+            "provider_connection_validation_lease",
+            "provider_connection_webhook_lease",
+            "sync_page_statement_identity",
+            "webhook_receipt_provenance_complete",
+        ]
+    );
+
+    // The older binary omits every 0013 column. Defaults keep that INSERT
+    // compatible during rollback/redeploy rehearsal.
+    sqlx::query(
+        "INSERT INTO banking.provider_connections (id,user_id,provider,state)
+         VALUES ($1,$2,'monobank','pending')",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(user_id)
+    .execute(&mut *connection)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

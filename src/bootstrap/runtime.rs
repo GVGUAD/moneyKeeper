@@ -102,6 +102,7 @@ pub struct RuntimeConfig {
     database_url: String,
     bind_address: std::net::SocketAddr,
     supabase_url: reqwest::Url,
+    monobank_webhook_base_url: reqwest::Url,
     secrets: RuntimeSecrets,
 }
 
@@ -112,6 +113,7 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("database_url", &"[REDACTED]")
             .field("bind_address", &self.bind_address)
             .field("supabase_url", &self.supabase_url)
+            .field("monobank_webhook_base_url", &self.monobank_webhook_base_url)
             .field("secrets", &self.secrets)
             .finish()
     }
@@ -131,6 +133,9 @@ impl RuntimeConfig {
             matches!(supabase_url.scheme(), "http" | "https"),
             "SUPABASE_URL must use HTTP or HTTPS"
         );
+        let monobank_webhook_base_url = validate_monobank_webhook_base_url(&required_environment(
+            "MONOBANK_WEBHOOK_BASE_URL",
+        )?)?;
         for name in [
             "GMAIL_CLIENT_ID",
             "GMAIL_CLIENT_SECRET",
@@ -142,6 +147,7 @@ impl RuntimeConfig {
             database_url,
             bind_address,
             supabase_url,
+            monobank_webhook_base_url,
             secrets: RuntimeSecrets::from_environment()?,
         })
     }
@@ -162,6 +168,56 @@ impl RuntimeConfig {
 
     pub fn secrets(&self) -> &RuntimeSecrets {
         &self.secrets
+    }
+
+    pub fn monobank_webhook_base_url(&self) -> &reqwest::Url {
+        &self.monobank_webhook_base_url
+    }
+}
+
+fn validate_monobank_webhook_base_url(value: &str) -> anyhow::Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(value)
+        .context("MONOBANK_WEBHOOK_BASE_URL must be an absolute HTTPS URL")?;
+    anyhow::ensure!(
+        url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.host_str().is_some(),
+        "MONOBANK_WEBHOOK_BASE_URL must be absolute HTTPS without credentials, query, or fragment"
+    );
+    if !url.path().ends_with('/') {
+        let path = format!("{}/", url.path());
+        url.set_path(&path);
+    }
+    Ok(url)
+}
+
+#[cfg(test)]
+mod webhook_base_url_tests {
+    use super::validate_monobank_webhook_base_url;
+
+    #[test]
+    fn accepts_only_secret_safe_https_bases() {
+        assert_eq!(
+            validate_monobank_webhook_base_url("https://moneykeeper.example/api")
+                .unwrap()
+                .as_str(),
+            "https://moneykeeper.example/api/"
+        );
+        for invalid in [
+            "http://moneykeeper.example/",
+            "https://user@moneykeeper.example/",
+            "https://moneykeeper.example/?secret=value",
+            "https://moneykeeper.example/#fragment",
+            "/relative",
+        ] {
+            assert!(
+                validate_monobank_webhook_base_url(invalid).is_err(),
+                "{invalid}"
+            );
+        }
     }
 }
 
@@ -485,10 +541,36 @@ pub fn portfolio_settlement_runner(pool: &VerifiedDatabase) -> PortfolioSettleme
 pub struct BankingWorkers {
     banking: BankingFacade,
     ledger: LedgerFacade,
+    callback_base: reqwest::Url,
 }
 
 impl BankingWorkers {
     pub async fn run_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let now = chrono::Utc::now();
+        let mut report = WorkerRunReport::default();
+        for step in [
+            self.banking
+                .run_validation_once("finance-v2-banking-validation", now)
+                .await?,
+            self.banking
+                .run_webhook_registration_once(
+                    "finance-v2-banking-webhook-registration",
+                    self.callback_base.as_str(),
+                    now,
+                )
+                .await?,
+            self.banking
+                .run_webhook_receipt_once("finance-v2-banking-webhook-receipt", now)
+                .await?,
+            self.banking
+                .run_statement_once("finance-v2-banking-statement", now)
+                .await?,
+        ] {
+            report.claimed |= step.claimed;
+            report.records = report.records.saturating_add(step.records);
+            report.retry_scheduled |= step.retry_scheduled;
+            report.fenced |= step.fenced;
+        }
         if let Some((user_id, event_id)) = self.banking.next_provider_import_candidate().await? {
             let outcome =
                 crate::integration::process_managers::banking_import::import_provider_revision(
@@ -498,11 +580,8 @@ impl BankingWorkers {
                     event_id,
                 )
                 .await?;
-            return Ok(WorkerRunReport {
-                claimed: true,
-                records: u32::from(!outcome.replayed),
-                ..WorkerRunReport::default()
-            });
+            report.claimed = true;
+            report.records = report.records.saturating_add(u32::from(!outcome.replayed));
         }
         if let Some((user_id, observation_id)) =
             self.banking.next_balance_observation_candidate().await?
@@ -514,20 +593,32 @@ impl BankingWorkers {
                 observation_id,
             )
             .await?;
-            return Ok(WorkerRunReport {
-                claimed: true,
-                records: u32::from(!outcome.replayed),
-                ..WorkerRunReport::default()
-            });
+            report.claimed = true;
+            report.records = report.records.saturating_add(u32::from(!outcome.replayed));
         }
-        Ok(WorkerRunReport::default())
+        let finalized = self.banking.finalize_sync_page_once(now).await?;
+        report.claimed |= finalized.claimed;
+        report.records = report.records.saturating_add(finalized.records);
+        report.fenced |= finalized.fenced;
+        Ok(report)
     }
 }
 
 pub fn banking_workers(contexts: &ContextFacades) -> BankingWorkers {
+    banking_workers_with_webhook(
+        contexts,
+        reqwest::Url::parse("https://localhost/").expect("static worker callback URL is valid"),
+    )
+}
+
+pub fn banking_workers_with_webhook(
+    contexts: &ContextFacades,
+    callback_base: reqwest::Url,
+) -> BankingWorkers {
     BankingWorkers {
         banking: contexts.banking.clone(),
         ledger: contexts.ledger.clone(),
+        callback_base,
     }
 }
 
@@ -538,13 +629,15 @@ pub async fn run<F>(
     pool: &VerifiedDatabase,
     jwks: Arc<JwkSet>,
     secrets: &RuntimeSecrets,
+    monobank_webhook_base_url: &reqwest::Url,
     shutdown: F,
 ) -> anyhow::Result<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let contexts = build_contexts_with_secrets(pool, secrets);
-    let workers = crate::bootstrap::workers::production(pool, &contexts, secrets)?;
+    let workers =
+        crate::bootstrap::workers::production(pool, &contexts, secrets, monobank_webhook_base_url)?;
     let business_router = crate::api::routes::router(contexts, jwks);
     serve(
         listener,

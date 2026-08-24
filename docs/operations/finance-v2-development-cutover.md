@@ -1,8 +1,13 @@
 # Finance V2 development cutover
 
-This runbook is for the breaking development-only switch from the frozen legacy
-database lineage to Finance V2. It never migrates legacy rows or credentials.
-Monobank and Gmail must be reconnected after the switch.
+This runbook records the breaking development-only switch from the former
+pre-v2 database lineage to Finance V2. It never migrates pre-v2 rows or
+credentials. Monobank and Gmail must be reconnected after the switch.
+
+The source cleanup after cutover removed the pre-v2 migration files and promoted
+the active lineage to `src/infrastructure/migrations`. The removed SQL remains
+recoverable from Git history, but recreating a pre-v2 database from the current
+source tree is intentionally unsupported.
 
 ## Operator record
 
@@ -109,12 +114,12 @@ Pre-promotion SQLx migrators are located in:
 - `src/infrastructure/v2_db.rs` — guarded V2 runtime candidate;
 - `tests/v2_migrations.rs` and `src/infrastructure/v2_test_db.rs` — parallel V2 test path.
 
-After promotion, every executable/runtime and test migrator must use
-`src/infrastructure/migrations_v2`; the frozen legacy directory is read only.
+After promotion and canonicalization, every executable/runtime and test migrator
+uses `src/infrastructure/migrations`; there is no second migration root.
 
 The promotion is complete in source: the default runtime, migration suite,
-API, and OpenAPI document are Finance V2, while the frozen legacy directory is
-read only and protected by per-file checksums.
+API, and OpenAPI document are Finance V2. The retired migration SQL and its
+checksum-only test are no longer carried in the active tree.
 
 ## Development configuration validation
 
@@ -137,8 +142,8 @@ SHA is frozen.
    database activity remains.
 3. Provision the distinct PostgreSQL 16 `moneykeeper_v2` database and V2
    volume. Do not mount or modify `moneykeeper_pg`.
-4. Start the candidate against the blank V2 URL. It applies only
-   `migrations_v2`, verifies the `finance-v2` marker and exact embedded lineage,
+4. Start the candidate against the blank V2 URL. It applies only the canonical
+   `migrations`, verifies the `finance-v2` marker and embedded SQLx lineage,
    and keeps readiness false while contexts and workers initialize.
 5. Verify marker, migration versions, constraints, authentication, OpenAPI,
    correction/reversal behavior, worker leases, and outbox/inbox lag.
@@ -229,4 +234,6 @@ reconnection, and restoration of the prior binary were intentionally not
 performed in this source rehearsal. Those are Task 9 environment changes and
 require the authenticated development operator, the final candidate SHA from
 the handoff, and a write freeze. The configuration-only rollback sequence is
-documented above and the legacy migration bytes remain unchanged.
+documented above. The pre-v2 migration bytes were unchanged during the rehearsal
+and were later removed from the active tree; Git history remains the forensic
+record.

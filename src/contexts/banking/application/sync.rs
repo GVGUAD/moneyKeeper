@@ -47,4 +47,12 @@ impl BankingFacade {
     ) -> Result<SyncJobView, BankingError> {
         self.sync_jobs.get_sync_job(user_id, id).await
     }
+
+    pub async fn list_sync_pages(
+        &self,
+        user_id: crate::shared_kernel::UserId,
+        id: crate::contexts::banking::domain::SyncJobId,
+    ) -> Result<Vec<SyncPageView>, BankingError> {
+        self.sync_jobs.list_sync_pages(user_id, id).await
+    }
 }

@@ -39,7 +39,7 @@ use super::{MonobankAdapter, pg_unit_of_work::PgBankingUnitOfWork, rows::Connect
 
 #[derive(Clone)]
 pub(crate) struct PgBankingStore {
-    uow: PgBankingUnitOfWork,
+    pub(super) uow: PgBankingUnitOfWork,
 }
 
 impl PgBankingStore {
@@ -91,6 +91,17 @@ impl PgBankingStore {
             credential_generation: 1,
             version: ConnectionVersion::INITIAL,
             webhook_configured: false,
+            validation_state: "pending".to_owned(),
+            validation_candidate_generation: Some(1),
+            validation_attempts: 0,
+            validation_next_retry_at: None,
+            validation_last_error_class: None,
+            webhook_desired_version: None,
+            webhook_registered_version: None,
+            webhook_registration_state: "not_requested".to_owned(),
+            webhook_registration_attempts: 0,
+            webhook_next_retry_at: None,
+            webhook_last_error_class: None,
             created_at: command.requested_at,
             updated_at: command.requested_at,
         };
@@ -136,7 +147,7 @@ impl PgBankingStore {
                 ..result
             });
         }
-        let row = sqlx::query("SELECT provider,state,credential_generation,version,created_at FROM banking.provider_connections WHERE id=$1 AND user_id=$2 FOR UPDATE")
+        let row = sqlx::query("SELECT provider,state,credential_generation,version,created_at,webhook_lookup_digest,webhook_desired_version,webhook_registered_version,webhook_registration_state,webhook_registration_attempts,webhook_next_retry_at,webhook_last_error FROM banking.provider_connections WHERE id=$1 AND user_id=$2 FOR UPDATE")
             .bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         let version: i64 = row.get("version");
         if version != command.expected_version.get() {
@@ -155,17 +166,32 @@ impl PgBankingStore {
             "pending",
         )?;
         let envelope = cipher.encrypt(&command.credential, &binding)?;
-        sqlx::query("UPDATE banking.provider_connections SET pending_credential_ciphertext=$3,pending_credential_nonce=$4,pending_credential_key_id=$5,pending_credential_envelope_version=$6,state='pending_credential_validation',version=version+1,updated_at=$7 WHERE id=$1 AND user_id=$2 AND version=$8")
+        sqlx::query("UPDATE banking.provider_connections SET pending_credential_ciphertext=$3,pending_credential_nonce=$4,pending_credential_key_id=$5,pending_credential_envelope_version=$6,state='pending_credential_validation',validation_state='pending',validation_attempts=0,validation_next_retry_at=NULL,validation_last_error=NULL,validation_lease_holder=NULL,validation_lease_expires_at=NULL,validation_lease_token=validation_lease_token+1,webhook_lease_holder=NULL,webhook_lease_expires_at=NULL,webhook_lease_token=webhook_lease_token+1,version=version+1,updated_at=$7 WHERE id=$1 AND user_id=$2 AND version=$8")
             .bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).bind(envelope.ciphertext()).bind(envelope.nonce()).bind(envelope.key_id()).bind(i16::try_from(envelope.envelope_version()).unwrap()).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE banking.sync_jobs SET state='cancelled',last_error='credential_generation_changed',lease_holder=NULL,lease_expires_at=NULL,version=version+1,updated_at=$3 WHERE connection_id=$1 AND user_id=$2 AND state IN ('requested','running','waiting_for_events','retry_due')")
+            .bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.requested_at).execute(&mut *tx).await.map_err(database)?;
         let result = ConnectionResult {
             connection: ProviderConnectionView {
                 id: command.connection_id,
                 user_id: command.user_id,
                 provider,
                 state: ConnectionState::PendingCredentialValidation,
-                credential_generation: generation,
+                credential_generation: row.get("credential_generation"),
                 version: ConnectionVersion::new(version + 1)?,
-                webhook_configured: false,
+                webhook_configured: row
+                    .get::<Option<Vec<u8>>, _>("webhook_lookup_digest")
+                    .is_some(),
+                validation_state: "pending".to_owned(),
+                validation_candidate_generation: Some(generation),
+                validation_attempts: 0,
+                validation_next_retry_at: None,
+                validation_last_error_class: None,
+                webhook_desired_version: row.get("webhook_desired_version"),
+                webhook_registered_version: row.get("webhook_registered_version"),
+                webhook_registration_state: row.get("webhook_registration_state"),
+                webhook_registration_attempts: row.get("webhook_registration_attempts"),
+                webhook_next_retry_at: row.get("webhook_next_retry_at"),
+                webhook_last_error_class: row.get("webhook_last_error"),
                 created_at: row.get("created_at"),
                 updated_at: command.requested_at,
             },
@@ -243,23 +269,44 @@ impl PgBankingStore {
         let body = match provider_client.client_info(&credential).await {
             Ok(body) => body,
             Err(_) if candidate => {
-                sqlx::query("UPDATE banking.provider_connections SET pending_credential_ciphertext=NULL,pending_credential_nonce=NULL,pending_credential_key_id=NULL,pending_credential_envelope_version=NULL,state=CASE WHEN active_credential_ciphertext IS NULL THEN 'needs_reauth' ELSE 'active' END,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND state='pending_credential_validation'")
+                sqlx::query("UPDATE banking.provider_connections SET pending_credential_ciphertext=NULL,pending_credential_nonce=NULL,pending_credential_key_id=NULL,pending_credential_envelope_version=NULL,state=CASE WHEN active_credential_ciphertext IS NULL THEN 'needs_reauth' ELSE 'active' END,validation_state='failed',validation_last_error='needs_reauth',validation_lease_holder=NULL,validation_lease_expires_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND state='pending_credential_validation'")
                     .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).execute(&self.uow.pool).await.map_err(database)?;
                 return Err(BankingError::InvalidValue("provider validation failed"));
             }
-            Err(_) => return Err(BankingError::InvalidValue("provider validation failed")),
+            Err(_) => {
+                sqlx::query("UPDATE banking.provider_connections SET active_credential_ciphertext=NULL,active_credential_nonce=NULL,active_credential_key_id=NULL,active_credential_envelope_version=NULL,state='needs_reauth',validation_state='failed',validation_last_error='needs_reauth',validation_lease_holder=NULL,validation_lease_expires_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND state='pending'")
+                    .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).execute(&self.uow.pool).await.map_err(database)?;
+                return Err(BankingError::InvalidValue("provider validation failed"));
+            }
         };
         let snapshot = MonobankAdapter::normalize_client_info(&body, currencies)?;
+        let active_envelope = if candidate {
+            Some(cipher.encrypt(
+                &credential,
+                &CredentialBinding::new(
+                    user_id,
+                    connection_id.into_uuid(),
+                    &row.provider,
+                    generation,
+                    "active",
+                )?,
+            )?)
+        } else {
+            None
+        };
         let mut tx = self.uow.pool.begin().await.map_err(database)?;
         for resource in &snapshot.resources {
             sqlx::query("INSERT INTO banking.external_resources (id,user_id,connection_id,external_resource_id,kind,funding_model,currency,masked_label,discovery_state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (connection_id,external_resource_id) DO UPDATE SET masked_label=EXCLUDED.masked_label,funding_model=EXCLUDED.funding_model,discovery_state=EXCLUDED.discovery_state,version=banking.external_resources.version+1,updated_at=clock_timestamp()")
                 .bind(uuid::Uuid::new_v4()).bind(user_id.into_uuid()).bind(connection_id.into_uuid()).bind(&resource.external_resource_id).bind(kind(resource.kind)).bind(funding(resource.funding_model)).bind(resource.currency.as_str()).bind(&resource.masked_label).bind(if resource.kind == crate::contexts::banking::domain::ResourceKind::Unsupported {"unsupported"} else {"active"}).execute(&mut *tx).await.map_err(database)?;
         }
         if candidate {
-            sqlx::query("UPDATE banking.provider_connections SET active_credential_ciphertext=pending_credential_ciphertext,active_credential_nonce=pending_credential_nonce,active_credential_key_id=pending_credential_key_id,active_credential_envelope_version=pending_credential_envelope_version,pending_credential_ciphertext=NULL,pending_credential_nonce=NULL,pending_credential_key_id=NULL,pending_credential_envelope_version=NULL,credential_generation=$3,state='active',version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND credential_generation=$4 AND state='pending_credential_validation'")
-                .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).bind(generation).bind(row.credential_generation).execute(&mut *tx).await.map_err(database)?;
+            let envelope = active_envelope
+                .as_ref()
+                .expect("candidate credential was re-encrypted");
+            sqlx::query("UPDATE banking.provider_connections SET active_credential_ciphertext=$5,active_credential_nonce=$6,active_credential_key_id=$7,active_credential_envelope_version=$8,pending_credential_ciphertext=NULL,pending_credential_nonce=NULL,pending_credential_key_id=NULL,pending_credential_envelope_version=NULL,credential_generation=$3,state='active',validation_state='succeeded',validation_attempts=0,validation_next_retry_at=NULL,validation_last_error=NULL,validation_lease_holder=NULL,validation_lease_expires_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND credential_generation=$4 AND state='pending_credential_validation'")
+                .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).bind(generation).bind(row.credential_generation).bind(envelope.ciphertext()).bind(envelope.nonce()).bind(envelope.key_id()).bind(i16::try_from(envelope.envelope_version()).unwrap()).execute(&mut *tx).await.map_err(database)?;
         } else {
-            sqlx::query("UPDATE banking.provider_connections SET state='active',version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND credential_generation=$3")
+            sqlx::query("UPDATE banking.provider_connections SET state='active',validation_state='succeeded',validation_attempts=0,validation_next_retry_at=NULL,validation_last_error=NULL,validation_lease_holder=NULL,validation_lease_expires_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND user_id=$2 AND credential_generation=$3")
                 .bind(connection_id.into_uuid()).bind(user_id.into_uuid()).bind(row.credential_generation).execute(&mut *tx).await.map_err(database)?;
         }
         tx.commit().await.map_err(database)?;
@@ -270,7 +317,7 @@ impl PgBankingStore {
         &self,
         user_id: UserId,
     ) -> Result<Vec<ProviderConnectionView>, BankingError> {
-        let rows = sqlx::query("SELECT id,user_id,provider,state,credential_generation,version,webhook_lookup_digest,created_at,updated_at FROM banking.provider_connections WHERE user_id=$1 ORDER BY created_at,id").bind(user_id.into_uuid()).fetch_all(&self.uow.pool).await.map_err(database)?;
+        let rows = sqlx::query("SELECT id,user_id,provider,state,credential_generation,version,webhook_lookup_digest,validation_state,validation_attempts,validation_next_retry_at,validation_last_error,pending_credential_ciphertext,webhook_desired_version,webhook_registered_version,webhook_registration_state,webhook_registration_attempts,webhook_next_retry_at,webhook_last_error,created_at,updated_at FROM banking.provider_connections WHERE user_id=$1 ORDER BY created_at,id").bind(user_id.into_uuid()).fetch_all(&self.uow.pool).await.map_err(database)?;
         rows.into_iter().map(view).collect()
     }
 
@@ -279,7 +326,7 @@ impl PgBankingStore {
         user_id: UserId,
         id: ProviderConnectionId,
     ) -> Result<ProviderConnectionView, BankingError> {
-        let row=sqlx::query("SELECT id,user_id,provider,state,credential_generation,version,webhook_lookup_digest,created_at,updated_at FROM banking.provider_connections WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let row=sqlx::query("SELECT id,user_id,provider,state,credential_generation,version,webhook_lookup_digest,validation_state,validation_attempts,validation_next_retry_at,validation_last_error,pending_credential_ciphertext,webhook_desired_version,webhook_registered_version,webhook_registration_state,webhook_registration_attempts,webhook_next_retry_at,webhook_last_error,created_at,updated_at FROM banking.provider_connections WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         view(row)
     }
 
@@ -290,10 +337,14 @@ impl PgBankingStore {
         expected: ConnectionVersion,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<ProviderConnectionView, BankingError> {
-        let result=sqlx::query("UPDATE banking.provider_connections SET state='revoked',active_credential_ciphertext=NULL,active_credential_nonce=NULL,active_credential_key_id=NULL,active_credential_envelope_version=NULL,pending_credential_ciphertext=NULL,pending_credential_nonce=NULL,pending_credential_key_id=NULL,pending_credential_envelope_version=NULL,webhook_credential_ciphertext=NULL,webhook_credential_nonce=NULL,webhook_credential_key_id=NULL,webhook_credential_envelope_version=NULL,webhook_lookup_digest=NULL,webhook_registration_state='disabled',version=version+1,revoked_at=$4,updated_at=$4 WHERE id=$1 AND user_id=$2 AND version=$3 AND state<>'revoked'").bind(id.into_uuid()).bind(user_id.into_uuid()).bind(expected.get()).bind(now).execute(&self.uow.pool).await.map_err(database)?;
+        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        let result=sqlx::query("UPDATE banking.provider_connections SET state='revoked',active_credential_ciphertext=NULL,active_credential_nonce=NULL,active_credential_key_id=NULL,active_credential_envelope_version=NULL,pending_credential_ciphertext=NULL,pending_credential_nonce=NULL,pending_credential_key_id=NULL,pending_credential_envelope_version=NULL,webhook_credential_ciphertext=NULL,webhook_credential_nonce=NULL,webhook_credential_key_id=NULL,webhook_credential_envelope_version=NULL,webhook_lookup_digest=NULL,validation_state='disabled',validation_lease_holder=NULL,validation_lease_expires_at=NULL,validation_lease_token=validation_lease_token+1,webhook_registration_state='disabled',webhook_lease_holder=NULL,webhook_lease_expires_at=NULL,webhook_lease_token=webhook_lease_token+1,version=version+1,revoked_at=$4,updated_at=$4 WHERE id=$1 AND user_id=$2 AND version=$3 AND state<>'revoked'").bind(id.into_uuid()).bind(user_id.into_uuid()).bind(expected.get()).bind(now).execute(&mut *tx).await.map_err(database)?;
         if result.rows_affected() != 1 {
             return Err(BankingError::VersionConflict);
         }
+        sqlx::query("UPDATE banking.sync_jobs SET state='cancelled',last_error='connection_revoked',lease_holder=NULL,lease_expires_at=NULL,version=version+1,updated_at=$3 WHERE connection_id=$1 AND user_id=$2 AND state IN ('requested','running','waiting_for_events','retry_due')")
+            .bind(id.into_uuid()).bind(user_id.into_uuid()).bind(now).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)?;
         self.get_connection(user_id, id).await
     }
 
@@ -302,12 +353,13 @@ impl PgBankingStore {
         user_id: UserId,
         connection_id: ProviderConnectionId,
     ) -> Result<Vec<ExternalResourceView>, BankingError> {
-        let rows=sqlx::query("SELECT resource.id,resource.connection_id,resource.kind,resource.funding_model,resource.currency,resource.masked_label,resource.discovery_state,resource.version,mapping.id mapping_id,mapping.ledger_account_id,mapping.mapping_version,mapping.state mapping_state,mapping.effective_at mapping_effective_at,mapping.ended_at mapping_ended_at FROM banking.external_resources resource LEFT JOIN LATERAL (SELECT candidate.id,candidate.ledger_account_id,candidate.mapping_version,candidate.state,candidate.effective_at,candidate.ended_at FROM banking.resource_mappings candidate WHERE candidate.external_resource_id=resource.id AND candidate.user_id=resource.user_id AND candidate.state IN ('active','pending_account_creation','needs_review') ORDER BY candidate.mapping_version DESC LIMIT 1) mapping ON true WHERE resource.user_id=$1 AND resource.connection_id=$2 ORDER BY resource.created_at,resource.id").bind(user_id.into_uuid()).bind(connection_id.into_uuid()).fetch_all(&self.uow.pool).await.map_err(database)?;
+        let rows=sqlx::query("SELECT resource.id,resource.connection_id,resource.external_resource_id,resource.kind,resource.funding_model,resource.currency,resource.masked_label,resource.discovery_state,resource.version,mapping.id mapping_id,mapping.ledger_account_id,mapping.mapping_version,mapping.state mapping_state,mapping.effective_at mapping_effective_at,mapping.ended_at mapping_ended_at,observation.provider_amount latest_provider_amount,observation.provider_currency latest_provider_currency,observation.observed_at balance_observed_at FROM banking.external_resources resource LEFT JOIN LATERAL (SELECT candidate.id,candidate.ledger_account_id,candidate.mapping_version,candidate.state,candidate.effective_at,candidate.ended_at FROM banking.resource_mappings candidate WHERE candidate.external_resource_id=resource.id AND candidate.user_id=resource.user_id AND candidate.state IN ('active','pending_account_creation','needs_review') ORDER BY candidate.mapping_version DESC LIMIT 1) mapping ON true LEFT JOIN LATERAL (SELECT candidate.provider_amount,candidate.provider_currency,candidate.observed_at FROM banking.balance_observations candidate WHERE candidate.external_resource_id=resource.id AND candidate.user_id=resource.user_id ORDER BY candidate.observed_at DESC,candidate.source_sequence DESC,candidate.id DESC LIMIT 1) observation ON true WHERE resource.user_id=$1 AND resource.connection_id=$2 ORDER BY resource.created_at,resource.id").bind(user_id.into_uuid()).bind(connection_id.into_uuid()).fetch_all(&self.uow.pool).await.map_err(database)?;
         rows.into_iter()
             .map(|row| {
                 Ok(ExternalResourceView {
                     id: ExternalResourceId::new(row.get("id")),
                     connection_id: ProviderConnectionId::new(row.get("connection_id")),
+                    provider_resource_id: row.get("external_resource_id"),
                     kind: parse_kind(row.get::<String, _>("kind").as_str())?,
                     funding_model: parse_funding(row.get::<String, _>("funding_model").as_str())?,
                     currency: CurrencyCode::new(row.get::<String, _>("currency")).map_err(
@@ -316,6 +368,24 @@ impl PgBankingStore {
                     masked_label: row.get("masked_label"),
                     discovery_state: row.get("discovery_state"),
                     version: row.get("version"),
+                    latest_provider_balance: match (
+                        row.get::<Option<rust_decimal::Decimal>, _>("latest_provider_amount"),
+                        row.get::<Option<String>, _>("latest_provider_currency"),
+                    ) {
+                        (Some(amount), Some(currency)) => Some(
+                            Money::new(
+                                amount,
+                                CurrencyCode::new(currency).map_err(|_| {
+                                    BankingError::InvalidValue("stored balance currency invalid")
+                                })?,
+                                8,
+                            )
+                            .map_err(|_| BankingError::InvalidValue("stored balance is invalid"))?,
+                        ),
+                        (None, None) => None,
+                        _ => return Err(BankingError::InvalidValue("stored balance is invalid")),
+                    },
+                    balance_observed_at: row.get("balance_observed_at"),
                     current_mapping: row.get::<Option<uuid::Uuid>, _>("mapping_id").map(|id| {
                         ResourceMappingView {
                             id: ResourceMappingId::new(id),
@@ -711,7 +781,32 @@ impl PgBankingStore {
             return Err(BankingError::InvalidState);
         }
         let id = SyncJobId::generate();
+        let snapshot_from =
+            command.requested_from - chrono::Duration::seconds(i64::from(command.overlap_seconds));
         let inserted=sqlx::query("INSERT INTO banking.sync_jobs (id,user_id,connection_id,requested_from,requested_to,overlap_seconds,state,connection_version,credential_generation) VALUES ($1,$2,$3,$4,$5,$6,'requested',$7,$8) RETURNING id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.requested_from).bind(command.requested_to).bind(command.overlap_seconds).bind(row.get::<i64,_>("version")).bind(row.get::<i64,_>("credential_generation")).fetch_one(&mut *tx).await.map_err(database)?;
+        let snapshotted = sqlx::query(
+            "INSERT INTO banking.sync_job_resources
+             (sync_job_id,user_id,connection_id,external_resource_id,position,
+              snapshot_from,snapshot_to,next_from)
+             SELECT $1,resource.user_id,resource.connection_id,resource.id,
+                    row_number() OVER (ORDER BY resource.created_at,resource.id)::integer,
+                    $4,$5,$4
+             FROM banking.external_resources resource
+             WHERE resource.user_id=$2 AND resource.connection_id=$3
+               AND resource.kind IN ('card','current_account','jar')
+               AND resource.discovery_state IN ('active','needs_review')",
+        )
+        .bind(id.into_uuid())
+        .bind(command.user_id.into_uuid())
+        .bind(command.connection_id.into_uuid())
+        .bind(snapshot_from)
+        .bind(command.requested_to)
+        .execute(&mut *tx)
+        .await
+        .map_err(database)?;
+        if snapshotted.rows_affected() == 0 {
+            return Err(BankingError::InvalidState);
+        }
         let result = sync_job_view(inserted)?;
         sqlx::query("INSERT INTO banking.command_receipts (user_id,scope,idempotency_key,request_hash,result,status_code) VALUES ($1,'request_sync_job',$2,$3,$4,202)")
             .bind(command.user_id.into_uuid()).bind(command.idempotency_key.as_str()).bind(request_hash).bind(serde_json::to_value(&result).map_err(|_| BankingError::InvalidValue("cannot serialize command result"))?).execute(&mut *tx).await.map_err(database)?;
@@ -744,7 +839,7 @@ impl PgBankingStore {
         let connection_id:uuid::Uuid=sqlx::query_scalar("SELECT connection_id FROM banking.sync_jobs WHERE id=$1 AND user_id=$2 AND lease_holder=$3 AND lease_token=$4 AND lease_expires_at>$5 FOR UPDATE").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(&command.holder).bind(command.fencing_token).bind(command.now).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
         let page_number:i64=sqlx::query_scalar("SELECT COALESCE(max(page_number),0)+1 FROM banking.sync_pages WHERE sync_job_id=$1 AND user_id=$2").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_one(&mut *tx).await.map_err(database)?;
         let id = uuid::Uuid::new_v4();
-        let row=sqlx::query("INSERT INTO banking.sync_pages (id,user_id,connection_id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'waiting_for_events') RETURNING id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,processed_events,quarantined_events,state").bind(id).bind(command.user_id.into_uuid()).bind(connection_id).bind(command.sync_job_id.into_uuid()).bind(page_number).bind(command.provider_cursor).bind(command.next_cursor).bind(command.expected_events).fetch_one(&mut *tx).await.map_err(database)?;
+        let row=sqlx::query("INSERT INTO banking.sync_pages (id,user_id,connection_id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'waiting_for_events') RETURNING id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,processed_events,quarantined_events,state,external_resource_id,window_from,window_to").bind(id).bind(command.user_id.into_uuid()).bind(connection_id).bind(command.sync_job_id.into_uuid()).bind(page_number).bind(command.provider_cursor).bind(command.next_cursor).bind(command.expected_events).fetch_one(&mut *tx).await.map_err(database)?;
         sqlx::query("UPDATE banking.sync_jobs SET state='waiting_for_events',updated_at=$3 WHERE id=$1 AND user_id=$2").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.now).execute(&mut *tx).await.map_err(database)?;
         tx.commit().await.map_err(database)?;
         Ok(sync_page_view(row))
@@ -783,13 +878,100 @@ impl PgBankingStore {
         sync_job_view(row)
     }
 
+    pub(crate) async fn list_sync_pages(
+        &self,
+        user_id: UserId,
+        id: SyncJobId,
+    ) -> Result<Vec<SyncPageView>, BankingError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM banking.sync_jobs WHERE id=$1 AND user_id=$2)",
+        )
+        .bind(id.into_uuid())
+        .bind(user_id.into_uuid())
+        .fetch_one(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        if !exists {
+            return Err(BankingError::InvalidState);
+        }
+        let rows = sqlx::query(
+            "SELECT id,sync_job_id,page_number,provider_cursor,next_cursor,expected_events,
+             processed_events,quarantined_events,state,external_resource_id,window_from,window_to
+             FROM banking.sync_pages WHERE sync_job_id=$1 AND user_id=$2
+             ORDER BY page_number,id",
+        )
+        .bind(id.into_uuid())
+        .bind(user_id.into_uuid())
+        .fetch_all(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        Ok(rows.into_iter().map(sync_page_view).collect())
+    }
+
+    pub(crate) async fn list_provider_event_conflicts(
+        &self,
+        user_id: UserId,
+        connection_id: ProviderConnectionId,
+    ) -> Result<Vec<crate::contexts::banking::application::ProviderEventConflictView>, BankingError>
+    {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM banking.provider_connections WHERE id=$1 AND user_id=$2)",
+        )
+        .bind(connection_id.into_uuid())
+        .bind(user_id.into_uuid())
+        .fetch_one(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        if !exists {
+            return Err(BankingError::InvalidState);
+        }
+        let rows = sqlx::query(
+            "SELECT conflict.id,conflict.provider_event_id,conflict.reason,conflict.recorded_at
+             FROM banking.provider_event_conflicts conflict
+             JOIN banking.provider_events event
+               ON event.id=conflict.provider_event_id AND event.user_id=conflict.user_id
+             WHERE conflict.user_id=$1 AND event.connection_id=$2
+             ORDER BY conflict.recorded_at,conflict.id",
+        )
+        .bind(user_id.into_uuid())
+        .bind(connection_id.into_uuid())
+        .fetch_all(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |row| crate::contexts::banking::application::ProviderEventConflictView {
+                    id: row.get("id"),
+                    provider_event_id: ProviderEventId::new(row.get("provider_event_id")),
+                    reason: row.get("reason"),
+                    recorded_at: row.get("recorded_at"),
+                },
+            )
+            .collect())
+    }
+
     pub(crate) async fn claim_provider_import(
         &self,
         user_id: UserId,
         event_id: ProviderEventId,
+        holder: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        lease_seconds: i64,
     ) -> Result<Option<ProviderImportWork>, BankingError> {
+        if holder.trim() != holder
+            || holder.is_empty()
+            || holder.len() > 200
+            || !(1..=30).contains(&lease_seconds)
+        {
+            return Err(BankingError::InvalidValue("invalid provider import claim"));
+        }
         let mut tx = self.uow.pool.begin().await.map_err(database)?;
-        let row=sqlx::query("SELECT event.connection_id,event.external_resource_id,event.external_event_id,event.revision,event.transaction_state,event.operation_amount,event.operation_currency,event.description,event.effective_at,process.state,process.ledger_journal_entry_id FROM banking.provider_events event JOIN banking.provider_event_processes process ON process.provider_event_id=event.id AND process.user_id=event.user_id WHERE event.id=$1 AND event.user_id=$2 FOR UPDATE OF process").bind(event_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let row=sqlx::query("SELECT event.connection_id,event.external_resource_id,event.external_event_id,event.revision,event.transaction_state,event.operation_amount,event.operation_currency,event.description,event.effective_at,process.state,process.ledger_journal_entry_id,process.lease_expires_at FROM banking.provider_events event JOIN banking.provider_event_processes process ON process.provider_event_id=event.id AND process.user_id=event.user_id WHERE event.id=$1 AND event.user_id=$2 FOR UPDATE OF process SKIP LOCKED").bind(event_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err(database)?;
+            return Ok(None);
+        };
         let process_state: String = row.get("state");
         if matches!(
             process_state.as_str(),
@@ -798,22 +980,30 @@ impl PgBankingStore {
             tx.rollback().await.map_err(database)?;
             return Ok(None);
         }
+        if row
+            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("lease_expires_at")
+            .is_some_and(|expires| expires > now)
+        {
+            tx.rollback().await.map_err(database)?;
+            return Ok(None);
+        }
+        let fencing_token: i64 = sqlx::query_scalar("UPDATE banking.provider_event_processes SET lease_holder=$3,lease_token=lease_token+1,lease_expires_at=$4+($5::bigint*interval '1 second'),attempts=attempts+1,process_version=process_version+1,updated_at=$4 WHERE provider_event_id=$1 AND user_id=$2 RETURNING lease_token").bind(event_id.into_uuid()).bind(user_id.into_uuid()).bind(holder).bind(now).bind(lease_seconds).fetch_one(&mut *tx).await.map_err(database)?;
         let resource_id = ExternalResourceId::new(row.get("external_resource_id"));
         let revision: i64 = row.get("revision");
         let account:Option<uuid::Uuid>=sqlx::query_scalar("SELECT ledger_account_id FROM banking.resource_mappings WHERE external_resource_id=$1 AND user_id=$2 AND state='active' AND effective_provider_revision<=$3 ORDER BY mapping_version DESC LIMIT 1").bind(resource_id.into_uuid()).bind(user_id.into_uuid()).bind(revision).fetch_optional(&mut *tx).await.map_err(database)?.flatten();
         let Some(account) = account else {
-            sqlx::query("UPDATE banking.provider_event_processes SET state='waiting_for_mapping',process_version=process_version+1,updated_at=clock_timestamp() WHERE provider_event_id=$1 AND user_id=$2").bind(event_id.into_uuid()).bind(user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+            sqlx::query("UPDATE banking.provider_event_processes SET state='waiting_for_mapping',lease_holder=NULL,lease_expires_at=NULL,process_version=process_version+1,updated_at=$3 WHERE provider_event_id=$1 AND user_id=$2 AND lease_token=$4").bind(event_id.into_uuid()).bind(user_id.into_uuid()).bind(now).bind(fencing_token).execute(&mut *tx).await.map_err(database)?;
             tx.commit().await.map_err(database)?;
             return Ok(None);
         };
         let prior_blocking:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM banking.provider_events prior JOIN banking.provider_event_processes state ON state.provider_event_id=prior.id AND state.user_id=prior.user_id WHERE prior.connection_id=$1 AND prior.external_resource_id=$2 AND prior.external_event_id=$3 AND prior.revision<$4 AND state.state NOT IN ('posted','no_financial_change','quarantined','terminal_failure'))").bind(row.get::<uuid::Uuid,_>("connection_id")).bind(resource_id.into_uuid()).bind(row.get::<String,_>("external_event_id")).bind(revision).fetch_one(&mut *tx).await.map_err(database)?;
         if prior_blocking {
-            sqlx::query("UPDATE banking.provider_event_processes SET state='waiting_for_prior_revision',process_version=process_version+1,updated_at=clock_timestamp() WHERE provider_event_id=$1 AND user_id=$2").bind(event_id.into_uuid()).bind(user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+            sqlx::query("UPDATE banking.provider_event_processes SET state='waiting_for_prior_revision',lease_holder=NULL,lease_expires_at=NULL,process_version=process_version+1,updated_at=$3 WHERE provider_event_id=$1 AND user_id=$2 AND lease_token=$4").bind(event_id.into_uuid()).bind(user_id.into_uuid()).bind(now).bind(fencing_token).execute(&mut *tx).await.map_err(database)?;
             tx.commit().await.map_err(database)?;
             return Ok(None);
         }
         let previous=sqlx::query("SELECT prior.transaction_state,prior.operation_amount,prior.operation_currency,state.ledger_journal_entry_id FROM banking.provider_events prior JOIN banking.provider_event_processes state ON state.provider_event_id=prior.id AND state.user_id=prior.user_id WHERE prior.connection_id=$1 AND prior.external_resource_id=$2 AND prior.external_event_id=$3 AND prior.revision<$4 AND state.state IN ('posted','no_financial_change') ORDER BY prior.revision DESC LIMIT 1").bind(row.get::<uuid::Uuid,_>("connection_id")).bind(resource_id.into_uuid()).bind(row.get::<String,_>("external_event_id")).bind(revision).fetch_optional(&mut *tx).await.map_err(database)?;
-        sqlx::query("UPDATE banking.provider_event_processes SET state='posting',attempts=attempts+1,process_version=process_version+1,updated_at=clock_timestamp() WHERE provider_event_id=$1 AND user_id=$2").bind(event_id.into_uuid()).bind(user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE banking.provider_event_processes SET state='posting',process_version=process_version+1,updated_at=$3 WHERE provider_event_id=$1 AND user_id=$2 AND lease_holder=$4 AND lease_token=$5").bind(event_id.into_uuid()).bind(user_id.into_uuid()).bind(now).bind(holder).bind(fencing_token).execute(&mut *tx).await.map_err(database)?;
         tx.commit().await.map_err(database)?;
         let currency = CurrencyCode::new(row.get::<String, _>("operation_currency"))
             .map_err(|_| BankingError::InvalidValue("stored event currency is invalid"))?;
@@ -853,6 +1043,8 @@ impl PgBankingStore {
             previous_journal_id,
             previous_money,
             previous_state,
+            lease_holder: holder.to_owned(),
+            fencing_token,
         }))
     }
 
@@ -860,11 +1052,19 @@ impl PgBankingStore {
         &self,
     ) -> Result<Option<(UserId, ProviderEventId)>, BankingError> {
         let row: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-            "SELECT user_id, provider_event_id
-             FROM banking.provider_event_processes
-             WHERE state IN ('ready', 'retry_due', 'posting')
-               AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
-             ORDER BY updated_at, provider_event_id
+            "SELECT process.user_id, process.provider_event_id
+             FROM banking.provider_event_processes process
+             JOIN banking.provider_events event
+               ON event.id=process.provider_event_id AND event.user_id=process.user_id
+             WHERE (process.state IN ('ready','retry_due','posting','waiting_for_prior_revision')
+                    OR (process.state='waiting_for_mapping' AND EXISTS (
+                        SELECT 1 FROM banking.resource_mappings mapping
+                        WHERE mapping.external_resource_id=event.external_resource_id
+                          AND mapping.user_id=event.user_id AND mapping.state='active'
+                          AND mapping.effective_provider_revision<=event.revision)))
+               AND (process.next_retry_at IS NULL OR process.next_retry_at <= clock_timestamp())
+               AND (process.lease_expires_at IS NULL OR process.lease_expires_at <= clock_timestamp())
+             ORDER BY process.updated_at, process.provider_event_id
              LIMIT 1",
         )
         .fetch_optional(&self.uow.pool)
@@ -877,7 +1077,12 @@ impl PgBankingStore {
         &self,
         outcome: ProviderImportOutcome,
     ) -> Result<ProviderImportOutcome, BankingError> {
-        let row=sqlx::query("UPDATE banking.provider_event_processes SET state=$2,ledger_journal_entry_id=$3,last_error=NULL,process_version=process_version+1,updated_at=clock_timestamp() WHERE provider_event_id=$1 AND user_id=(SELECT user_id FROM banking.provider_events WHERE id=$1) AND state IN ('posting','waiting_for_mapping','waiting_for_prior_revision','retry_due') RETURNING state,ledger_journal_entry_id").bind(outcome.provider_event_id.into_uuid()).bind(&outcome.state).bind(outcome.ledger_journal_entry_id.map(JournalEntryId::into_uuid)).fetch_optional(&self.uow.pool).await.map_err(database)?;
+        let holder = outcome
+            .lease_holder
+            .as_deref()
+            .ok_or(BankingError::LeaseFenced)?;
+        let token = outcome.fencing_token.ok_or(BankingError::LeaseFenced)?;
+        let row=sqlx::query("UPDATE banking.provider_event_processes SET state=$2,ledger_journal_entry_id=$3,last_error=NULL,lease_holder=NULL,lease_expires_at=NULL,process_version=process_version+1,updated_at=clock_timestamp() WHERE provider_event_id=$1 AND user_id=(SELECT user_id FROM banking.provider_events WHERE id=$1) AND state='posting' AND lease_holder=$4 AND lease_token=$5 AND lease_expires_at>clock_timestamp() RETURNING state,ledger_journal_entry_id").bind(outcome.provider_event_id.into_uuid()).bind(&outcome.state).bind(outcome.ledger_journal_entry_id.map(JournalEntryId::into_uuid)).bind(holder).bind(token).fetch_optional(&self.uow.pool).await.map_err(database)?;
         match row {
             Some(row) => Ok(ProviderImportOutcome {
                 provider_event_id: outcome.provider_event_id,
@@ -886,6 +1091,8 @@ impl PgBankingStore {
                     .get::<Option<uuid::Uuid>, _>("ledger_journal_entry_id")
                     .map(JournalEntryId::new),
                 replayed: false,
+                lease_holder: None,
+                fencing_token: None,
             }),
             None => Ok(ProviderImportOutcome {
                 replayed: true,
@@ -981,11 +1188,32 @@ impl PgBankingStore {
         &self,
         user_id: UserId,
         id: BalanceObservationId,
+        holder: &str,
+        now: chrono::DateTime<chrono::Utc>,
+        lease_seconds: i64,
     ) -> Result<Option<BalanceObservationDeliveryWork>, BankingError> {
+        if holder.trim() != holder
+            || holder.is_empty()
+            || holder.len() > 200
+            || !(1..=30).contains(&lease_seconds)
+        {
+            return Err(BankingError::InvalidValue("invalid observation claim"));
+        }
         let mut tx = self.uow.pool.begin().await.map_err(database)?;
-        let row=sqlx::query("SELECT observation.external_resource_id,observation.source_sequence,observation.basis,observation.provider_amount,observation.provider_currency,observation.comparable_amount,observation.comparable_currency,observation.non_comparable_reason,observation.observed_at,observation.recorded_at,delivery.state,mapping.ledger_account_id FROM banking.balance_observations observation JOIN banking.balance_observation_deliveries delivery ON delivery.observation_id=observation.id AND delivery.user_id=observation.user_id LEFT JOIN banking.resource_mappings mapping ON mapping.external_resource_id=observation.external_resource_id AND mapping.user_id=observation.user_id AND mapping.state='active' WHERE observation.id=$1 AND observation.user_id=$2 FOR UPDATE OF delivery").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let row=sqlx::query("SELECT observation.external_resource_id,observation.source_sequence,observation.basis,observation.provider_amount,observation.provider_currency,observation.comparable_amount,observation.comparable_currency,observation.non_comparable_reason,observation.observed_at,observation.recorded_at,delivery.state,delivery.lease_expires_at,mapping.ledger_account_id FROM banking.balance_observations observation JOIN banking.balance_observation_deliveries delivery ON delivery.observation_id=observation.id AND delivery.user_id=observation.user_id LEFT JOIN banking.resource_mappings mapping ON mapping.external_resource_id=observation.external_resource_id AND mapping.user_id=observation.user_id AND mapping.state='active' WHERE observation.id=$1 AND observation.user_id=$2 FOR UPDATE OF delivery SKIP LOCKED").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err(database)?;
+            return Ok(None);
+        };
         let state: String = row.get("state");
         if state != "pending" && state != "retry_due" {
+            tx.rollback().await.map_err(database)?;
+            return Ok(None);
+        }
+        if row
+            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("lease_expires_at")
+            .is_some_and(|expires| expires > now)
+        {
             tx.rollback().await.map_err(database)?;
             return Ok(None);
         }
@@ -993,7 +1221,7 @@ impl PgBankingStore {
             tx.rollback().await.map_err(database)?;
             return Ok(None);
         };
-        sqlx::query("UPDATE banking.balance_observation_deliveries SET state='pending',attempts=attempts+1,version=version+1,updated_at=clock_timestamp() WHERE observation_id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        let fencing_token: i64 = sqlx::query_scalar("UPDATE banking.balance_observation_deliveries SET state='pending',attempts=attempts+1,lease_holder=$3,lease_token=lease_token+1,lease_expires_at=$4+($5::bigint*interval '1 second'),version=version+1,updated_at=$4 WHERE observation_id=$1 AND user_id=$2 RETURNING lease_token").bind(id.into_uuid()).bind(user_id.into_uuid()).bind(holder).bind(now).bind(lease_seconds).fetch_one(&mut *tx).await.map_err(database)?;
         tx.commit().await.map_err(database)?;
         let currency = CurrencyCode::new(row.get::<String, _>("provider_currency"))
             .map_err(|_| BankingError::InvalidValue("stored observation currency is invalid"))?;
@@ -1036,6 +1264,8 @@ impl PgBankingStore {
             },
             user_id,
             ledger_account_id: LedgerAccountId::new(account),
+            lease_holder: holder.to_owned(),
+            fencing_token,
         }))
     }
 
@@ -1043,11 +1273,17 @@ impl PgBankingStore {
         &self,
     ) -> Result<Option<(UserId, BalanceObservationId)>, BankingError> {
         let row: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-            "SELECT user_id, observation_id
-             FROM banking.balance_observation_deliveries
-             WHERE state IN ('pending', 'retry_due')
-               AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
-             ORDER BY updated_at, observation_id
+            "SELECT delivery.user_id, delivery.observation_id
+             FROM banking.balance_observation_deliveries delivery
+             JOIN banking.balance_observations observation
+               ON observation.id=delivery.observation_id AND observation.user_id=delivery.user_id
+             JOIN banking.resource_mappings mapping
+               ON mapping.external_resource_id=observation.external_resource_id
+              AND mapping.user_id=observation.user_id AND mapping.state='active'
+             WHERE delivery.state IN ('pending', 'retry_due')
+               AND (delivery.next_retry_at IS NULL OR delivery.next_retry_at <= clock_timestamp())
+               AND (delivery.lease_expires_at IS NULL OR delivery.lease_expires_at <= clock_timestamp())
+             ORDER BY delivery.updated_at, delivery.observation_id
              LIMIT 1",
         )
         .fetch_optional(&self.uow.pool)
@@ -1065,9 +1301,16 @@ impl PgBankingStore {
         &self,
         outcome: BalanceObservationDeliveryOutcome,
     ) -> Result<BalanceObservationDeliveryOutcome, BankingError> {
-        let result=sqlx::query("UPDATE banking.balance_observation_deliveries SET state=$2,reconciliation_case_id=$3,active_case_id=$4,version=version+1,updated_at=clock_timestamp() WHERE observation_id=$1 AND state IN ('pending','retry_due')").bind(outcome.observation_id.into_uuid()).bind(&outcome.state).bind(outcome.reconciliation_case_id.map(ReconciliationCaseId::into_uuid)).bind(outcome.active_case_id.map(ReconciliationCaseId::into_uuid)).execute(&self.uow.pool).await.map_err(database)?;
+        let holder = outcome
+            .lease_holder
+            .as_deref()
+            .ok_or(BankingError::LeaseFenced)?;
+        let token = outcome.fencing_token.ok_or(BankingError::LeaseFenced)?;
+        let result=sqlx::query("UPDATE banking.balance_observation_deliveries SET state=$2,reconciliation_case_id=$3,active_case_id=$4,lease_holder=NULL,lease_expires_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE observation_id=$1 AND state IN ('pending','retry_due') AND lease_holder=$5 AND lease_token=$6 AND lease_expires_at>clock_timestamp()").bind(outcome.observation_id.into_uuid()).bind(&outcome.state).bind(outcome.reconciliation_case_id.map(ReconciliationCaseId::into_uuid)).bind(outcome.active_case_id.map(ReconciliationCaseId::into_uuid)).bind(holder).bind(token).execute(&self.uow.pool).await.map_err(database)?;
         Ok(BalanceObservationDeliveryOutcome {
             replayed: result.rows_affected() == 0,
+            lease_holder: None,
+            fencing_token: None,
             ..outcome
         })
     }
@@ -1098,7 +1341,12 @@ impl PgBankingStore {
                 "webhook",
             )?,
         )?;
-        sqlx::query("UPDATE banking.provider_connections SET webhook_credential_ciphertext=$3,webhook_credential_nonce=$4,webhook_credential_key_id=$5,webhook_credential_envelope_version=$6,webhook_lookup_digest=$7,webhook_desired_version=$8,webhook_registration_state='pending',webhook_registration_attempts=0,webhook_next_retry_at=NULL,webhook_last_error=NULL,version=version+1,updated_at=$9 WHERE id=$1 AND user_id=$2 AND version=$10").bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).bind(envelope.ciphertext()).bind(envelope.nonce()).bind(envelope.key_id()).bind(i16::try_from(envelope.envelope_version()).unwrap()).bind(digest.as_slice()).bind(desired).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE banking.provider_connections SET webhook_credential_ciphertext=$3,webhook_credential_nonce=$4,webhook_credential_key_id=$5,webhook_credential_envelope_version=$6,webhook_lookup_digest=$7,webhook_desired_version=$8,webhook_registration_state='pending',webhook_registration_attempts=0,webhook_next_retry_at=NULL,webhook_last_error=NULL,webhook_lease_holder=NULL,webhook_lease_expires_at=NULL,webhook_lease_token=webhook_lease_token+1,version=version+1,updated_at=$9 WHERE id=$1 AND user_id=$2 AND version=$10").bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).bind(envelope.ciphertext()).bind(envelope.nonce()).bind(envelope.key_id()).bind(i16::try_from(envelope.envelope_version()).unwrap()).bind(digest.as_slice()).bind(desired).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
+        // A webhook-only rotation does not change the provider credential used
+        // by statement work. Carry open jobs to the new aggregate version so
+        // they remain runnable while the registration lease is fenced above.
+        sqlx::query("UPDATE banking.sync_jobs SET connection_version=$3,version=version+1,updated_at=$4 WHERE connection_id=$1 AND user_id=$2 AND connection_version=$5 AND credential_generation=(SELECT credential_generation FROM banking.provider_connections WHERE id=$1 AND user_id=$2) AND state IN ('requested','running','waiting_for_events','retry_due')")
+            .bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).bind(version + 1).bind(command.requested_at).bind(version).execute(&mut *tx).await.map_err(database)?;
         tx.commit().await.map_err(database)?;
         Ok(WebhookRotationResult {
             connection_id: command.connection_id,
@@ -1122,8 +1370,10 @@ impl PgBankingStore {
         digest: &[u8; 32],
         body: &[u8],
         secrets: &dyn WebhookSecrets,
+        cipher: &dyn CredentialCipher,
     ) -> Result<WebhookReceiptOutcome, BankingError> {
-        let row=sqlx::query("SELECT id,user_id,webhook_lookup_digest FROM banking.provider_connections WHERE webhook_lookup_digest=$1 AND state='active'").bind(digest.as_slice()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        let row=sqlx::query("SELECT id,user_id,provider,credential_generation,webhook_desired_version,webhook_lookup_digest FROM banking.provider_connections WHERE webhook_lookup_digest=$1 AND state='active' FOR UPDATE").bind(digest.as_slice()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         let stored: Vec<u8> = row.get("webhook_lookup_digest");
         if !secrets.verify_digest(digest, &stored) {
             return Err(BankingError::InvalidState);
@@ -1131,7 +1381,20 @@ impl PgBankingStore {
         let connection_id = ProviderConnectionId::new(row.get("id"));
         let user_id = UserId::new(row.get("user_id"));
         let delivery = Sha256::digest(body).to_vec();
-        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        let id = uuid::Uuid::new_v4();
+        let generation = row
+            .get::<Option<i64>, _>("webhook_desired_version")
+            .unwrap_or_else(|| row.get("credential_generation"));
+        let payload = cipher.encrypt_payload(
+            body,
+            &CredentialBinding::new(
+                user_id,
+                connection_id.into_uuid(),
+                row.get::<String, _>("provider"),
+                generation,
+                format!("provenance:{id}"),
+            )?,
+        )?;
         if let Some(id) = sqlx::query_scalar::<_, uuid::Uuid>(
             "SELECT id FROM banking.webhook_receipts WHERE connection_id=$1 AND delivery_digest=$2",
         )
@@ -1148,8 +1411,7 @@ impl PgBankingStore {
                 duplicate: true,
             });
         }
-        let id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO banking.webhook_receipts (id,user_id,connection_id,delivery_digest,state) VALUES ($1,$2,$3,$4,'pending')").bind(id).bind(user_id.into_uuid()).bind(connection_id.into_uuid()).bind(&delivery).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("INSERT INTO banking.webhook_receipts (id,user_id,connection_id,delivery_digest,provenance_ciphertext,provenance_nonce,provenance_key_id,provenance_envelope_version,provenance_generation,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')").bind(id).bind(user_id.into_uuid()).bind(connection_id.into_uuid()).bind(&delivery).bind(payload.ciphertext()).bind(payload.nonce()).bind(payload.key_id()).bind(i16::try_from(payload.envelope_version()).unwrap_or(1)).bind(generation).execute(&mut *tx).await.map_err(database)?;
         let envelope = EventEnvelope::new(
             EventId::generate(),
             "banking",
@@ -1185,6 +1447,8 @@ impl PgBankingStore {
     ) -> Result<WebhookRegistrationWork, BankingError> {
         let row=sqlx::query("SELECT provider,credential_generation,active_credential_ciphertext,active_credential_nonce,active_credential_key_id,active_credential_envelope_version,webhook_desired_version,webhook_credential_ciphertext,webhook_credential_nonce,webhook_credential_key_id,webhook_credential_envelope_version FROM banking.provider_connections WHERE id=$1 AND user_id=$2 AND state='active' AND webhook_registration_state IN ('pending','retry_due')").bind(connection_id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         Ok(WebhookRegistrationWork {
+            user_id,
+            connection_id,
             provider: row.get("provider"),
             credential_generation: row.get("credential_generation"),
             webhook_version: row.get("webhook_desired_version"),
@@ -1198,6 +1462,9 @@ impl PgBankingStore {
                 row.get("webhook_credential_nonce"),
                 row.get("webhook_credential_ciphertext"),
             )?,
+            holder: "manual-registration".to_owned(),
+            fencing_token: 0,
+            attempts: 0,
         })
     }
 
@@ -1246,6 +1513,23 @@ fn view(row: sqlx::postgres::PgRow) -> Result<ProviderConnectionView, BankingErr
         webhook_configured: row
             .get::<Option<Vec<u8>>, _>("webhook_lookup_digest")
             .is_some(),
+        validation_state: row.get("validation_state"),
+        validation_candidate_generation: row
+            .get::<Option<Vec<u8>>, _>("pending_credential_ciphertext")
+            .map(|_| row.get::<i64, _>("credential_generation") + 1)
+            .or_else(|| {
+                (row.get::<String, _>("state") == "pending")
+                    .then(|| row.get("credential_generation"))
+            }),
+        validation_attempts: row.get("validation_attempts"),
+        validation_next_retry_at: row.get("validation_next_retry_at"),
+        validation_last_error_class: row.get("validation_last_error"),
+        webhook_desired_version: row.get("webhook_desired_version"),
+        webhook_registered_version: row.get("webhook_registered_version"),
+        webhook_registration_state: row.get("webhook_registration_state"),
+        webhook_registration_attempts: row.get("webhook_registration_attempts"),
+        webhook_next_retry_at: row.get("webhook_next_retry_at"),
+        webhook_last_error_class: row.get("webhook_last_error"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -1383,6 +1667,11 @@ fn sync_page_view(row: sqlx::postgres::PgRow) -> SyncPageView {
         processed_events: row.get("processed_events"),
         quarantined_events: row.get("quarantined_events"),
         state: row.get("state"),
+        resource_id: row
+            .get::<Option<uuid::Uuid>, _>("external_resource_id")
+            .map(ExternalResourceId::new),
+        window_from: row.get("window_from"),
+        window_to: row.get("window_to"),
     }
 }
 fn observation_view(

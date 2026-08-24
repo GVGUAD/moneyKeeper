@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
         &pool,
         Arc::new(jwks),
         config.secrets(),
+        config.monobank_webhook_base_url(),
         shutdown_signal(),
     )
     .await

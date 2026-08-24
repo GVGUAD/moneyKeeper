@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use super::ports::{
-    ConnectionRepository, CredentialBinding, CredentialCipher, NormalizedResource,
-    ObservationRepository, ProviderClient, ProviderEventRepository, ResourceRepository,
-    SyncJobRepository, WebhookCredential, WebhookRepository, WebhookSecrets,
+    BankingWorkerRepository, ConnectionRepository, CredentialBinding, CredentialCipher,
+    NormalizedResource, ObservationRepository, ProviderClient, ProviderEventRepository,
+    ProviderNormalizer, ResourceRepository, SyncJobRepository, WebhookCredential,
+    WebhookRepository, WebhookSecrets,
 };
 use super::{
     AccountingProcessView, BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork,
@@ -26,8 +27,10 @@ pub struct BankingFacade {
     pub(crate) sync_jobs: Arc<dyn SyncJobRepository>,
     pub(crate) observations: Arc<dyn ObservationRepository>,
     pub(crate) webhooks: Arc<dyn WebhookRepository>,
+    pub(crate) workers: Arc<dyn BankingWorkerRepository>,
     pub(crate) cipher: Arc<dyn CredentialCipher>,
     pub(crate) provider: Arc<dyn ProviderClient>,
+    pub(crate) normalizer: Arc<dyn ProviderNormalizer>,
     pub(crate) ledger: Option<crate::contexts::ledger::public::LedgerFacade>,
     pub(crate) currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
     pub(crate) webhook_secrets: Arc<dyn WebhookSecrets>,
@@ -38,6 +41,7 @@ impl BankingFacade {
         repositories: Arc<R>,
         cipher: Arc<dyn CredentialCipher>,
         provider: Arc<dyn ProviderClient>,
+        normalizer: Arc<dyn ProviderNormalizer>,
         ledger: Option<crate::contexts::ledger::public::LedgerFacade>,
         currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
         webhook_secrets: Arc<dyn WebhookSecrets>,
@@ -49,6 +53,7 @@ impl BankingFacade {
             + SyncJobRepository
             + ObservationRepository
             + WebhookRepository
+            + BankingWorkerRepository
             + 'static,
     {
         Self {
@@ -57,9 +62,11 @@ impl BankingFacade {
             provider_events: repositories.clone(),
             sync_jobs: repositories.clone(),
             observations: repositories.clone(),
-            webhooks: repositories,
+            webhooks: repositories.clone(),
+            workers: repositories,
             cipher,
             provider,
+            normalizer,
             ledger,
             currencies,
             webhook_secrets,
@@ -205,6 +212,15 @@ impl BankingFacade {
     ) -> Result<ProviderEventView, BankingError> {
         self.provider_events.get_provider_event(user_id, id).await
     }
+    pub async fn list_provider_event_conflicts(
+        &self,
+        user_id: UserId,
+        connection_id: super::super::domain::ProviderConnectionId,
+    ) -> Result<Vec<super::ProviderEventConflictView>, BankingError> {
+        self.provider_events
+            .list_provider_event_conflicts(user_id, connection_id)
+            .await
+    }
     pub async fn get_accounting_process(
         &self,
         user_id: UserId,
@@ -340,7 +356,13 @@ impl BankingFacade {
         provider_event_id: super::super::domain::ProviderEventId,
     ) -> Result<Option<ProviderImportWork>, BankingError> {
         self.provider_events
-            .claim_provider_import(user_id, provider_event_id)
+            .claim_provider_import(
+                user_id,
+                provider_event_id,
+                "finance-v2-banking-import",
+                chrono::Utc::now(),
+                30,
+            )
             .await
     }
 
@@ -370,7 +392,13 @@ impl BankingFacade {
         observation_id: super::super::domain::BalanceObservationId,
     ) -> Result<Option<BalanceObservationDeliveryWork>, BankingError> {
         self.observations
-            .claim_balance_observation(user_id, observation_id)
+            .claim_balance_observation(
+                user_id,
+                observation_id,
+                "finance-v2-banking-observation",
+                chrono::Utc::now(),
+                30,
+            )
             .await
     }
 
@@ -427,6 +455,7 @@ impl BankingFacade {
                 &self.webhook_secrets.digest(&credential),
                 body,
                 self.webhook_secrets.as_ref(),
+                self.cipher.as_ref(),
             )
             .await
     }

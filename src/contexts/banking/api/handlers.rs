@@ -108,7 +108,7 @@ pub(crate) async fn rotate_webhook(
     Ok((
         StatusCode::CREATED,
         Json(
-            serde_json::json!({"connection_id":result.connection_id,"webhook_credential":result.credential.expose(),"desired_version":result.desired_version,"connection_version":result.connection_version}),
+            serde_json::json!({"connection_id":result.connection_id,"desired_version":result.desired_version,"connection_version":result.connection_version}),
         ),
     ))
 }
@@ -279,6 +279,28 @@ pub(crate) async fn get_sync(
 ) -> Result<Json<SyncJobView>, ApiError> {
     banking
         .get_sync_job(user, SyncJobId::new(id))
+        .await
+        .map(Json)
+        .map_err(map)
+}
+pub(crate) async fn list_sync_pages(
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(banking): State<BankingFacade>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<SyncPageView>>, ApiError> {
+    banking
+        .list_sync_pages(user, SyncJobId::new(id))
+        .await
+        .map(Json)
+        .map_err(map)
+}
+pub(crate) async fn list_provider_event_conflicts(
+    AuthenticatedUser(user): AuthenticatedUser,
+    State(banking): State<BankingFacade>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ProviderEventConflictView>>, ApiError> {
+    banking
+        .list_provider_event_conflicts(user, ProviderConnectionId::new(id))
         .await
         .map(Json)
         .map_err(map)

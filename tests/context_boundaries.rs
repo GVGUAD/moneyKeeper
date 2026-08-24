@@ -252,8 +252,9 @@ fn is_transitional_identifier(token: &str) -> bool {
                 .chars()
                 .next()
                 .is_some_and(|value| value.is_ascii_digit())
-    }) || (lower != "migrations_v2"
-        && (lower == "v2" || lower.starts_with("v2_") || lower.ends_with("_v2")))
+    }) || lower == "v2"
+        || lower.starts_with("v2_")
+        || lower.ends_with("_v2")
 }
 
 fn assert_context_source_isolated(context: &str, file: &Path, source: &str) {

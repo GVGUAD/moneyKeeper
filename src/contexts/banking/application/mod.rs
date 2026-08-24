@@ -5,8 +5,10 @@ mod handlers;
 mod ports;
 mod queries;
 mod sync;
+mod worker;
 
 pub use commands::*;
 pub use handlers::BankingFacade;
 pub use ports::*;
 pub use queries::*;
+pub use worker::*;

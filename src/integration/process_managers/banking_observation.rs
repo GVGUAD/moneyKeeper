@@ -31,6 +31,8 @@ pub async fn deliver_balance_observation(
             reconciliation_case_id: None,
             active_case_id: None,
             replayed: true,
+            lease_holder: None,
+            fencing_token: None,
         });
     };
     let comparable = work
@@ -82,6 +84,8 @@ pub async fn deliver_balance_observation(
             reconciliation_case_id: (!ignored).then_some(result.case.id),
             active_case_id: ignored.then_some(result.case.id),
             replayed: false,
+            lease_holder: Some(work.lease_holder),
+            fencing_token: Some(work.fencing_token),
         })
         .await
 }

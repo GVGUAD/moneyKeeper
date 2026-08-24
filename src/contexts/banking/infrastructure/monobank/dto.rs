@@ -31,3 +31,34 @@ pub(super) struct JarDto {
     pub currency_code: u16,
     pub balance: i64,
 }
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct StatementItemDto {
+    pub id: String,
+    pub time: i64,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub mcc: Option<i32>,
+    #[serde(default)]
+    pub hold: bool,
+    pub amount: i64,
+    pub operation_amount: i64,
+    pub currency_code: u16,
+    pub balance: i64,
+}
+
+#[derive(Deserialize)]
+pub(super) struct WebhookDto {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: WebhookDataDto,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WebhookDataDto {
+    pub account: String,
+    pub statement_item: StatementItemDto,
+}

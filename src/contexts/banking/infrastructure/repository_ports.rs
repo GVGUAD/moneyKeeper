@@ -185,8 +185,11 @@ impl ProviderEventRepository for PgBankingStore {
         &self,
         user_id: UserId,
         id: ProviderEventId,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
     ) -> Result<Option<ProviderImportWork>, BankingError> {
-        PgBankingStore::claim_provider_import(self, user_id, id).await
+        PgBankingStore::claim_provider_import(self, user_id, id, holder, now, lease_seconds).await
     }
     async fn next_provider_import_candidate(
         &self,
@@ -198,6 +201,13 @@ impl ProviderEventRepository for PgBankingStore {
         outcome: ProviderImportOutcome,
     ) -> Result<ProviderImportOutcome, BankingError> {
         PgBankingStore::complete_provider_import(self, outcome).await
+    }
+    async fn list_provider_event_conflicts(
+        &self,
+        user_id: UserId,
+        connection_id: ProviderConnectionId,
+    ) -> Result<Vec<ProviderEventConflictView>, BankingError> {
+        PgBankingStore::list_provider_event_conflicts(self, user_id, connection_id).await
     }
 }
 
@@ -230,6 +240,13 @@ impl SyncJobRepository for PgBankingStore {
     ) -> Result<SyncJobView, BankingError> {
         PgBankingStore::get_sync_job(self, user_id, id).await
     }
+    async fn list_sync_pages(
+        &self,
+        user_id: UserId,
+        id: SyncJobId,
+    ) -> Result<Vec<SyncPageView>, BankingError> {
+        PgBankingStore::list_sync_pages(self, user_id, id).await
+    }
 }
 
 #[async_trait]
@@ -251,8 +268,12 @@ impl ObservationRepository for PgBankingStore {
         &self,
         user_id: UserId,
         id: BalanceObservationId,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
     ) -> Result<Option<BalanceObservationDeliveryWork>, BankingError> {
-        PgBankingStore::claim_balance_observation(self, user_id, id).await
+        PgBankingStore::claim_balance_observation(self, user_id, id, holder, now, lease_seconds)
+            .await
     }
     async fn next_balance_observation_candidate(
         &self,
@@ -290,8 +311,9 @@ impl WebhookRepository for PgBankingStore {
         digest: &[u8; 32],
         body: &[u8],
         secrets: &dyn WebhookSecrets,
+        cipher: &dyn CredentialCipher,
     ) -> Result<WebhookReceiptOutcome, BankingError> {
-        PgBankingStore::receive_webhook(self, digest, body, secrets).await
+        PgBankingStore::receive_webhook(self, digest, body, secrets, cipher).await
     }
     async fn webhook_registration_work(
         &self,

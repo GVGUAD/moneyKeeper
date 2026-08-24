@@ -56,6 +56,11 @@ pub(crate) fn authenticated_router(banking: BankingFacade) -> Router {
             post(handlers::request_sync),
         )
         .route("/sync-jobs/{id}", get(handlers::get_sync))
+        .route("/sync-jobs/{id}/pages", get(handlers::list_sync_pages))
+        .route(
+            "/provider-connections/{id}/provider-event-conflicts",
+            get(handlers::list_provider_event_conflicts),
+        )
         .route("/provider-events/{id}", get(handlers::get_event))
         .route("/accounting-processes/{id}", get(handlers::get_process))
         .route("/balance-observations/{id}", get(handlers::get_observation))

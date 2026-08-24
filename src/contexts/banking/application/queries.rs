@@ -22,8 +22,38 @@ pub struct ProviderConnectionView {
     pub credential_generation: i64,
     pub version: ConnectionVersion,
     pub webhook_configured: bool,
+    #[serde(default = "pending_validation_state")]
+    pub validation_state: String,
+    #[serde(default)]
+    pub validation_candidate_generation: Option<i64>,
+    #[serde(default)]
+    pub validation_attempts: i32,
+    #[serde(default)]
+    pub validation_next_retry_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub validation_last_error_class: Option<String>,
+    #[serde(default)]
+    pub webhook_desired_version: Option<i64>,
+    #[serde(default)]
+    pub webhook_registered_version: Option<i64>,
+    #[serde(default = "not_requested_webhook_state")]
+    pub webhook_registration_state: String,
+    #[serde(default)]
+    pub webhook_registration_attempts: i32,
+    #[serde(default)]
+    pub webhook_next_retry_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub webhook_last_error_class: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn pending_validation_state() -> String {
+    "pending".to_owned()
+}
+
+fn not_requested_webhook_state() -> String {
+    "not_requested".to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +134,9 @@ pub struct SyncPageView {
     pub processed_events: i32,
     pub quarantined_events: i32,
     pub state: String,
+    pub resource_id: Option<ExternalResourceId>,
+    pub window_from: Option<DateTime<Utc>>,
+    pub window_to: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +155,8 @@ pub struct ProviderImportWork {
     pub previous_journal_id: Option<JournalEntryId>,
     pub previous_money: Option<Money>,
     pub previous_state: Option<super::super::domain::ProviderTransactionState>,
+    pub lease_holder: String,
+    pub fencing_token: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +165,10 @@ pub struct ProviderImportOutcome {
     pub state: String,
     pub ledger_journal_entry_id: Option<JournalEntryId>,
     pub replayed: bool,
+    #[serde(skip)]
+    pub lease_holder: Option<String>,
+    #[serde(skip)]
+    pub fencing_token: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -152,6 +191,8 @@ pub struct BalanceObservationDeliveryWork {
     pub observation: BalanceObservationView,
     pub user_id: UserId,
     pub ledger_account_id: LedgerAccountId,
+    pub lease_holder: String,
+    pub fencing_token: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +202,10 @@ pub struct BalanceObservationDeliveryOutcome {
     pub reconciliation_case_id: Option<crate::contexts::ledger::public::ReconciliationCaseId>,
     pub active_case_id: Option<crate::contexts::ledger::public::ReconciliationCaseId>,
     pub replayed: bool,
+    #[serde(skip)]
+    pub lease_holder: Option<String>,
+    #[serde(skip)]
+    pub fencing_token: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,17 +232,28 @@ pub struct WebhookReceiptOutcome {
     pub duplicate: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ExternalResourceView {
     pub id: ExternalResourceId,
     pub connection_id: ProviderConnectionId,
+    pub provider_resource_id: String,
     pub kind: super::super::domain::ResourceKind,
     pub funding_model: super::super::domain::FundingModel,
     pub currency: crate::shared_kernel::CurrencyCode,
     pub masked_label: String,
     pub discovery_state: String,
     pub version: i64,
+    pub latest_provider_balance: Option<Money>,
+    pub balance_observed_at: Option<DateTime<Utc>>,
     pub current_mapping: Option<ResourceMappingView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProviderEventConflictView {
+    pub id: uuid::Uuid,
+    pub provider_event_id: ProviderEventId,
+    pub reason: String,
+    pub recorded_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

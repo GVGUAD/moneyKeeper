@@ -62,5 +62,5 @@ history and retains the original receipts for rollback diagnostics.
 
 The checked-in [`context-map.svg`](context-map.svg) renders
 [`context-map.puml`](context-map.puml). Architecture enforcement lives in
-`tests/context_boundaries.rs`; legacy SQL enforcement lives in
+`tests/context_boundaries.rs`; retired-schema SQL enforcement lives in
 `scripts/check_no_legacy_finance_sql.sh`.

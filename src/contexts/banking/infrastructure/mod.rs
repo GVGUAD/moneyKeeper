@@ -7,6 +7,7 @@ mod pg_unit_of_work;
 mod repository_ports;
 mod rows;
 mod webhook_secret;
+mod worker_repository;
 
 pub use credential_cipher::Aes256CredentialCipher;
 pub use monobank::{MonobankAdapter, MonobankClient};

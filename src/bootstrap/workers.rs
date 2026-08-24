@@ -242,10 +242,14 @@ pub fn production(
     pool: &crate::infrastructure::database::VerifiedDatabase,
     contexts: &super::runtime::ContextFacades,
     secrets: &super::runtime::RuntimeSecrets,
+    monobank_webhook_base_url: &reqwest::Url,
 ) -> anyhow::Result<WorkerRegistry> {
     use crate::integration::outbox::{DispatcherConfig, OutboxDispatcher};
 
-    let banking = Arc::new(super::runtime::banking_workers(contexts));
+    let banking = Arc::new(super::runtime::banking_workers_with_webhook(
+        contexts,
+        monobank_webhook_base_url.clone(),
+    ));
     let maintenance = Arc::new(super::runtime::context_maintenance_workers(pool, secrets));
     let event_consumers = Arc::new(super::runtime::event_consumers(pool));
     let loan_accounting = Arc::new(super::runtime::loan_accounting_workers(pool));

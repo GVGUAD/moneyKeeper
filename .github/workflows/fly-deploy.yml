@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - main
+
+permissions:
+  contents: read
+
 jobs:
   quality:
     name: Moneykeeper quality gates
@@ -12,7 +16,7 @@ jobs:
     env:
       SQLX_OFFLINE: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.94.0
         with:
           components: rustfmt, clippy
@@ -22,7 +26,6 @@ jobs:
       - run: ./scripts/check_no_legacy_finance_sql.sh
       - run: cargo test --all-targets -- --nocapture
       - run: cargo test --test migrations -- --nocapture
-      - run: cargo test --test legacy_migration_checksums -- --nocapture
       - run: cargo test --test context_boundaries -- --nocapture
       - run: cargo test --test openapi -- --nocapture
 
@@ -32,7 +35,7 @@ jobs:
     needs: quality
     concurrency: deploy-group    # optional: ensure only one action runs at a time
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only
         env:

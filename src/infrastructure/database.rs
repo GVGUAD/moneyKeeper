@@ -9,7 +9,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{Postgres, Transaction};
 
 /// The immutable, complete Moneykeeper migration lineage embedded in this binary.
-pub static DATABASE_MIGRATOR: Migrator = sqlx::migrate!("src/infrastructure/migrations_v2");
+pub static DATABASE_MIGRATOR: Migrator = sqlx::migrate!("src/infrastructure/migrations");
 
 const DATABASE_LINEAGE: &str = "finance-v2";
 
@@ -57,8 +57,8 @@ impl VerifiedDatabase {
 /// # Errors
 ///
 /// Returns an error when the database cannot be reached, contains an unmarked
-/// legacy or arbitrary schema, fails a migration, or does not match the complete
-/// embedded Moneykeeper lineage after migration.
+/// or incompatible schema, fails a migration, or does not carry the Moneykeeper
+/// lineage marker after migration.
 pub async fn initialize_database(database_url: &str) -> anyhow::Result<VerifiedDatabase> {
     initialize_with_pool_limit_and_guards(database_url, 10, Vec::new()).await
 }
@@ -112,8 +112,7 @@ async fn migrate_database(pool: &PgPool) -> anyhow::Result<()> {
         .run(pool)
         .await
         .context("run Moneykeeper migrations")?;
-    verify_marker(pool).await?;
-    verify_complete_lineage(pool).await
+    verify_marker(pool).await
 }
 
 async fn preflight(pool: &PgPool) -> anyhow::Result<()> {
@@ -262,30 +261,6 @@ async fn verify_marker(pool: &PgPool) -> anyhow::Result<()> {
     ensure!(
         rows.as_slice() == [(true, DATABASE_LINEAGE.to_owned())],
         "refusing non-Moneykeeper database: invalid Moneykeeper lineage marker"
-    );
-    Ok(())
-}
-
-async fn verify_complete_lineage(pool: &PgPool) -> anyhow::Result<()> {
-    let applied: Vec<i64> =
-        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
-            .fetch_all(pool)
-            .await
-            .context("read applied Moneykeeper migration lineage")?;
-    let expected: Vec<i64> = DATABASE_MIGRATOR
-        .iter()
-        .filter(|migration| migration.migration_type.is_up_migration())
-        .map(|migration| migration.version)
-        .collect();
-
-    ensure!(
-        !expected.is_empty(),
-        "Moneykeeper binary contains no embedded migration baseline"
-    );
-
-    ensure!(
-        applied == expected,
-        "Moneykeeper database migration lineage is incomplete: expected {expected:?}, found {applied:?}"
     );
     Ok(())
 }

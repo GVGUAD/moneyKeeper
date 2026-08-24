@@ -28,6 +28,8 @@ pub async fn import_provider_revision(
             state: "waiting_or_complete".to_owned(),
             ledger_journal_entry_id: None,
             replayed: true,
+            lease_holder: None,
+            fencing_token: None,
         });
     };
     let source = SourceReference::new(
@@ -100,6 +102,8 @@ pub async fn import_provider_revision(
             },
             ledger_journal_entry_id: journal_id,
             replayed: false,
+            lease_holder: Some(work.lease_holder),
+            fencing_token: Some(work.fencing_token),
         })
         .await
 }

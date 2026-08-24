@@ -16,10 +16,11 @@ use super::{
     AccountingProcessView, BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork,
     BalanceObservationView, BeginSyncPage, BindExistingResource, CompleteSyncPage, ConnectProvider,
     ConnectionResult, CreateAndMapResource, DeactivateResourceMapping, ExternalResourceView,
-    IntakeProviderEvent, ProviderAccountSummary, ProviderConnectionView, ProviderEventReceipt,
-    ProviderEventView, ProviderImportOutcome, ProviderImportWork, RecordBalanceObservation,
-    ReplaceProviderCredential, RequestSyncJob, ResourceMappingResult, RotateWebhookCredential,
-    SyncJobView, SyncPageView, WebhookReceiptOutcome, WebhookRotationResult,
+    IntakeProviderEvent, ProviderAccountSummary, ProviderConnectionView, ProviderEventConflictView,
+    ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
+    RecordBalanceObservation, ReplaceProviderCredential, RequestSyncJob, ResourceMappingResult,
+    RotateWebhookCredential, SyncJobView, SyncPageView, WebhookReceiptOutcome,
+    WebhookRotationResult,
 };
 use crate::contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId};
 use chrono::{DateTime, Utc};
@@ -97,11 +98,77 @@ pub(crate) trait WebhookSecrets: Send + Sync {
 }
 
 pub(crate) struct WebhookRegistrationWork {
+    pub(crate) user_id: UserId,
+    pub(crate) connection_id: ProviderConnectionId,
     pub(crate) provider: String,
     pub(crate) credential_generation: i64,
     pub(crate) webhook_version: i64,
     pub(crate) provider_envelope: CredentialEnvelope,
     pub(crate) webhook_envelope: CredentialEnvelope,
+    pub(crate) holder: String,
+    pub(crate) fencing_token: i64,
+    pub(crate) attempts: i32,
+}
+
+pub(crate) struct ValidationWork {
+    pub(crate) user_id: UserId,
+    pub(crate) connection_id: ProviderConnectionId,
+    pub(crate) provider: String,
+    pub(crate) generation: i64,
+    pub(crate) replacement: bool,
+    pub(crate) webhook_configured: bool,
+    pub(crate) envelope: CredentialEnvelope,
+    pub(crate) holder: String,
+    pub(crate) fencing_token: i64,
+    pub(crate) attempts: i32,
+}
+
+pub(crate) struct WebhookProvisioning {
+    pub(crate) version: i64,
+    pub(crate) envelope: CredentialEnvelope,
+    pub(crate) digest: [u8; 32],
+}
+
+pub(crate) struct WebhookReceiptWork {
+    pub(crate) receipt_id: uuid::Uuid,
+    pub(crate) user_id: UserId,
+    pub(crate) connection_id: ProviderConnectionId,
+    pub(crate) provider: String,
+    pub(crate) binding_generation: i64,
+    pub(crate) envelope: CredentialEnvelope,
+    pub(crate) holder: String,
+    pub(crate) fencing_token: i64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NormalizedProviderEvent {
+    pub(crate) external_event_id: String,
+    pub(crate) state: super::super::domain::ProviderTransactionState,
+    pub(crate) operation_money: Money,
+    pub(crate) original_money: Option<Money>,
+    pub(crate) description: String,
+    pub(crate) merchant_mcc: Option<i32>,
+    pub(crate) effective_at: DateTime<Utc>,
+    pub(crate) running_balance: Option<Money>,
+}
+
+pub(crate) struct StatementWork {
+    pub(crate) user_id: UserId,
+    pub(crate) connection_id: ProviderConnectionId,
+    pub(crate) sync_job_id: SyncJobId,
+    pub(crate) resource_id: ExternalResourceId,
+    pub(crate) external_resource_id: String,
+    pub(crate) resource_currency: CurrencyCode,
+    pub(crate) from: DateTime<Utc>,
+    pub(crate) to: DateTime<Utc>,
+    pub(crate) snapshot_to: DateTime<Utc>,
+    pub(crate) balance_comparable: bool,
+    pub(crate) provider: String,
+    pub(crate) credential_generation: i64,
+    pub(crate) provider_envelope: CredentialEnvelope,
+    pub(crate) holder: String,
+    pub(crate) fencing_token: i64,
+    pub(crate) attempts: i32,
 }
 
 pub(crate) struct ResourceBinding {
@@ -250,6 +317,9 @@ pub(crate) trait ProviderEventRepository: Send + Sync {
         &self,
         user_id: UserId,
         id: ProviderEventId,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
     ) -> Result<Option<ProviderImportWork>, BankingError>;
     async fn next_provider_import_candidate(
         &self,
@@ -258,6 +328,11 @@ pub(crate) trait ProviderEventRepository: Send + Sync {
         &self,
         outcome: ProviderImportOutcome,
     ) -> Result<ProviderImportOutcome, BankingError>;
+    async fn list_provider_event_conflicts(
+        &self,
+        user_id: UserId,
+        connection_id: ProviderConnectionId,
+    ) -> Result<Vec<ProviderEventConflictView>, BankingError>;
 }
 
 #[async_trait]
@@ -279,6 +354,86 @@ pub(crate) trait SyncJobRepository: Send + Sync {
         user_id: UserId,
         id: SyncJobId,
     ) -> Result<SyncJobView, BankingError>;
+    async fn list_sync_pages(
+        &self,
+        user_id: UserId,
+        id: SyncJobId,
+    ) -> Result<Vec<SyncPageView>, BankingError>;
+}
+
+#[async_trait]
+pub(crate) trait BankingWorkerRepository: Send + Sync {
+    async fn claim_validation(
+        &self,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
+    ) -> Result<Option<ValidationWork>, BankingError>;
+    async fn complete_validation_success(
+        &self,
+        work: &ValidationWork,
+        active_envelope: Option<&CredentialEnvelope>,
+        webhook: Option<&WebhookProvisioning>,
+        resources: &[NormalizedResource],
+        now: DateTime<Utc>,
+    ) -> Result<bool, BankingError>;
+    async fn complete_validation_failure(
+        &self,
+        work: &ValidationWork,
+        class: ProviderFailureClass,
+        next_retry_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, BankingError>;
+    async fn claim_webhook_registration(
+        &self,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
+    ) -> Result<Option<WebhookRegistrationWork>, BankingError>;
+    async fn complete_claimed_webhook_registration(
+        &self,
+        work: &WebhookRegistrationWork,
+        failure: Option<ProviderFailureClass>,
+        next_retry_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, BankingError>;
+    async fn claim_webhook_receipt(
+        &self,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
+    ) -> Result<Option<WebhookReceiptWork>, BankingError>;
+    async fn webhook_resource_currency(
+        &self,
+        work: &WebhookReceiptWork,
+        external_resource_id: &str,
+    ) -> Result<(CurrencyCode, bool), BankingError>;
+    async fn complete_webhook_receipt(
+        &self,
+        work: &WebhookReceiptWork,
+        event: Result<(String, NormalizedProviderEvent), &'static str>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, BankingError>;
+    async fn claim_statement_window(
+        &self,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
+    ) -> Result<Option<StatementWork>, BankingError>;
+    async fn complete_statement_window(
+        &self,
+        work: &StatementWork,
+        events: &[NormalizedProviderEvent],
+        now: DateTime<Utc>,
+    ) -> Result<u32, BankingError>;
+    async fn fail_statement_window(
+        &self,
+        work: &StatementWork,
+        class: ProviderFailureClass,
+        next_retry_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, BankingError>;
+    async fn finalize_one_sync_page(&self, now: DateTime<Utc>) -> Result<bool, BankingError>;
 }
 
 #[async_trait]
@@ -296,6 +451,9 @@ pub(crate) trait ObservationRepository: Send + Sync {
         &self,
         user_id: UserId,
         id: BalanceObservationId,
+        holder: &str,
+        now: DateTime<Utc>,
+        lease_seconds: i64,
     ) -> Result<Option<BalanceObservationDeliveryWork>, BankingError>;
     async fn next_balance_observation_candidate(
         &self,
@@ -325,6 +483,7 @@ pub(crate) trait WebhookRepository: Send + Sync {
         digest: &[u8; 32],
         body: &[u8],
         secrets: &dyn WebhookSecrets,
+        cipher: &dyn CredentialCipher,
     ) -> Result<WebhookReceiptOutcome, BankingError>;
     async fn webhook_registration_work(
         &self,
@@ -391,10 +550,10 @@ impl CredentialBinding {
         if provider.is_empty()
             || provider.len() > 100
             || generation < 1
-            || !matches!(
-                slot.as_str(),
-                "active" | "pending" | "webhook" | "provenance"
-            )
+            || !(matches!(slot.as_str(), "active" | "pending" | "webhook")
+                || slot
+                    .strip_prefix("provenance:")
+                    .is_some_and(|scope| !scope.is_empty() && scope.len() <= 64))
         {
             return Err(BankingError::InvalidValue("invalid credential binding"));
         }
@@ -427,6 +586,16 @@ pub trait CredentialCipher: Send + Sync {
         envelope: &CredentialEnvelope,
         binding: &CredentialBinding,
     ) -> Result<ProviderCredential, BankingError>;
+    fn encrypt_payload(
+        &self,
+        payload: &[u8],
+        binding: &CredentialBinding,
+    ) -> Result<CredentialEnvelope, BankingError>;
+    fn decrypt_payload(
+        &self,
+        envelope: &CredentialEnvelope,
+        binding: &CredentialBinding,
+    ) -> Result<Vec<u8>, BankingError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -441,8 +610,32 @@ pub enum ProviderFailureClass {
 pub enum ProviderFailure {
     #[error("provider request failed ({class:?}); sensitive response omitted")]
     Classified { class: ProviderFailureClass },
+    #[error("provider request failed ({class:?}); sensitive response omitted")]
+    ClassifiedWithRetry {
+        class: ProviderFailureClass,
+        retry_after_seconds: u64,
+    },
     #[error("provider response could not be normalized")]
     InvalidResponse,
+}
+
+impl ProviderFailure {
+    pub fn class(&self) -> ProviderFailureClass {
+        match self {
+            Self::Classified { class } | Self::ClassifiedWithRetry { class, .. } => *class,
+            Self::InvalidResponse => ProviderFailureClass::Terminal,
+        }
+    }
+
+    pub fn retry_after_seconds(&self) -> Option<u64> {
+        match self {
+            Self::ClassifiedWithRetry {
+                retry_after_seconds,
+                ..
+            } => Some(*retry_after_seconds),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -459,4 +652,36 @@ pub trait ProviderClient: Send + Sync {
             class: ProviderFailureClass::Terminal,
         })
     }
+
+    async fn statement(
+        &self,
+        _credential: &ProviderCredential,
+        _account: &str,
+        _from: DateTime<Utc>,
+        _to: DateTime<Utc>,
+    ) -> Result<String, ProviderFailure> {
+        Err(ProviderFailure::Classified {
+            class: ProviderFailureClass::Terminal,
+        })
+    }
+}
+
+pub(crate) trait ProviderNormalizer: Send + Sync {
+    fn client_info(
+        &self,
+        body: &str,
+        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+    ) -> Result<NormalizedSnapshot, BankingError>;
+    fn statement(
+        &self,
+        body: &str,
+        resource_currency: &CurrencyCode,
+        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+    ) -> Result<Vec<NormalizedProviderEvent>, BankingError>;
+    fn webhook(
+        &self,
+        body: &[u8],
+        resource_currency: &CurrencyCode,
+        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+    ) -> Result<(String, NormalizedProviderEvent), BankingError>;
 }
