@@ -95,28 +95,48 @@ pub struct ReverseSettlement {
 }
 
 #[derive(Clone, Debug)]
+pub struct JournalReversal {
+    pub original_journal_id: uuid::Uuid,
+    pub reversal_journal_id: uuid::Uuid,
+}
+
+#[derive(Clone, Debug)]
+pub struct WorkflowClaim {
+    pub process_name: String,
+    pub instance_key: String,
+    pub holder: String,
+    pub fencing_token: i64,
+    pub attempt: u32,
+    pub correlation_id: CorrelationId,
+}
+
+#[derive(Clone, Debug)]
 pub struct CompleteBillAccounting {
+    pub claim: Option<WorkflowClaim>,
     pub user_id: UserId,
     pub bill_id: BillSplitId,
     pub revision: u32,
     pub expected_version: BillVersion,
-    pub journal_id: Option<uuid::Uuid>,
+    pub journal_ids: Vec<uuid::Uuid>,
+    pub reversed_journals: Vec<JournalReversal>,
     pub correlation_id: CorrelationId,
     pub occurred_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
 pub struct CompleteBillCancellation {
+    pub claim: Option<WorkflowClaim>,
     pub user_id: UserId,
     pub bill_id: BillSplitId,
     pub expected_version: BillVersion,
-    pub reversal_journal_id: Option<uuid::Uuid>,
+    pub reversed_journals: Vec<JournalReversal>,
     pub correlation_id: CorrelationId,
     pub occurred_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug)]
 pub struct CompleteSettlementAccounting {
+    pub claim: Option<WorkflowClaim>,
     pub user_id: UserId,
     pub bill_id: BillSplitId,
     pub settlement_id: SettlementId,
@@ -128,10 +148,41 @@ pub struct CompleteSettlementAccounting {
 
 #[derive(Clone, Debug)]
 pub struct CompleteSettlementReversal {
+    pub claim: Option<WorkflowClaim>,
     pub user_id: UserId,
     pub bill_id: BillSplitId,
     pub settlement_id: SettlementId,
     pub reversal_journal_id: Option<uuid::Uuid>,
     pub correlation_id: CorrelationId,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RetrySharingWorkflow {
+    pub claim: WorkflowClaim,
+    pub error: String,
+    pub retry_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FailBillAccounting {
+    pub claim: WorkflowClaim,
+    pub user_id: UserId,
+    pub bill_id: BillSplitId,
+    pub revision: u32,
+    pub expected_version: BillVersion,
+    pub reversed_journals: Vec<JournalReversal>,
+    pub error: String,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FailSettlementAccounting {
+    pub claim: WorkflowClaim,
+    pub user_id: UserId,
+    pub bill_id: BillSplitId,
+    pub settlement_id: SettlementId,
+    pub expected_version: SettlementVersion,
+    pub error: String,
     pub occurred_at: DateTime<Utc>,
 }

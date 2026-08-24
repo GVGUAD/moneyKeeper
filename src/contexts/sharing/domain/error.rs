@@ -41,6 +41,10 @@ pub enum SharingError {
     OverSettlement,
     #[error("settlement must be positive")]
     InvalidSettlement,
+    #[error("bill accounting validation failed: {0}")]
+    BillAccountingValidation(String),
+    #[error("settlement accounting validation failed: {0}")]
+    SettlementAccountingValidation(String),
     #[error("settlement has already been reversed")]
     AlreadyReversed,
     #[error("obligation cannot have the same debtor and creditor")]

@@ -254,6 +254,7 @@ pub fn production(
     let event_consumers = Arc::new(super::runtime::event_consumers(pool));
     let loan_accounting = Arc::new(super::runtime::loan_accounting_workers(pool));
     let portfolio_settlement = Arc::new(super::runtime::portfolio_settlement_runner(pool));
+    let sharing_workflows = Arc::new(super::runtime::sharing_workflow_runner(contexts));
     let outbox = Arc::new(OutboxDispatcher::new(
         pool,
         "finance-v2-outbox",
@@ -310,12 +311,14 @@ pub fn production(
         WorkerDefinition::new("process-manager-retries", interval, move || {
             let loan_accounting = Arc::clone(&loan_accounting);
             let portfolio_settlement = Arc::clone(&portfolio_settlement);
+            let sharing_workflows = Arc::clone(&sharing_workflows);
             async move {
                 loan_accounting.run_opening_once().await?;
                 loan_accounting.run_accounting_once().await?;
                 loan_accounting.run_reversal_once().await?;
                 loan_accounting.run_replacement_once().await?;
                 portfolio_settlement.run_once().await?;
+                sharing_workflows.run_once().await?;
                 Ok(())
             }
         }),

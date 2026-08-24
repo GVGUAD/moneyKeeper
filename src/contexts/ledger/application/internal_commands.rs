@@ -10,8 +10,9 @@ use crate::shared_kernel::Clock;
 
 use super::super::{
     domain::{
-        Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount,
-        LedgerAccountId, LedgerError, Posting, PostingId, PostingPurpose, SystemAccountRole,
+        AccountNature, Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource,
+        LedgerAccount, LedgerAccountId, LedgerError, Posting, PostingId, PostingPurpose,
+        SystemAccountRole,
     },
     public::{
         AccountEffect, CancelOrReverseCashControlSettlement, CashFlowDirection,
@@ -30,7 +31,7 @@ use super::{
     commit::commit_journal,
     ports::{
         CommandReceiptStore, JournalStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
-        TransactionControl,
+        ReclassificationDetail, ReclassificationStore, TransactionControl,
     },
 };
 
@@ -211,6 +212,7 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
             self.clock.as_ref(),
             command.metadata,
             "record_interest_or_fee_accrual",
+            JournalSource::System,
             command.accrual_control_account_id,
             control_sign,
             role,
@@ -224,20 +226,20 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
         &self,
         command: ReclassifyExpenseToReceivableOrPayable,
     ) -> Result<InternalAccountingResult, LedgerError> {
-        let role = SystemAccountRole::UncategorizedExpense;
-        post_with_system(
+        if command.direction != ControlDirection::Receivable {
+            return Err(LedgerError::invalid_state(
+                "selected expense reclassification only supports receivables",
+            ));
+        }
+        reclassify_selected_transaction(
             &self.uow,
             self.clock.as_ref(),
             command.metadata,
             "reclassify_expense",
+            command.original_expense_journal_id,
             command.control_account_id,
-            if command.direction == ControlDirection::Receivable {
-                1
-            } else {
-                -1
-            },
-            role,
             command.amount,
+            SelectedTransactionKind::ExpenseToReceivable,
             "Reclassify expense",
         )
         .await
@@ -248,19 +250,19 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
         &self,
         command: ReclassifyImportedSettlement,
     ) -> Result<InternalAccountingResult, LedgerError> {
-        let (control_sign, role) = match command.direction {
-            ControlDirection::Receivable => (-1, SystemAccountRole::UncategorizedIncome),
-            ControlDirection::Payable => (1, SystemAccountRole::UncategorizedExpense),
+        let kind = match command.direction {
+            ControlDirection::Receivable => SelectedTransactionKind::IncomeToReceivable,
+            ControlDirection::Payable => SelectedTransactionKind::ExpenseToPayable,
         };
-        post_with_system(
+        reclassify_selected_transaction(
             &self.uow,
             self.clock.as_ref(),
             command.metadata,
             "reclassify_imported_settlement",
+            command.imported_journal_entry_id,
             command.control_account_id,
-            control_sign,
-            role,
             command.amount,
+            kind,
             "Reclassify imported settlement",
         )
         .await
@@ -279,6 +281,7 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
             self.clock.as_ref(),
             command.metadata,
             "write_off_control",
+            JournalSource::System,
             command.control_account_id,
             control_sign,
             role,
@@ -762,6 +765,7 @@ async fn import_provider<U: LedgerUnitOfWork, Q, P>(
         facade.clock.as_ref(),
         command.metadata,
         "import_provider_transaction",
+        JournalSource::Import,
         command.user_account_id,
         sign,
         role,
@@ -807,6 +811,238 @@ async fn post_by_control_nature<U: LedgerUnitOfWork>(
         scope,
     )
     .await
+}
+
+#[derive(Clone, Copy)]
+enum SelectedTransactionKind {
+    ExpenseToReceivable,
+    IncomeToReceivable,
+    ExpenseToPayable,
+}
+
+impl SelectedTransactionKind {
+    const fn source_nature(self) -> AccountNature {
+        match self {
+            Self::ExpenseToReceivable | Self::ExpenseToPayable => AccountNature::Expense,
+            Self::IncomeToReceivable => AccountNature::Income,
+        }
+    }
+
+    const fn source_nature_name(self) -> &'static str {
+        match self.source_nature() {
+            AccountNature::Expense => "expense",
+            AccountNature::Income => "income",
+            _ => unreachable!(),
+        }
+    }
+
+    const fn system_role(self) -> SystemAccountRole {
+        match self.source_nature() {
+            AccountNature::Expense => SystemAccountRole::UncategorizedExpense,
+            AccountNature::Income => SystemAccountRole::UncategorizedIncome,
+            _ => unreachable!(),
+        }
+    }
+
+    const fn control_role(self) -> ControlAccountRole {
+        match self {
+            Self::ExpenseToReceivable | Self::IncomeToReceivable => {
+                ControlAccountRole::ExternalReceivable
+            }
+            Self::ExpenseToPayable => ControlAccountRole::ExternalPayable,
+        }
+    }
+
+    const fn control_sign(self) -> i32 {
+        match self {
+            Self::ExpenseToReceivable => 1,
+            Self::IncomeToReceivable => -1,
+            Self::ExpenseToPayable => 1,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reclassify_selected_transaction<U: LedgerUnitOfWork>(
+    uow: &U,
+    clock: &dyn Clock,
+    metadata: super::super::public::InternalCommandMetadata,
+    scope: &'static str,
+    source_journal_id: JournalEntryId,
+    control_account_id: LedgerAccountId,
+    amount: crate::shared_kernel::Money,
+    kind: SelectedTransactionKind,
+    description: &str,
+) -> Result<InternalAccountingResult, LedgerError> {
+    if amount.amount().is_sign_negative() || amount.is_zero() {
+        return Err(LedgerError::invalid_money(
+            "reclassification amount must be positive",
+        ));
+    }
+    let hash = digest(&json!({
+        "source": metadata.source,
+        "source_journal_id": source_journal_id,
+        "control_account_id": control_account_id,
+        "amount": amount,
+        "kind": kind.source_nature_name(),
+        "occurred_at": metadata.occurred_at,
+    }))?;
+    let mut tx = uow.begin().await?;
+    if let Some(mut result) = replay::<_, InternalAccountingResult>(
+        &mut tx,
+        metadata.user_id,
+        scope,
+        &metadata.idempotency_key,
+        &hash,
+    )
+    .await?
+    {
+        result.replayed = true;
+        tx.rollback().await?;
+        return Ok(result);
+    }
+
+    let source = tx
+        .find_journal(metadata.user_id, source_journal_id, true)
+        .await?
+        .ok_or_else(LedgerError::not_found)?;
+    if !matches!(source.source, JournalSource::Import | JournalSource::Manual)
+        || source.purpose != PostingPurpose::Ordinary
+        || source.reversed
+        || source.replaced
+    {
+        return Err(LedgerError::invalid_state(
+            "selected transaction is not an active imported or manual transaction",
+        ));
+    }
+    let source_nature = kind.source_nature();
+    let eligible: Decimal = source
+        .postings
+        .iter()
+        .filter(|posting| {
+            posting.currency() == amount.currency()
+                && posting.account_nature() == source_nature
+                && match source_nature {
+                    AccountNature::Expense => posting.signed_amount().is_sign_positive(),
+                    AccountNature::Income => posting.signed_amount().is_sign_negative(),
+                    _ => false,
+                }
+        })
+        .map(|posting| posting.signed_amount().abs())
+        .sum();
+    let used = tx
+        .active_reclassified_amount(
+            metadata.user_id,
+            source_journal_id,
+            kind.source_nature_name(),
+        )
+        .await?;
+    if eligible.is_zero() || used + amount.amount() > eligible {
+        return Err(LedgerError::invalid_state(
+            "selected transaction has insufficient unallocated amount",
+        ));
+    }
+
+    let control = tx
+        .find_account(metadata.user_id, control_account_id, true)
+        .await?
+        .ok_or_else(LedgerError::not_found)?;
+    if control.system_role() != Some(system_role(kind.control_role()))
+        || control.currency() != amount.currency()
+    {
+        return Err(LedgerError::invalid_account_kind());
+    }
+    let system = match tx
+        .find_system_account(
+            metadata.user_id,
+            amount.currency(),
+            kind.system_role(),
+            None,
+        )
+        .await?
+    {
+        Some(value) => value,
+        None => {
+            let value = LedgerAccount::open_system(
+                LedgerAccountId::generate(),
+                metadata.user_id,
+                amount.currency().clone(),
+                kind.system_role(),
+                clock,
+            );
+            tx.insert_account(&value).await?;
+            value
+        }
+    };
+    let control_sign = Decimal::from(kind.control_sign());
+    let journal = JournalEntry::post(
+        JournalEntryId::generate(),
+        metadata.user_id,
+        description,
+        PostingPurpose::Correction,
+        JournalSource::Correction,
+        Actor::External {
+            source_kind: metadata.source.source_kind().to_owned(),
+            source_reference: metadata.source.item_id().to_owned(),
+        },
+        metadata.occurred_at,
+        clock.now(),
+        metadata.correlation_id,
+        metadata.causation_id,
+        metadata.idempotency_key.clone(),
+        JournalRelations::correction_of(source_journal_id),
+        vec![
+            Posting::for_account(
+                PostingId::generate(),
+                &control,
+                amount.amount() * control_sign,
+                PostingPurpose::Correction,
+            )?,
+            Posting::for_account(
+                PostingId::generate(),
+                &system,
+                -(amount.amount() * control_sign),
+                PostingPurpose::Correction,
+            )?,
+        ],
+    )?;
+    commit_journal(
+        &mut tx,
+        scope,
+        &journal,
+        None,
+        "ledger.internal-accounting-command-posted.v1",
+    )
+    .await?;
+    tx.insert_reclassification_detail(ReclassificationDetail {
+        journal_entry_id: journal.id(),
+        user_id: metadata.user_id,
+        source_journal_entry_id: source_journal_id,
+        source_nature: kind.source_nature_name(),
+        amount: amount.amount(),
+        currency: amount.currency(),
+    })
+    .await?;
+    let result = accounting_result(
+        &mut tx,
+        metadata.user_id,
+        metadata.correlation_id,
+        &journal,
+        &[control, system],
+    )
+    .await?;
+    store(
+        &mut tx,
+        metadata.user_id,
+        scope,
+        &metadata.idempotency_key,
+        &hash,
+        &result,
+        clock.now(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -943,6 +1179,7 @@ async fn post_with_system<U: LedgerUnitOfWork>(
     clock: &dyn Clock,
     metadata: super::super::public::InternalCommandMetadata,
     scope: &str,
+    journal_source: JournalSource,
     account_id: LedgerAccountId,
     account_sign: i32,
     role: SystemAccountRole,
@@ -1001,7 +1238,7 @@ async fn post_with_system<U: LedgerUnitOfWork>(
         metadata.user_id,
         description,
         PostingPurpose::Ordinary,
-        JournalSource::System,
+        journal_source,
         Actor::External {
             source_kind: metadata.source.source_kind().to_owned(),
             source_reference: metadata.source.item_id().to_owned(),

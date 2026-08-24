@@ -1,8 +1,9 @@
 //! Stable Sharing read models.
 
 use crate::contexts::sharing::domain::{
-    BillSplitId, BillStatus, BillVersion, Contact, ContactId, ContactStatus, ContactVersion,
-    SettlementId, SettlementStatus, SettlementVersion,
+    BillSplit, BillSplitId, BillStatus, BillVersion, Contact, ContactId, ContactStatus,
+    ContactVersion, Participant, Settlement, SettlementEvidence, SettlementId, SettlementStatus,
+    SettlementVersion,
 };
 use crate::shared_kernel::{CorrelationId, CurrencyCode, UserId};
 use chrono::{DateTime, Utc};
@@ -54,9 +55,15 @@ pub struct BillView {
     pub total: Decimal,
     pub currency: CurrencyCode,
     pub current_revision: u32,
+    #[serde(default)]
+    pub accounted_revision: Option<u32>,
+    #[serde(default)]
+    pub accounting_error: Option<String>,
     pub status: BillStatus,
     pub version: BillVersion,
     pub active_settlements: u32,
+    #[serde(default)]
+    pub fully_settled: bool,
     pub allocations: serde_json::Value,
 }
 
@@ -71,9 +78,19 @@ pub struct BillResult {
 pub struct SettlementView {
     pub id: SettlementId,
     pub bill_id: BillSplitId,
+    #[serde(default)]
+    pub debtor: Option<Participant>,
+    #[serde(default)]
+    pub creditor: Option<Participant>,
     #[serde(with = "rust_decimal::serde::str")]
     pub amount: Decimal,
     pub currency: CurrencyCode,
+    #[serde(default)]
+    pub evidence: Option<SettlementEvidence>,
+    #[serde(default)]
+    pub occurred_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub accounting_journal_id: Option<uuid::Uuid>,
     pub status: SettlementStatus,
     pub version: SettlementVersion,
     pub process: ProcessView,
@@ -82,4 +99,28 @@ pub struct SettlementView {
 pub struct SettlementResult {
     pub settlement: SettlementView,
     pub replayed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum SharingWorkflowWork {
+    BillAccounting {
+        claim: super::commands::WorkflowClaim,
+        bill: BillSplit,
+        journals_to_reverse: Vec<uuid::Uuid>,
+    },
+    BillCancellation {
+        claim: super::commands::WorkflowClaim,
+        bill: BillSplit,
+        journals_to_reverse: Vec<uuid::Uuid>,
+    },
+    SettlementAccounting {
+        claim: super::commands::WorkflowClaim,
+        settlement: Settlement,
+    },
+    SettlementReversal {
+        claim: super::commands::WorkflowClaim,
+        settlement: Settlement,
+        accounting_journal_id: Option<uuid::Uuid>,
+        reason: String,
+    },
 }

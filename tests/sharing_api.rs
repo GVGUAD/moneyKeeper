@@ -17,6 +17,7 @@ fn isolated_router_and_openapi_publish_exact_sharing_paths() {
         ("GET", "/bill-splits/{id}"),
         ("POST", "/bill-splits/{id}/revisions"),
         ("POST", "/bill-splits/{id}/settlements"),
+        ("GET", "/bill-splits/{id}/settlements"),
         (
             "POST",
             "/bill-splits/{id}/settlements/{settlement_id}/reversal",

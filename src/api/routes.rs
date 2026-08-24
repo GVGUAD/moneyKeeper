@@ -236,6 +236,7 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/bill-splits/{id}"),
     ("POST", "/bill-splits/{id}/revisions"),
     ("POST", "/bill-splits/{id}/settlements"),
+    ("GET", "/bill-splits/{id}/settlements"),
     (
         "POST",
         "/bill-splits/{id}/settlements/{settlement_id}/reversal",

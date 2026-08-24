@@ -113,6 +113,17 @@ impl JournalSource {
             Self::Reconciliation => "reconciliation",
         }
     }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "manual" => Ok(Self::Manual),
+            "import" => Ok(Self::Import),
+            "system" => Ok(Self::System),
+            "correction" => Ok(Self::Correction),
+            "reconciliation" => Ok(Self::Reconciliation),
+            _ => Err(LedgerError::persistence("stored journal source is invalid")),
+        }
+    }
 }
 
 /// Immutable links from a new journal to prior accounting facts.

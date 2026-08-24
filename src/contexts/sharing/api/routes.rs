@@ -32,7 +32,7 @@ pub(crate) fn router(sharing: SharingFacade, currencies: CurrencyCatalogFacade) 
         .route("/bill-splits/{id}/revisions", post(handlers::revise_bill))
         .route(
             "/bill-splits/{id}/settlements",
-            post(handlers::create_settlement),
+            post(handlers::create_settlement).get(handlers::list_settlements),
         )
         .route(
             "/bill-splits/{id}/settlements/{settlement_id}/reversal",

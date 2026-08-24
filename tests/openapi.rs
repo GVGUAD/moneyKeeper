@@ -160,7 +160,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 109);
+    assert_eq!(operation_count, 110);
 }
 
 #[test]

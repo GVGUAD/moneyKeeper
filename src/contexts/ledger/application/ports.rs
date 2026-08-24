@@ -11,9 +11,9 @@ use crate::integration::IntegrationEvent;
 use crate::shared_kernel::{CurrencyCode, EventId, IdempotencyKey, UserId};
 
 use super::super::domain::{
-    JournalEntry, JournalEntryId, LedgerAccount, LedgerAccountId, LedgerError, Posting,
-    ReconciliationCase, ReconciliationCaseId, SourceReference, SystemAccountRole,
-    TransactionAnnotation,
+    JournalEntry, JournalEntryId, JournalSource, LedgerAccount, LedgerAccountId, LedgerError,
+    Posting, PostingPurpose, ReconciliationCase, ReconciliationCaseId, SourceReference,
+    SystemAccountRole, TransactionAnnotation,
 };
 use super::super::public::{
     AccountView, ActivityCursor, JournalView, ProjectionMismatch, ReconciliationView,
@@ -93,6 +93,7 @@ pub(crate) struct AuditRecord {
 pub(crate) trait LedgerUnitOfWork {
     type Tx<'a>: LedgerAccountStore
         + JournalStore
+        + ReclassificationStore
         + AnnotationStore
         + CorrectionStore
         + ReconciliationStore
@@ -178,6 +179,10 @@ pub(crate) trait AnnotationStore {
 #[derive(Clone, Debug)]
 pub(crate) struct JournalSnapshot {
     pub id: JournalEntryId,
+    pub source: JournalSource,
+    pub purpose: PostingPurpose,
+    pub reversed: bool,
+    pub replaced: bool,
     pub postings: Vec<Posting>,
 }
 
@@ -229,6 +234,31 @@ pub(crate) trait JournalStore {
         command_name: &str,
         journal: &JournalEntry,
     ) -> Result<i64, LedgerError>;
+}
+
+/// Immutable details and capacity checks for corrections linked to imported facts.
+pub(crate) struct ReclassificationDetail<'a> {
+    pub journal_entry_id: JournalEntryId,
+    pub user_id: UserId,
+    pub source_journal_entry_id: JournalEntryId,
+    pub source_nature: &'static str,
+    pub amount: Decimal,
+    pub currency: &'a CurrencyCode,
+}
+
+#[async_trait]
+pub(crate) trait ReclassificationStore {
+    async fn active_reclassified_amount(
+        &mut self,
+        user_id: UserId,
+        source_journal_entry_id: JournalEntryId,
+        source_nature: &'static str,
+    ) -> Result<Decimal, LedgerError>;
+
+    async fn insert_reclassification_detail(
+        &mut self,
+        detail: ReclassificationDetail<'_>,
+    ) -> Result<(), LedgerError>;
 }
 
 /// Immutable correction-detail persistence.

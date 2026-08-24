@@ -38,6 +38,11 @@ pub(crate) trait BillRepository: Send + Sync {
 
 #[async_trait]
 pub(crate) trait SettlementRepository: Send + Sync {
+    async fn settlements(
+        &self,
+        user_id: UserId,
+        bill_id: BillSplitId,
+    ) -> Result<Vec<SettlementView>, SharingError>;
     async fn create_settlement(
         &self,
         command: CreateSettlement,
@@ -50,6 +55,19 @@ pub(crate) trait SettlementRepository: Send + Sync {
 
 #[async_trait]
 pub(crate) trait AccountingWorkflowRepository: Send + Sync {
+    async fn claim_next_work(
+        &self,
+        holder: &str,
+    ) -> Result<Option<SharingWorkflowWork>, SharingError>;
+    async fn retry_work(&self, command: RetrySharingWorkflow) -> Result<(), SharingError>;
+    async fn fail_bill_accounting(
+        &self,
+        command: FailBillAccounting,
+    ) -> Result<BillView, SharingError>;
+    async fn fail_settlement_accounting(
+        &self,
+        command: FailSettlementAccounting,
+    ) -> Result<SettlementView, SharingError>;
     async fn complete_bill_accounting(
         &self,
         command: CompleteBillAccounting,

@@ -536,6 +536,33 @@ pub fn portfolio_settlement_runner(pool: &VerifiedDatabase) -> PortfolioSettleme
     }
 }
 
+/// Sharing bill and settlement workflows coordinated through public contracts.
+pub struct SharingWorkflowRunner {
+    worker: crate::integration::process_managers::sharing_workflow::SharingWorkflowWorker,
+}
+
+impl SharingWorkflowRunner {
+    pub async fn run_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.worker.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed,
+            records: u32::from(report.posted),
+            replayed: 0,
+            retry_scheduled: report.retry_due,
+            fenced: false,
+        })
+    }
+}
+
+pub fn sharing_workflow_runner(contexts: &ContextFacades) -> SharingWorkflowRunner {
+    SharingWorkflowRunner {
+        worker: crate::integration::process_managers::sharing_workflow::SharingWorkflowWorker::new(
+            contexts.sharing.clone(),
+            contexts.ledger.clone(),
+        ),
+    }
+}
+
 /// Banking accounting and reconciliation retries coordinated only through
 /// public Banking and Ledger contracts.
 pub struct BankingWorkers {

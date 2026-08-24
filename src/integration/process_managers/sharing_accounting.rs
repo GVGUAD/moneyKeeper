@@ -107,17 +107,120 @@ pub struct SharingAccountingCoordinator {
     ledger: LedgerFacade,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BillAccountingOutcome {
+    pub journal_ids: Vec<JournalEntryId>,
+    pub replayed: bool,
+}
+
 impl SharingAccountingCoordinator {
     pub fn new(ledger: LedgerFacade) -> Self {
         Self { ledger }
     }
 
+    pub async fn preflight_manual_revision(&self, bill: &BillSplit) -> Result<(), SharingError> {
+        let revision = bill.current_revision();
+        AccountingRecipe::from_revision(revision)?;
+        for contribution in &revision.contributions {
+            if contribution.participant != Participant::CurrentUser {
+                continue;
+            }
+            match &contribution.evidence {
+                ContributionEvidence::Manual { account_id } => {
+                    let account = self
+                        .ledger
+                        .get_account(bill.user_id(), LedgerAccountId::new(account_id.into_uuid()))
+                        .await
+                        .map_err(ledger_error)?;
+                    if account.currency != *revision.total.currency() {
+                        return Err(SharingError::BillAccountingValidation(
+                            "manual contribution account currency does not match the bill".into(),
+                        ));
+                    }
+                    if account.lifecycle == AccountLifecycle::Archived {
+                        return Err(SharingError::BillAccountingValidation(
+                            "manual contribution account is archived".into(),
+                        ));
+                    }
+                    if account.authority == AccountAuthority::System {
+                        return Err(SharingError::BillAccountingValidation(
+                            "manual contribution account must be user-managed".into(),
+                        ));
+                    }
+                }
+                ContributionEvidence::ExistingJournals { allocations } => {
+                    for value in allocations {
+                        let journal = self
+                            .ledger
+                            .get_journal(
+                                bill.user_id(),
+                                JournalEntryId::new(value.journal_id.into_uuid()),
+                            )
+                            .await
+                            .map_err(ledger_error)?;
+                        let eligible: Decimal = journal
+                            .postings
+                            .iter()
+                            .filter(|posting| {
+                                posting.currency == *revision.total.currency()
+                                    && posting.account_nature == AccountNature::Expense
+                                    && posting.signed_amount.is_sign_positive()
+                            })
+                            .map(|posting| posting.signed_amount)
+                            .sum();
+                        if !matches!(
+                            journal.source,
+                            JournalSource::Import | JournalSource::Manual
+                        ) {
+                            return Err(SharingError::BillAccountingValidation(
+                                "selected journal is not an imported or manual transaction".into(),
+                            ));
+                        }
+                        if journal.purpose != PostingPurpose::Ordinary {
+                            return Err(SharingError::BillAccountingValidation(
+                                "selected journal is not an ordinary transaction".into(),
+                            ));
+                        }
+                        if journal.reversed_by_journal_id.is_some() {
+                            return Err(SharingError::BillAccountingValidation(
+                                "selected journal has been reversed".into(),
+                            ));
+                        }
+                        if journal.replaced_by_journal_id.is_some() {
+                            return Err(SharingError::BillAccountingValidation(
+                                "selected journal has been replaced".into(),
+                            ));
+                        }
+                        if eligible.is_zero() {
+                            return Err(SharingError::BillAccountingValidation(
+                                "selected journal is not an outgoing expense in the bill currency"
+                                    .into(),
+                            ));
+                        }
+                        if eligible < value.amount.amount() {
+                            return Err(SharingError::BillAccountingValidation(
+                                "selected journal allocation exceeds its expense amount".into(),
+                            ));
+                        }
+                    }
+                }
+                ContributionEvidence::External => {
+                    return Err(SharingError::BillAccountingValidation(
+                        "current-user contributions require manual-account or journal evidence"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn account_manual_revision(
         &self,
         bill: &BillSplit,
-    ) -> Result<InternalAccountingResult, SharingError> {
+    ) -> Result<BillAccountingOutcome, SharingError> {
         let revision = bill.current_revision();
-        let recipe = AccountingRecipe::from_revision(revision)?;
+        self.preflight_manual_revision(bill).await?;
         let mut cash = Vec::new();
         let mut existing_journals = Vec::new();
         for contribution in &revision.contributions {
@@ -125,15 +228,19 @@ impl SharingAccountingCoordinator {
                 continue;
             }
             match &contribution.evidence {
-                ContributionEvidence::Manual { account_id } => cash.push(CashContribution {
-                    account_id: LedgerAccountId::new(account_id.into_uuid()),
-                    amount: contribution.amount.clone(),
-                }),
-                ContributionEvidence::ExistingJournals { allocations } => existing_journals.extend(
-                    allocations
-                        .iter()
-                        .map(|value| JournalEntryId::new(value.journal_id.into_uuid())),
-                ),
+                ContributionEvidence::Manual { account_id } => {
+                    let account_id = LedgerAccountId::new(account_id.into_uuid());
+                    cash.push(CashContribution {
+                        account_id,
+                        amount: contribution.amount.clone(),
+                    });
+                }
+                ContributionEvidence::ExistingJournals { allocations } => {
+                    for value in allocations {
+                        let journal_id = JournalEntryId::new(value.journal_id.into_uuid());
+                        existing_journals.push((journal_id, value.amount.clone()));
+                    }
+                }
                 ContributionEvidence::External => return Err(SharingError::InvalidContribution),
             }
         }
@@ -165,6 +272,7 @@ impl SharingAccountingCoordinator {
                         bill.id(),
                         revision.number,
                         revision.accounting_correlation_id,
+                        revision.occurred_at,
                         &format!("control:{contact}:{role:?}"),
                     )?,
                     role,
@@ -178,18 +286,22 @@ impl SharingAccountingCoordinator {
                 amount: obligation.amount.clone(),
             });
         }
-        if let Some(original_expense_journal_id) = existing_journals.first().copied() {
-            let mut combined = empty_result(revision.accounting_correlation_id);
-            for (index, (direction, control)) in receivables
-                .iter()
-                .map(|value| (ControlDirection::Receivable, value))
-                .chain(
-                    payables
-                        .iter()
-                        .map(|value| (ControlDirection::Payable, value)),
-                )
-                .enumerate()
-            {
+        let mut outcome = BillAccountingOutcome::default();
+        let mut receivable_index = 0usize;
+        let mut receivable_remaining: Vec<Decimal> = receivables
+            .iter()
+            .map(|value| value.amount.amount())
+            .collect();
+        for (source_index, (source_journal_id, source_amount)) in
+            existing_journals.iter().enumerate()
+        {
+            let mut source_remaining = source_amount.amount();
+            while source_remaining > Decimal::ZERO && receivable_index < receivables.len() {
+                if receivable_remaining[receivable_index].is_zero() {
+                    receivable_index += 1;
+                    continue;
+                }
+                let chunk = source_remaining.min(receivable_remaining[receivable_index]);
                 let result = self
                     .ledger
                     .reclassify_expense_to_receivable_or_payable(
@@ -199,25 +311,59 @@ impl SharingAccountingCoordinator {
                                 bill.id(),
                                 revision.number,
                                 revision.accounting_correlation_id,
-                                &format!("reclassify:{direction:?}:{index}"),
+                                revision.occurred_at,
+                                &format!("reclassify:{source_index}:{receivable_index}"),
                             )?,
-                            original_expense_journal_id,
-                            control_account_id: control.account_id,
-                            amount: control.amount.clone(),
-                            direction,
+                            original_expense_journal_id: *source_journal_id,
+                            control_account_id: receivables[receivable_index].account_id,
+                            amount: Money::new(
+                                chunk,
+                                revision.total.currency().clone(),
+                                revision.total.amount().scale(),
+                            )?,
+                            direction: ControlDirection::Receivable,
                         },
                     )
                     .await
                     .map_err(ledger_error)?;
-                merge_result(&mut combined, result);
+                if let Some(journal_id) = result.journal_entry_id {
+                    outcome.journal_ids.push(journal_id);
+                }
+                outcome.replayed |= result.replayed;
+                source_remaining -= chunk;
+                receivable_remaining[receivable_index] -= chunk;
             }
-            if cash.is_empty() {
-                return Ok(combined);
-            }
-            let manual_expense = cash.iter().try_fold(Decimal::ZERO, |sum, value| {
-                sum.checked_add(value.amount.amount())
-                    .ok_or(SharingError::ArithmeticOverflow)
-            })?;
+        }
+        let remaining_receivables = receivables
+            .into_iter()
+            .zip(receivable_remaining)
+            .filter(|(_, amount)| *amount > Decimal::ZERO)
+            .map(|(control, amount)| {
+                Ok(ControlAmount {
+                    account_id: control.account_id,
+                    amount: Money::new(
+                        amount,
+                        revision.total.currency().clone(),
+                        revision.total.amount().scale(),
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, SharingError>>()?;
+        let cash_total: Decimal = cash.iter().map(|value| value.amount.amount()).sum();
+        let receivable_total: Decimal = remaining_receivables
+            .iter()
+            .map(|value| value.amount.amount())
+            .sum();
+        let payable_total: Decimal = payables.iter().map(|value| value.amount.amount()).sum();
+        let expense = cash_total
+            .checked_sub(receivable_total)
+            .and_then(|value| value.checked_add(payable_total))
+            .ok_or(SharingError::ArithmeticOverflow)?;
+        if !cash.is_empty()
+            || !remaining_receivables.is_empty()
+            || !payables.is_empty()
+            || expense > Decimal::ZERO
+        {
             let result = self
                 .ledger
                 .record_expense_and_control_balances(RecordExpenseAndControlBalances {
@@ -226,44 +372,27 @@ impl SharingAccountingCoordinator {
                         bill.id(),
                         revision.number,
                         revision.accounting_correlation_id,
-                        "manual-remainder",
+                        revision.occurred_at,
+                        "manual-and-payable",
                     )?,
                     cash_contributions: cash,
                     expense: Money::new(
-                        manual_expense,
+                        expense,
                         revision.total.currency().clone(),
                         revision.total.amount().scale(),
                     )?,
-                    receivables: vec![],
-                    payables: vec![],
+                    receivables: remaining_receivables,
+                    payables,
                     description: revision.title.clone(),
                 })
                 .await
                 .map_err(ledger_error)?;
-            merge_result(&mut combined, result);
-            return Ok(combined);
+            if let Some(journal_id) = result.journal_entry_id {
+                outcome.journal_ids.push(journal_id);
+            }
+            outcome.replayed |= result.replayed;
         }
-        self.ledger
-            .record_expense_and_control_balances(RecordExpenseAndControlBalances {
-                metadata: ledger_metadata(
-                    bill.user_id(),
-                    bill.id(),
-                    revision.number,
-                    revision.accounting_correlation_id,
-                    "account",
-                )?,
-                cash_contributions: cash,
-                expense: Money::new(
-                    recipe.share,
-                    revision.total.currency().clone(),
-                    revision.total.amount().scale(),
-                )?,
-                receivables,
-                payables,
-                description: revision.title.clone(),
-            })
-            .await
-            .map_err(ledger_error)
+        Ok(outcome)
     }
 
     pub async fn reverse_revision(
@@ -279,9 +408,10 @@ impl SharingAccountingCoordinator {
                 journal_entry_id: journal_id,
                 reason,
                 idempotency_key: IdempotencyKey::new(format!(
-                    "sharing-bill-accounting-reversal:{}:{}",
+                    "sharing-bill-accounting-reversal:{}:{}:{}",
                     bill.id(),
-                    revision.number
+                    revision.number,
+                    journal_id,
                 ))
                 .map_err(|error| SharingError::Persistence(error.to_string()))?,
                 correlation_id: revision.accounting_correlation_id,
@@ -293,32 +423,12 @@ impl SharingAccountingCoordinator {
     }
 }
 
-fn empty_result(correlation_id: CorrelationId) -> InternalAccountingResult {
-    InternalAccountingResult {
-        journal_entry_id: None,
-        effects: vec![],
-        projection_versions: vec![],
-        replayed: false,
-        cancelled: false,
-        outbox_correlation_id: correlation_id,
-    }
-}
-
-fn merge_result(target: &mut InternalAccountingResult, source: InternalAccountingResult) {
-    target.journal_entry_id = source.journal_entry_id.or(target.journal_entry_id);
-    target.effects.extend(source.effects);
-    target
-        .projection_versions
-        .extend(source.projection_versions);
-    target.replayed |= source.replayed;
-    target.cancelled |= source.cancelled;
-}
-
 fn ledger_metadata(
     user: UserId,
     bill: BillSplitId,
     revision: u32,
     correlation: CorrelationId,
+    occurred_at: chrono::DateTime<chrono::Utc>,
     action: &str,
 ) -> Result<InternalCommandMetadata, SharingError> {
     Ok(InternalCommandMetadata {
@@ -335,9 +445,13 @@ fn ledger_metadata(
             "sharing-bill-accounting:{bill}:{revision}:{action}"
         ))
         .map_err(|error| SharingError::Persistence(error.to_string()))?,
-        occurred_at: chrono::Utc::now(),
+        occurred_at,
     })
 }
 fn ledger_error(error: LedgerError) -> SharingError {
-    SharingError::Persistence(error.to_string())
+    if error.is_persistence() || error.is_version_conflict() {
+        SharingError::Persistence(error.to_string())
+    } else {
+        SharingError::BillAccountingValidation(error.to_string())
+    }
 }

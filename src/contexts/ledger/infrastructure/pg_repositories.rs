@@ -12,14 +12,15 @@ use super::super::{
     application::ports::{
         AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, CorrectionDetail,
         CorrectionStore, JournalSnapshot, JournalStore, LedgerAccountStore, LedgerOutboxStore,
-        ProjectionStore, ReconciliationStore, ReconciliationStream, StoredReceipt,
+        ProjectionStore, ReclassificationDetail, ReclassificationStore, ReconciliationStore,
+        ReconciliationStream, StoredReceipt,
     },
     domain::{
         AccountNature, Actor, AnnotationId, AnnotationVersion, BalanceObservation, BalanceVersion,
-        BudgetVisibility, CategoryReference, JournalEntry, JournalEntryId, LedgerAccount,
-        LedgerAccountId, LedgerError, NormalizedTags, ObservationId, Posting, PostingId,
-        ReconciliationCase, ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion,
-        SourceReference, SystemAccountRole, TransactionAnnotation,
+        BudgetVisibility, CategoryReference, JournalEntry, JournalEntryId, JournalSource,
+        LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags, ObservationId, Posting,
+        PostingId, PostingPurpose, ReconciliationCase, ReconciliationCaseId, ReconciliationStatus,
+        ReconciliationVersion, SourceReference, SystemAccountRole, TransactionAnnotation,
     },
 };
 use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
@@ -305,11 +306,11 @@ impl JournalStore for PgLedgerTransaction<'_> {
         lock: bool,
     ) -> Result<Option<JournalSnapshot>, LedgerError> {
         let sql = if lock {
-            "SELECT id FROM ledger.journal_entries WHERE id = $1 AND user_id = $2 FOR UPDATE"
+            "SELECT j.id,j.source,j.purpose,EXISTS(SELECT 1 FROM ledger.journal_entries r WHERE r.user_id=j.user_id AND r.reverses_transaction_id=j.id) AS reversed,EXISTS(SELECT 1 FROM ledger.journal_entries r WHERE r.user_id=j.user_id AND r.replaces_transaction_id=j.id) AS replaced FROM ledger.journal_entries j WHERE j.id = $1 AND j.user_id = $2 FOR UPDATE OF j"
         } else {
-            "SELECT id FROM ledger.journal_entries WHERE id = $1 AND user_id = $2"
+            "SELECT j.id,j.source,j.purpose,EXISTS(SELECT 1 FROM ledger.journal_entries r WHERE r.user_id=j.user_id AND r.reverses_transaction_id=j.id) AS reversed,EXISTS(SELECT 1 FROM ledger.journal_entries r WHERE r.user_id=j.user_id AND r.replaces_transaction_id=j.id) AS replaced FROM ledger.journal_entries j WHERE j.id = $1 AND j.user_id = $2"
         };
-        let Some(_stored_id): Option<Uuid> = sqlx::query_scalar(sql)
+        let Some(stored) = sqlx::query(sql)
             .bind(id.into_uuid())
             .bind(user_id.into_uuid())
             .fetch_optional(&mut *self.transaction)
@@ -355,7 +356,15 @@ impl JournalStore for PgLedgerTransaction<'_> {
                 ))
             })
             .collect::<Result<Vec<_>, LedgerError>>()?;
-        Ok(Some(JournalSnapshot { id, postings }))
+        use sqlx::Row as _;
+        Ok(Some(JournalSnapshot {
+            id,
+            source: JournalSource::parse(&stored.get::<String, _>("source"))?,
+            purpose: PostingPurpose::parse(&stored.get::<String, _>("purpose"))?,
+            reversed: stored.get("reversed"),
+            replaced: stored.get("replaced"),
+            postings,
+        }))
     }
 
     async fn insert_journal(
@@ -422,6 +431,45 @@ impl JournalStore for PgLedgerTransaction<'_> {
             .map_err(LedgerError::storage)?;
         }
         Ok(sequence)
+    }
+}
+
+#[async_trait]
+impl ReclassificationStore for PgLedgerTransaction<'_> {
+    async fn active_reclassified_amount(
+        &mut self,
+        user_id: UserId,
+        source_journal_entry_id: JournalEntryId,
+        source_nature: &'static str,
+    ) -> Result<Decimal, LedgerError> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(SUM(d.amount),0) FROM ledger.reclassification_details d WHERE d.user_id=$1 AND d.source_journal_entry_id=$2 AND d.source_nature=$3 AND NOT EXISTS(SELECT 1 FROM ledger.journal_entries r WHERE r.user_id=d.user_id AND r.reverses_transaction_id=d.journal_entry_id)",
+        )
+        .bind(user_id.into_uuid())
+        .bind(source_journal_entry_id.into_uuid())
+        .bind(source_nature)
+        .fetch_one(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::storage)
+    }
+
+    async fn insert_reclassification_detail(
+        &mut self,
+        detail: ReclassificationDetail<'_>,
+    ) -> Result<(), LedgerError> {
+        sqlx::query(
+            "INSERT INTO ledger.reclassification_details(journal_entry_id,user_id,source_journal_entry_id,source_nature,amount,currency) VALUES($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(detail.journal_entry_id.into_uuid())
+        .bind(detail.user_id.into_uuid())
+        .bind(detail.source_journal_entry_id.into_uuid())
+        .bind(detail.source_nature)
+        .bind(detail.amount)
+        .bind(detail.currency.as_str())
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::storage)?;
+        Ok(())
     }
 }
 

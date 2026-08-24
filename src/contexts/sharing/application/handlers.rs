@@ -85,6 +85,13 @@ impl SharingFacade {
     ) -> Result<SettlementResult, SharingError> {
         self.settlements.create_settlement(command).await
     }
+    pub async fn settlements(
+        &self,
+        user: UserId,
+        bill: BillSplitId,
+    ) -> Result<Vec<SettlementView>, SharingError> {
+        self.settlements.settlements(user, bill).await
+    }
     pub async fn reverse_settlement(
         &self,
         command: ReverseSettlement,
@@ -116,5 +123,26 @@ impl SharingFacade {
         command: CompleteSettlementReversal,
     ) -> Result<SettlementView, SharingError> {
         self.accounting.complete_settlement_reversal(command).await
+    }
+    pub async fn claim_next_work(
+        &self,
+        holder: &str,
+    ) -> Result<Option<SharingWorkflowWork>, SharingError> {
+        self.accounting.claim_next_work(holder).await
+    }
+    pub async fn retry_work(&self, command: RetrySharingWorkflow) -> Result<(), SharingError> {
+        self.accounting.retry_work(command).await
+    }
+    pub async fn fail_bill_accounting(
+        &self,
+        command: FailBillAccounting,
+    ) -> Result<BillView, SharingError> {
+        self.accounting.fail_bill_accounting(command).await
+    }
+    pub async fn fail_settlement_accounting(
+        &self,
+        command: FailSettlementAccounting,
+    ) -> Result<SettlementView, SharingError> {
+        self.accounting.fail_settlement_accounting(command).await
     }
 }

@@ -284,6 +284,18 @@ pub(crate) async fn create_settlement(
     )
         .into_response())
 }
+pub(crate) async fn list_settlements(
+    State(state): State<SharingApiState>,
+    AuthenticatedUser(user): AuthenticatedUser,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state
+        .sharing
+        .settlements(user, BillSplitId::new(id))
+        .await
+        .map(|settlements| Json(json!({"settlements":settlements})))
+        .map_err(map_domain)
+}
 pub(crate) async fn reverse_settlement(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,

@@ -12,3 +12,4 @@ pub mod loan_reversal;
 pub mod recurring_match;
 pub mod sharing_accounting;
 pub mod sharing_settlement;
+pub mod sharing_workflow;

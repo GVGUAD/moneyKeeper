@@ -19,6 +19,295 @@ pub(crate) struct PgSharingStore {
     pool: PgPool,
 }
 
+async fn verify_workflow_claim(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &WorkflowClaim,
+) -> Result<(), SharingError> {
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM integration.process_leases WHERE process_name=$1 AND instance_key=$2 AND holder=$3 AND fencing_token=$4 AND expires_at>clock_timestamp() FOR UPDATE)")
+        .bind(&claim.process_name).bind(&claim.instance_key).bind(&claim.holder).bind(claim.fencing_token).fetch_one(&mut **tx).await.map_err(database)?;
+    if valid {
+        Ok(())
+    } else {
+        Err(SharingError::Persistence(
+            "workflow lease was fenced".into(),
+        ))
+    }
+}
+
+async fn finish_failed_process(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &WorkflowClaim,
+    error: &str,
+) -> Result<(), SharingError> {
+    sqlx::query("UPDATE integration.process_instances SET status='failed',state=jsonb_set(state,'{last_error}',to_jsonb($3::text),true),next_wake_at=NULL,version=version+1,updated_at=clock_timestamp() WHERE process_name=$1 AND instance_key=$2")
+        .bind(&claim.process_name).bind(&claim.instance_key).bind(truncate_error(error)).execute(&mut **tx).await.map_err(database)?;
+    Ok(())
+}
+
+async fn load_process_correlation(
+    tx: &mut Transaction<'_, Postgres>,
+    claim: &WorkflowClaim,
+) -> Result<crate::shared_kernel::CorrelationId, SharingError> {
+    let value: serde_json::Value = sqlx::query_scalar(
+        "SELECT state FROM integration.process_instances WHERE process_name=$1 AND instance_key=$2",
+    )
+    .bind(&claim.process_name)
+    .bind(&claim.instance_key)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(database)?;
+    serde_json::from_value(
+        value
+            .get("correlation_id")
+            .cloned()
+            .ok_or_else(|| SharingError::Persistence("workflow correlation is missing".into()))?,
+    )
+    .map_err(|error| SharingError::Persistence(error.to_string()))
+}
+
+fn truncate_error(value: &str) -> String {
+    value.chars().take(1000).collect()
+}
+
+fn workflow_settlement_id(value: &serde_json::Value) -> Result<SettlementId, SharingError> {
+    serde_json::from_value(
+        value
+            .get("settlement_id")
+            .cloned()
+            .ok_or_else(|| SharingError::Persistence("settlement id is missing".into()))?,
+    )
+    .map_err(|error| SharingError::Persistence(error.to_string()))
+}
+
+async fn latest_posted_journals_before(
+    tx: &mut Transaction<'_, Postgres>,
+    user: UserId,
+    bill: BillSplitId,
+    before_revision: u32,
+) -> Result<Vec<Uuid>, SharingError> {
+    sqlx::query_scalar("WITH latest AS (SELECT max(revision) revision FROM sharing.bill_revisions WHERE bill_id=$1 AND user_id=$2 AND revision<$3 AND accounting_status='posted') SELECT j.ledger_journal_id FROM sharing.bill_revision_accounting_journals j JOIN latest l ON l.revision=j.revision WHERE j.bill_id=$1 AND j.user_id=$2 AND j.ledger_reversal_journal_id IS NULL ORDER BY j.position")
+        .bind(bill.into_uuid()).bind(user.into_uuid()).bind(i32::try_from(before_revision).map_err(|_|SharingError::ArithmeticOverflow)?).fetch_all(&mut **tx).await.map_err(database)
+}
+
+async fn load_bill_domain_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    bill_id: BillSplitId,
+) -> Result<BillSplit, SharingError> {
+    let row=sqlx::query("SELECT b.user_id,b.status,b.version,b.active_settlements,b.cancellation_reason,b.current_revision,r.title,r.occurred_at,r.total,r.currency,r.accounting_status,r.accounting_correlation_id FROM sharing.bills b JOIN sharing.bill_revisions r ON r.bill_id=b.id AND r.user_id=b.user_id AND r.revision=b.current_revision WHERE b.id=$1 FOR UPDATE OF b")
+        .bind(bill_id.into_uuid()).fetch_optional(&mut **tx).await.map_err(database)?.ok_or(SharingError::NotFound)?;
+    let user = UserId::new(row.get("user_id"));
+    let revision_i32: i32 = row.get("current_revision");
+    let revision_number =
+        u32::try_from(revision_i32).map_err(|_| SharingError::ArithmeticOverflow)?;
+    let currency = CurrencyCode::new(row.get::<String, _>("currency"))
+        .map_err(|error| SharingError::Persistence(error.to_string()))?;
+    let total = Money::new(row.get("total"), currency.clone(), Money::DATABASE_SCALE)?;
+
+    let contribution_rows=sqlx::query("SELECT id,participant_kind,participant_contact_id,amount,evidence_kind,ledger_account_id FROM sharing.contributions WHERE bill_id=$1 AND user_id=$2 AND revision=$3 ORDER BY position")
+        .bind(bill_id.into_uuid()).bind(user.into_uuid()).bind(revision_i32).fetch_all(&mut **tx).await.map_err(database)?;
+    let mut contributions = Vec::with_capacity(contribution_rows.len());
+    for contribution in contribution_rows {
+        let contribution_id: Uuid = contribution.get("id");
+        let participant = participant_from_db(
+            contribution.get::<String, _>("participant_kind").as_str(),
+            contribution.get("participant_contact_id"),
+        )?;
+        let amount = Money::new(
+            contribution.get("amount"),
+            currency.clone(),
+            Money::DATABASE_SCALE,
+        )?;
+        let evidence = match contribution.get::<String, _>("evidence_kind").as_str() {
+            "external" => ContributionEvidence::External,
+            "manual" => ContributionEvidence::Manual {
+                account_id: LedgerAccountReference::new(
+                    contribution.get::<Uuid, _>("ledger_account_id"),
+                ),
+            },
+            "existing_journals" => {
+                let rows=sqlx::query("SELECT ledger_journal_id,amount,currency FROM sharing.contribution_journal_allocations WHERE contribution_id=$1 AND user_id=$2 ORDER BY position")
+                    .bind(contribution_id).bind(user.into_uuid()).fetch_all(&mut **tx).await.map_err(database)?;
+                let allocations = rows
+                    .into_iter()
+                    .map(|value| {
+                        let item_currency =
+                            CurrencyCode::new(value.get::<String, _>("currency"))
+                                .map_err(|error| SharingError::Persistence(error.to_string()))?;
+                        Ok(JournalAllocation {
+                            journal_id: LedgerJournalReference::new(value.get("ledger_journal_id")),
+                            amount: Money::new(
+                                value.get("amount"),
+                                item_currency,
+                                Money::DATABASE_SCALE,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, SharingError>>()?;
+                ContributionEvidence::ExistingJournals { allocations }
+            }
+            value => {
+                return Err(SharingError::Persistence(format!(
+                    "invalid contribution evidence {value}"
+                )));
+            }
+        };
+        contributions.push(Contribution::new(participant, amount, evidence)?);
+    }
+    let share_rows=sqlx::query("SELECT participant_kind,participant_contact_id,amount FROM sharing.participant_shares WHERE bill_id=$1 AND user_id=$2 AND revision=$3 ORDER BY position")
+        .bind(bill_id.into_uuid()).bind(user.into_uuid()).bind(revision_i32).fetch_all(&mut **tx).await.map_err(database)?;
+    let shares = share_rows
+        .into_iter()
+        .map(|value| {
+            Ok(ParticipantShare {
+                participant: participant_from_db(
+                    value.get::<String, _>("participant_kind").as_str(),
+                    value.get("participant_contact_id"),
+                )?,
+                amount: Money::new(value.get("amount"), currency.clone(), Money::DATABASE_SCALE)?,
+            })
+        })
+        .collect::<Result<Vec<_>, SharingError>>()?;
+    let obligation_rows=sqlx::query("SELECT debtor_kind,debtor_contact_id,creditor_kind,creditor_contact_id,original_amount FROM sharing.obligations WHERE bill_id=$1 AND user_id=$2 AND revision=$3 ORDER BY position")
+        .bind(bill_id.into_uuid()).bind(user.into_uuid()).bind(revision_i32).fetch_all(&mut **tx).await.map_err(database)?;
+    let obligations = obligation_rows
+        .into_iter()
+        .map(|value| {
+            Ok(Obligation {
+                debtor: participant_from_db(
+                    value.get::<String, _>("debtor_kind").as_str(),
+                    value.get("debtor_contact_id"),
+                )?,
+                creditor: participant_from_db(
+                    value.get::<String, _>("creditor_kind").as_str(),
+                    value.get("creditor_contact_id"),
+                )?,
+                amount: Money::new(
+                    value.get("original_amount"),
+                    currency.clone(),
+                    Money::DATABASE_SCALE,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, SharingError>>()?;
+    let mut revision = BillRevision::new(
+        revision_number,
+        row.get::<String, _>("title"),
+        row.get("occurred_at"),
+        total,
+        contributions,
+        shares,
+        obligations,
+        crate::shared_kernel::CorrelationId::new(row.get("accounting_correlation_id")),
+    )?;
+    revision.accounting_status = match row.get::<String, _>("accounting_status").as_str() {
+        "pending" => AccountingStatus::Pending,
+        "posted" => AccountingStatus::Posted,
+        "failed" => AccountingStatus::Failed,
+        value => {
+            return Err(SharingError::Persistence(format!(
+                "invalid accounting status {value}"
+            )));
+        }
+    };
+    let status = match row.get::<String, _>("status").as_str() {
+        "pending_accounting" => BillStatus::PendingAccounting,
+        "active" => BillStatus::Active,
+        "failed" => BillStatus::Failed,
+        "pending_cancellation" => BillStatus::PendingCancellation,
+        "cancelled" => BillStatus::Cancelled,
+        value => {
+            return Err(SharingError::Persistence(format!(
+                "invalid bill status {value}"
+            )));
+        }
+    };
+    BillSplit::rehydrate(
+        bill_id,
+        user,
+        vec![revision],
+        status,
+        BillVersion(
+            u64::try_from(row.get::<i64, _>("version"))
+                .map_err(|_| SharingError::ArithmeticOverflow)?,
+        ),
+        u32::try_from(row.get::<i32, _>("active_settlements"))
+            .map_err(|_| SharingError::ArithmeticOverflow)?,
+        row.get("cancellation_reason"),
+    )
+}
+
+async fn load_settlement_domain_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    settlement_id: SettlementId,
+) -> Result<Settlement, SharingError> {
+    let row=sqlx::query("SELECT s.bill_id,s.user_id,s.amount,s.currency,s.evidence_kind,s.ledger_account_id,s.ledger_journal_id,s.status,s.version,s.occurred_at,o.debtor_kind,o.debtor_contact_id,o.creditor_kind,o.creditor_contact_id,r.reason reversal_reason FROM sharing.settlements s JOIN sharing.obligations o ON o.id=s.obligation_id AND o.user_id=s.user_id LEFT JOIN sharing.settlement_reversals r ON r.settlement_id=s.id AND r.user_id=s.user_id WHERE s.id=$1 FOR UPDATE OF s")
+        .bind(settlement_id.into_uuid()).fetch_optional(&mut **tx).await.map_err(database)?.ok_or(SharingError::NotFound)?;
+    let user = UserId::new(row.get("user_id"));
+    let currency = CurrencyCode::new(row.get::<String, _>("currency"))
+        .map_err(|error| SharingError::Persistence(error.to_string()))?;
+    let evidence = match row.get::<String, _>("evidence_kind").as_str() {
+        "external" => SettlementEvidence::External,
+        "manual" => SettlementEvidence::Manual {
+            account_id: LedgerAccountReference::new(row.get::<Uuid, _>("ledger_account_id")),
+        },
+        "existing_journal" => SettlementEvidence::ExistingJournal {
+            journal_id: LedgerJournalReference::new(row.get::<Uuid, _>("ledger_journal_id")),
+        },
+        value => {
+            return Err(SharingError::Persistence(format!(
+                "invalid settlement evidence {value}"
+            )));
+        }
+    };
+    let reversal_reason: Option<String> = row.get("reversal_reason");
+    let status = if reversal_reason.is_some() {
+        SettlementStatus::Reversed
+    } else {
+        match row.get::<String, _>("status").as_str() {
+            "pending_accounting" => SettlementStatus::PendingAccounting,
+            "posted" => SettlementStatus::Posted,
+            "failed" => SettlementStatus::Failed,
+            value => {
+                return Err(SharingError::Persistence(format!(
+                    "invalid settlement status {value}"
+                )));
+            }
+        }
+    };
+    Ok(Settlement::rehydrate(
+        settlement_id,
+        BillSplitId::new(row.get("bill_id")),
+        user,
+        participant_from_db(
+            row.get::<String, _>("debtor_kind").as_str(),
+            row.get("debtor_contact_id"),
+        )?,
+        participant_from_db(
+            row.get::<String, _>("creditor_kind").as_str(),
+            row.get("creditor_contact_id"),
+        )?,
+        Money::new(row.get("amount"), currency, Money::DATABASE_SCALE)?,
+        evidence,
+        status,
+        SettlementVersion(
+            u64::try_from(row.get::<i64, _>("version"))
+                .map_err(|_| SharingError::ArithmeticOverflow)?,
+        ),
+        row.get("occurred_at"),
+        reversal_reason,
+    ))
+}
+
+fn participant_from_db(kind: &str, contact: Option<Uuid>) -> Result<Participant, SharingError> {
+    match (kind, contact) {
+        ("current_user", None) => Ok(Participant::CurrentUser),
+        ("contact", Some(id)) => Ok(Participant::Contact(ContactId::new(id))),
+        _ => Err(SharingError::Persistence(
+            "invalid stored participant".into(),
+        )),
+    }
+}
+
 impl PgSharingStore {
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -231,7 +520,9 @@ impl PgSharingStore {
         )?;
         let bill = BillSplit::create(BillSplitId::generate(), command.metadata.user_id, revision)?;
         insert_bill(&mut tx, &bill).await?;
-        let view = bill_view_from_domain(&bill)?;
+        let view = load_bill_tx(&mut tx, command.metadata.user_id, bill.id())
+            .await?
+            .ok_or(SharingError::NotFound)?;
         create_process(
             &mut tx,
             "sharing_bill_accounting",
@@ -503,7 +794,7 @@ impl PgSharingStore {
         let currency = CurrencyCode::new(obligation.get::<String, _>("currency"))
             .map_err(|error| SharingError::Persistence(error.to_string()))?;
         let remaining = Money::new(
-            obligation.get("remaining"),
+            obligation.get::<Decimal, _>("remaining").normalize(),
             currency.clone(),
             command.amount.amount().scale(),
         )?;
@@ -544,8 +835,13 @@ impl PgSharingStore {
         let view = SettlementView {
             id: settlement.id(),
             bill_id: command.bill_id,
+            debtor: Some(settlement.debtor()),
+            creditor: Some(settlement.creditor()),
             amount: settlement.amount().amount(),
             currency,
+            evidence: Some(settlement.evidence().clone()),
+            occurred_at: Some(settlement.occurred_at()),
+            accounting_journal_id: None,
             status: SettlementStatus::PendingAccounting,
             version: SettlementVersion(1),
             process: ProcessView {
@@ -569,6 +865,103 @@ impl PgSharingStore {
         .await?;
         tx.commit().await.map_err(database)?;
         Ok(result)
+    }
+
+    pub(crate) async fn settlements(
+        &self,
+        user: UserId,
+        bill: BillSplitId,
+    ) -> Result<Vec<SettlementView>, SharingError> {
+        let rows=sqlx::query("SELECT s.id,s.bill_id,s.amount,s.currency,s.evidence_kind,s.ledger_account_id,s.ledger_journal_id,s.status,s.version,s.occurred_at,s.accounting_correlation_id,s.accounting_journal_id,s.last_error,o.debtor_kind,o.debtor_contact_id,o.creditor_kind,o.creditor_contact_id,r.settlement_id IS NOT NULL reversed,p.status process_status,p.state process_state FROM sharing.settlements s JOIN sharing.obligations o ON o.id=s.obligation_id AND o.user_id=s.user_id LEFT JOIN sharing.settlement_reversals r ON r.settlement_id=s.id AND r.user_id=s.user_id LEFT JOIN integration.process_instances p ON p.process_name=CASE WHEN r.settlement_id IS NULL THEN 'sharing_settlement' ELSE 'sharing_settlement_reversal' END AND p.instance_key=s.id::text WHERE s.bill_id=$1 AND s.user_id=$2 ORDER BY s.recorded_at,s.id")
+            .bind(bill.into_uuid()).bind(user.into_uuid()).fetch_all(&self.pool).await.map_err(database)?;
+        rows.into_iter()
+            .map(|row| {
+                let currency = CurrencyCode::new(row.get::<String, _>("currency"))
+                    .map_err(|error| SharingError::Persistence(error.to_string()))?;
+                let evidence = match row.get::<String, _>("evidence_kind").as_str() {
+                    "external" => SettlementEvidence::External,
+                    "manual" => SettlementEvidence::Manual {
+                        account_id: LedgerAccountReference::new(
+                            row.get::<Uuid, _>("ledger_account_id"),
+                        ),
+                    },
+                    "existing_journal" => SettlementEvidence::ExistingJournal {
+                        journal_id: LedgerJournalReference::new(
+                            row.get::<Uuid, _>("ledger_journal_id"),
+                        ),
+                    },
+                    value => {
+                        return Err(SharingError::Persistence(format!(
+                            "invalid settlement evidence {value}"
+                        )));
+                    }
+                };
+                let reversed: bool = row.get("reversed");
+                let status = if reversed {
+                    SettlementStatus::Reversed
+                } else {
+                    match row.get::<String, _>("status").as_str() {
+                        "pending_accounting" => SettlementStatus::PendingAccounting,
+                        "posted" => SettlementStatus::Posted,
+                        "failed" => SettlementStatus::Failed,
+                        value => {
+                            return Err(SharingError::Persistence(format!(
+                                "invalid settlement status {value}"
+                            )));
+                        }
+                    }
+                };
+                let process_state: Option<serde_json::Value> = row.get("process_state");
+                let correlation_id = process_state
+                    .as_ref()
+                    .and_then(|value| value.get("correlation_id"))
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|error| SharingError::Persistence(error.to_string()))?
+                    .unwrap_or_else(|| {
+                        crate::shared_kernel::CorrelationId::new(
+                            row.get("accounting_correlation_id"),
+                        )
+                    });
+                let last_error = process_state
+                    .as_ref()
+                    .and_then(|value| value.get("last_error"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .or_else(|| row.get("last_error"));
+                Ok(SettlementView {
+                    id: SettlementId::new(row.get("id")),
+                    bill_id: BillSplitId::new(row.get("bill_id")),
+                    debtor: Some(participant_from_db(
+                        row.get::<String, _>("debtor_kind").as_str(),
+                        row.get("debtor_contact_id"),
+                    )?),
+                    creditor: Some(participant_from_db(
+                        row.get::<String, _>("creditor_kind").as_str(),
+                        row.get("creditor_contact_id"),
+                    )?),
+                    amount: row.get("amount"),
+                    currency,
+                    evidence: Some(evidence),
+                    occurred_at: Some(row.get("occurred_at")),
+                    accounting_journal_id: row.get("accounting_journal_id"),
+                    status,
+                    version: SettlementVersion(
+                        u64::try_from(row.get::<i64, _>("version"))
+                            .map_err(|_| SharingError::ArithmeticOverflow)?
+                            + u64::from(reversed),
+                    ),
+                    process: ProcessView {
+                        state: row
+                            .get::<Option<String>, _>("process_status")
+                            .unwrap_or_else(|| "unknown".into()),
+                        correlation_id,
+                        last_error,
+                    },
+                })
+            })
+            .collect()
     }
 
     pub(crate) async fn reverse_settlement(
@@ -596,8 +989,12 @@ impl PgSharingStore {
             });
         }
         let status: String = row.get("status");
-        if status == "pending_accounting" {
-            return Err(SharingError::AccountingPending);
+        if status != "posted" {
+            return Err(if status == "pending_accounting" {
+                SharingError::AccountingPending
+            } else {
+                SharingError::InvalidTransition
+            });
         }
         let reason = command.reason.trim();
         if reason.is_empty() {
@@ -617,8 +1014,13 @@ impl PgSharingStore {
         let view = SettlementView {
             id: command.settlement_id,
             bill_id: command.bill_id,
+            debtor: None,
+            creditor: None,
             amount: row.get("amount"),
             currency,
+            evidence: None,
+            occurred_at: None,
+            accounting_journal_id: None,
             status: SettlementStatus::Reversed,
             version: SettlementVersion(actual + 1),
             process: ProcessView {
@@ -649,6 +1051,9 @@ impl PgSharingStore {
         command: CompleteBillAccounting,
     ) -> Result<BillView, SharingError> {
         let mut tx = self.pool.begin().await.map_err(database)?;
+        if let Some(claim) = &command.claim {
+            verify_workflow_claim(&mut tx, claim).await?;
+        }
         let row = lock_bill(&mut tx, command.user_id, command.bill_id).await?;
         require_bill_version(&row, command.expected_version)?;
         let current_revision = u32::try_from(row.get::<i32, _>("current_revision"))
@@ -658,8 +1063,16 @@ impl PgSharingStore {
         {
             return Err(SharingError::InvalidTransition);
         }
+        for reversal in &command.reversed_journals {
+            sqlx::query("UPDATE sharing.bill_revision_accounting_journals SET ledger_reversal_journal_id=$1 WHERE user_id=$2 AND ledger_journal_id=$3 AND ledger_reversal_journal_id IS NULL")
+                .bind(reversal.reversal_journal_id).bind(command.user_id.into_uuid()).bind(reversal.original_journal_id).execute(&mut *tx).await.map_err(database)?;
+        }
+        for (position, journal_id) in command.journal_ids.iter().enumerate() {
+            sqlx::query("INSERT INTO sharing.bill_revision_accounting_journals(bill_id,user_id,revision,position,ledger_journal_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT(bill_id,user_id,revision,position) DO UPDATE SET ledger_journal_id=EXCLUDED.ledger_journal_id")
+                .bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).bind(i32::try_from(command.revision).map_err(|_|SharingError::ArithmeticOverflow)?).bind(i32::try_from(position).map_err(|_|SharingError::ArithmeticOverflow)?).bind(journal_id).execute(&mut *tx).await.map_err(database)?;
+        }
         sqlx::query("UPDATE sharing.bill_revisions SET accounting_status='posted',accounting_journal_id=$1,last_error=NULL WHERE bill_id=$2 AND user_id=$3 AND revision=$4")
-            .bind(command.journal_id).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).bind(i32::try_from(command.revision).map_err(|_|SharingError::ArithmeticOverflow)?).execute(&mut *tx).await.map_err(database)?;
+            .bind(command.journal_ids.first().copied()).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).bind(i32::try_from(command.revision).map_err(|_|SharingError::ArithmeticOverflow)?).execute(&mut *tx).await.map_err(database)?;
         let version = command.expected_version.0 + 1;
         sqlx::query("UPDATE sharing.bills SET status='active',version=$1,updated_at=$2 WHERE id=$3 AND user_id=$4")
             .bind(i64::try_from(version).map_err(|_|SharingError::ArithmeticOverflow)?).bind(command.occurred_at).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
@@ -694,6 +1107,9 @@ impl PgSharingStore {
         command: CompleteBillCancellation,
     ) -> Result<BillView, SharingError> {
         let mut tx = self.pool.begin().await.map_err(database)?;
+        if let Some(claim) = &command.claim {
+            verify_workflow_claim(&mut tx, claim).await?;
+        }
         let row = lock_bill(&mut tx, command.user_id, command.bill_id).await?;
         require_bill_version(&row, command.expected_version)?;
         if row.get::<String, _>("status") != "pending_cancellation" {
@@ -705,7 +1121,11 @@ impl PgSharingStore {
             .get::<Option<String>, _>("cancellation_reason")
             .ok_or(SharingError::InvalidTransition)?;
         let version = command.expected_version.0 + 1;
-        sqlx::query("UPDATE sharing.bill_revisions SET accounting_reversal_journal_id=$1 WHERE bill_id=$2 AND user_id=$3 AND revision=$4").bind(command.reversal_journal_id).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).bind(i32::try_from(revision).map_err(|_|SharingError::ArithmeticOverflow)?).execute(&mut *tx).await.map_err(database)?;
+        for reversal in &command.reversed_journals {
+            sqlx::query("UPDATE sharing.bill_revision_accounting_journals SET ledger_reversal_journal_id=$1 WHERE user_id=$2 AND ledger_journal_id=$3 AND ledger_reversal_journal_id IS NULL")
+                .bind(reversal.reversal_journal_id).bind(command.user_id.into_uuid()).bind(reversal.original_journal_id).execute(&mut *tx).await.map_err(database)?;
+        }
+        sqlx::query("UPDATE sharing.bill_revisions SET accounting_reversal_journal_id=$1 WHERE bill_id=$2 AND user_id=$3 AND revision=$4").bind(command.reversed_journals.first().map(|value| value.reversal_journal_id)).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).bind(i32::try_from(revision).map_err(|_|SharingError::ArithmeticOverflow)?).execute(&mut *tx).await.map_err(database)?;
         sqlx::query("UPDATE sharing.bills SET status='cancelled',version=$1,updated_at=$2 WHERE id=$3 AND user_id=$4").bind(i64::try_from(version).map_err(|_|SharingError::ArithmeticOverflow)?).bind(command.occurred_at).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
         sqlx::query("UPDATE integration.process_instances SET status='cancelled',version=version+1,next_wake_at=NULL,updated_at=clock_timestamp() WHERE process_name='sharing_bill_cancellation' AND instance_key=$1")
             .bind(command.bill_id.to_string()).execute(&mut *tx).await.map_err(database)?;
@@ -728,6 +1148,9 @@ impl PgSharingStore {
         command: CompleteSettlementAccounting,
     ) -> Result<SettlementView, SharingError> {
         let mut tx = self.pool.begin().await.map_err(database)?;
+        if let Some(claim) = &command.claim {
+            verify_workflow_claim(&mut tx, claim).await?;
+        }
         let row = sqlx::query("SELECT amount,currency,status,version FROM sharing.settlements WHERE id=$1 AND bill_id=$2 AND user_id=$3 FOR UPDATE")
             .bind(command.settlement_id.into_uuid()).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(SharingError::NotFound)?;
         let actual = u64::try_from(row.get::<i64, _>("version"))
@@ -770,8 +1193,13 @@ impl PgSharingStore {
         let view = SettlementView {
             id: command.settlement_id,
             bill_id: command.bill_id,
+            debtor: None,
+            creditor: None,
             amount: row.get("amount"),
             currency,
+            evidence: None,
+            occurred_at: None,
+            accounting_journal_id: command.journal_id,
             status: SettlementStatus::Posted,
             version: SettlementVersion(actual + 1),
             process: ProcessView {
@@ -789,6 +1217,9 @@ impl PgSharingStore {
         command: CompleteSettlementReversal,
     ) -> Result<SettlementView, SharingError> {
         let mut tx = self.pool.begin().await.map_err(database)?;
+        if let Some(claim) = &command.claim {
+            verify_workflow_claim(&mut tx, claim).await?;
+        }
         let row=sqlx::query("SELECT s.amount,s.currency,s.version,s.obligation_id FROM sharing.settlements s JOIN sharing.settlement_reversals r ON r.settlement_id=s.id AND r.user_id=s.user_id WHERE s.id=$1 AND s.bill_id=$2 AND s.user_id=$3 FOR UPDATE OF s,r")
             .bind(command.settlement_id.into_uuid()).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(SharingError::NotFound)?;
         sqlx::query("UPDATE sharing.settlement_reversals SET ledger_reversal_journal_id=$1 WHERE settlement_id=$2 AND user_id=$3")
@@ -827,14 +1258,222 @@ impl PgSharingStore {
         let view = SettlementView {
             id: command.settlement_id,
             bill_id: command.bill_id,
+            debtor: None,
+            creditor: None,
             amount: row.get("amount"),
             currency,
+            evidence: None,
+            occurred_at: None,
+            accounting_journal_id: command.reversal_journal_id,
             status: SettlementStatus::Reversed,
             version: SettlementVersion(version),
             process: ProcessView {
                 state: "reversed".into(),
                 correlation_id: command.correlation_id,
                 last_error: None,
+            },
+        };
+        tx.commit().await.map_err(database)?;
+        Ok(view)
+    }
+
+    pub(crate) async fn claim_next_work(
+        &self,
+        holder: &str,
+    ) -> Result<Option<SharingWorkflowWork>, SharingError> {
+        if holder.is_empty() || holder.len() > 200 || holder.trim() != holder {
+            return Err(SharingError::Persistence("invalid workflow holder".into()));
+        }
+        let mut tx = self.pool.begin().await.map_err(database)?;
+        let row = sqlx::query(
+            "SELECT process_name,instance_key,state FROM integration.process_instances WHERE process_name IN ('sharing_bill_accounting','sharing_bill_cancellation','sharing_settlement','sharing_settlement_reversal') AND ((status IN ('pending','retrying') AND (next_wake_at IS NULL OR next_wake_at<=clock_timestamp())) OR (status='processing' AND next_wake_at<=clock_timestamp())) ORDER BY COALESCE(next_wake_at,created_at),created_at,process_name,instance_key FOR UPDATE SKIP LOCKED LIMIT 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?;
+        let Some(row) = row else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
+        let process_name: String = row.get("process_name");
+        let instance_key: String = row.get("instance_key");
+        let state: serde_json::Value = row.get("state");
+        let previous_attempt = state
+            .get("attempt")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let attempt = u32::try_from(previous_attempt.saturating_add(1))
+            .map_err(|_| SharingError::ArithmeticOverflow)?;
+        let lease = sqlx::query("INSERT INTO integration.process_leases(process_name,instance_key,holder,expires_at,fencing_token) VALUES($1,$2,$3,clock_timestamp()+interval '30 seconds',1) ON CONFLICT(process_name,instance_key) DO UPDATE SET holder=EXCLUDED.holder,expires_at=EXCLUDED.expires_at,fencing_token=integration.process_leases.fencing_token+1 WHERE integration.process_leases.expires_at<=clock_timestamp() OR integration.process_leases.holder=EXCLUDED.holder RETURNING fencing_token,expires_at")
+            .bind(&process_name).bind(&instance_key).bind(holder).fetch_optional(&mut *tx).await.map_err(database)?;
+        let Some(lease) = lease else {
+            tx.rollback().await.ok();
+            return Ok(None);
+        };
+        let fencing_token: i64 = lease.get("fencing_token");
+        let expires_at: DateTime<Utc> = lease.get("expires_at");
+        sqlx::query("UPDATE integration.process_instances SET status='processing',state=jsonb_set(jsonb_set(state,'{attempt}',to_jsonb($3::bigint),true),'{last_error}','null'::jsonb,true),next_wake_at=$4,version=version+1,updated_at=clock_timestamp() WHERE process_name=$1 AND instance_key=$2")
+            .bind(&process_name).bind(&instance_key).bind(i64::from(attempt)).bind(expires_at).execute(&mut *tx).await.map_err(database)?;
+        let claim = WorkflowClaim {
+            process_name: process_name.clone(),
+            instance_key,
+            holder: holder.to_owned(),
+            fencing_token,
+            attempt,
+            correlation_id: serde_json::from_value(
+                state.get("correlation_id").cloned().ok_or_else(|| {
+                    SharingError::Persistence("workflow correlation is missing".into())
+                })?,
+            )
+            .map_err(|error| SharingError::Persistence(error.to_string()))?,
+        };
+        let workflow = state
+            .get("workflow")
+            .ok_or_else(|| SharingError::Persistence("workflow state is missing".into()))?;
+        let work = match process_name.as_str() {
+            "sharing_bill_accounting" => {
+                let bill_id: BillSplitId = serde_json::from_value(
+                    workflow
+                        .get("bill_id")
+                        .cloned()
+                        .ok_or_else(|| SharingError::Persistence("bill id is missing".into()))?,
+                )
+                .map_err(|error| SharingError::Persistence(error.to_string()))?;
+                let bill = load_bill_domain_tx(&mut tx, bill_id).await?;
+                let journals_to_reverse = latest_posted_journals_before(
+                    &mut tx,
+                    bill.user_id(),
+                    bill.id(),
+                    bill.current_revision().number,
+                )
+                .await?;
+                SharingWorkflowWork::BillAccounting {
+                    claim,
+                    bill,
+                    journals_to_reverse,
+                }
+            }
+            "sharing_bill_cancellation" => {
+                let bill_id: BillSplitId = serde_json::from_value(
+                    workflow
+                        .get("bill_id")
+                        .cloned()
+                        .ok_or_else(|| SharingError::Persistence("bill id is missing".into()))?,
+                )
+                .map_err(|error| SharingError::Persistence(error.to_string()))?;
+                let bill = load_bill_domain_tx(&mut tx, bill_id).await?;
+                let journals_to_reverse = latest_posted_journals_before(
+                    &mut tx,
+                    bill.user_id(),
+                    bill.id(),
+                    bill.current_revision().number.saturating_add(1),
+                )
+                .await?;
+                SharingWorkflowWork::BillCancellation {
+                    claim,
+                    bill,
+                    journals_to_reverse,
+                }
+            }
+            "sharing_settlement" => SharingWorkflowWork::SettlementAccounting {
+                settlement: load_settlement_domain_tx(&mut tx, workflow_settlement_id(workflow)?)
+                    .await?,
+                claim,
+            },
+            "sharing_settlement_reversal" => {
+                let settlement_id = workflow_settlement_id(workflow)?;
+                let settlement = load_settlement_domain_tx(&mut tx, settlement_id).await?;
+                let row = sqlx::query("SELECT s.accounting_journal_id,r.reason FROM sharing.settlements s JOIN sharing.settlement_reversals r ON r.settlement_id=s.id AND r.user_id=s.user_id WHERE s.id=$1 AND s.user_id=$2")
+                    .bind(settlement_id.into_uuid()).bind(settlement.user_id().into_uuid()).fetch_one(&mut *tx).await.map_err(database)?;
+                SharingWorkflowWork::SettlementReversal {
+                    claim,
+                    settlement,
+                    accounting_journal_id: row.get("accounting_journal_id"),
+                    reason: row.get("reason"),
+                }
+            }
+            _ => return Err(SharingError::Persistence("unknown workflow".into())),
+        };
+        tx.commit().await.map_err(database)?;
+        Ok(Some(work))
+    }
+
+    pub(crate) async fn retry_work(
+        &self,
+        command: RetrySharingWorkflow,
+    ) -> Result<(), SharingError> {
+        let mut tx = self.pool.begin().await.map_err(database)?;
+        verify_workflow_claim(&mut tx, &command.claim).await?;
+        sqlx::query("UPDATE integration.process_instances SET status='retrying',state=jsonb_set(state,'{last_error}',to_jsonb($3::text),true),next_wake_at=$4,version=version+1,updated_at=clock_timestamp() WHERE process_name=$1 AND instance_key=$2")
+            .bind(&command.claim.process_name).bind(&command.claim.instance_key).bind(truncate_error(&command.error)).bind(command.retry_at).execute(&mut *tx).await.map_err(database)?;
+        tx.commit().await.map_err(database)
+    }
+
+    pub(crate) async fn fail_bill_accounting(
+        &self,
+        command: FailBillAccounting,
+    ) -> Result<BillView, SharingError> {
+        let mut tx = self.pool.begin().await.map_err(database)?;
+        verify_workflow_claim(&mut tx, &command.claim).await?;
+        let bill = lock_bill(&mut tx, command.user_id, command.bill_id).await?;
+        require_bill_version(&bill, command.expected_version)?;
+        for reversal in &command.reversed_journals {
+            sqlx::query("UPDATE sharing.bill_revision_accounting_journals SET ledger_reversal_journal_id=$1 WHERE user_id=$2 AND ledger_journal_id=$3 AND ledger_reversal_journal_id IS NULL")
+                .bind(reversal.reversal_journal_id).bind(command.user_id.into_uuid()).bind(reversal.original_journal_id).execute(&mut *tx).await.map_err(database)?;
+        }
+        sqlx::query("UPDATE sharing.bill_revisions SET accounting_status='failed',last_error=$1 WHERE bill_id=$2 AND user_id=$3 AND revision=$4")
+            .bind(truncate_error(&command.error)).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).bind(i32::try_from(command.revision).map_err(|_|SharingError::ArithmeticOverflow)?).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE sharing.bills SET status='failed',version=version+1,updated_at=$1 WHERE id=$2 AND user_id=$3")
+            .bind(command.occurred_at).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        finish_failed_process(&mut tx, &command.claim, &command.error).await?;
+        let view = load_bill_tx(&mut tx, command.user_id, command.bill_id)
+            .await?
+            .ok_or(SharingError::NotFound)?;
+        tx.commit().await.map_err(database)?;
+        Ok(view)
+    }
+
+    pub(crate) async fn fail_settlement_accounting(
+        &self,
+        command: FailSettlementAccounting,
+    ) -> Result<SettlementView, SharingError> {
+        let mut tx = self.pool.begin().await.map_err(database)?;
+        verify_workflow_claim(&mut tx, &command.claim).await?;
+        let row=sqlx::query("SELECT amount,currency,version,obligation_id FROM sharing.settlements WHERE id=$1 AND bill_id=$2 AND user_id=$3 AND status='pending_accounting' FOR UPDATE")
+            .bind(command.settlement_id.into_uuid()).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(SharingError::NotFound)?;
+        let actual = u64::try_from(row.get::<i64, _>("version"))
+            .map_err(|_| SharingError::ArithmeticOverflow)?;
+        if actual != command.expected_version.0 {
+            return Err(SharingError::VersionConflict {
+                expected: command.expected_version.0,
+                actual,
+            });
+        }
+        sqlx::query("UPDATE sharing.settlements SET status='failed',version=version+1,last_error=$1 WHERE id=$2 AND user_id=$3")
+            .bind(truncate_error(&command.error)).bind(command.settlement_id.into_uuid()).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE sharing.obligations SET settled_amount=settled_amount-$1 WHERE id=$2 AND user_id=$3 AND settled_amount>=$1")
+            .bind(row.get::<Decimal,_>("amount")).bind(row.get::<Uuid,_>("obligation_id")).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        sqlx::query("UPDATE sharing.bills SET active_settlements=active_settlements-1,version=version+1,updated_at=$1 WHERE id=$2 AND user_id=$3 AND active_settlements>0")
+            .bind(command.occurred_at).bind(command.bill_id.into_uuid()).bind(command.user_id.into_uuid()).execute(&mut *tx).await.map_err(database)?;
+        finish_failed_process(&mut tx, &command.claim, &command.error).await?;
+        let currency = CurrencyCode::new(row.get::<String, _>("currency"))
+            .map_err(|error| SharingError::Persistence(error.to_string()))?;
+        let view = SettlementView {
+            id: command.settlement_id,
+            bill_id: command.bill_id,
+            debtor: None,
+            creditor: None,
+            amount: row.get("amount"),
+            currency,
+            evidence: None,
+            occurred_at: None,
+            accounting_journal_id: None,
+            status: SettlementStatus::Failed,
+            version: SettlementVersion(actual + 1),
+            process: ProcessView {
+                state: "failed".into(),
+                correlation_id: load_process_correlation(&mut tx, &command.claim).await?,
+                last_error: Some(truncate_error(&command.error)),
             },
         };
         tx.commit().await.map_err(database)?;
@@ -905,6 +1544,14 @@ impl crate::contexts::sharing::application::ports::BillRepository for PgSharingS
 
 #[async_trait]
 impl crate::contexts::sharing::application::ports::SettlementRepository for PgSharingStore {
+    async fn settlements(
+        &self,
+        user_id: UserId,
+        bill_id: BillSplitId,
+    ) -> Result<Vec<SettlementView>, SharingError> {
+        PgSharingStore::settlements(self, user_id, bill_id).await
+    }
+
     async fn create_settlement(
         &self,
         command: CreateSettlement,
@@ -922,6 +1569,31 @@ impl crate::contexts::sharing::application::ports::SettlementRepository for PgSh
 
 #[async_trait]
 impl crate::contexts::sharing::application::ports::AccountingWorkflowRepository for PgSharingStore {
+    async fn claim_next_work(
+        &self,
+        holder: &str,
+    ) -> Result<Option<SharingWorkflowWork>, SharingError> {
+        PgSharingStore::claim_next_work(self, holder).await
+    }
+
+    async fn retry_work(&self, command: RetrySharingWorkflow) -> Result<(), SharingError> {
+        PgSharingStore::retry_work(self, command).await
+    }
+
+    async fn fail_bill_accounting(
+        &self,
+        command: FailBillAccounting,
+    ) -> Result<BillView, SharingError> {
+        PgSharingStore::fail_bill_accounting(self, command).await
+    }
+
+    async fn fail_settlement_accounting(
+        &self,
+        command: FailSettlementAccounting,
+    ) -> Result<SettlementView, SharingError> {
+        PgSharingStore::fail_settlement_accounting(self, command).await
+    }
+
     async fn complete_bill_accounting(
         &self,
         command: CompleteBillAccounting,
@@ -1162,7 +1834,7 @@ async fn load_bill_tx(
     user: UserId,
     id: BillSplitId,
 ) -> Result<Option<BillView>, SharingError> {
-    let row=sqlx::query("SELECT b.id,b.user_id,b.currency,b.current_revision,b.status,b.active_settlements,b.version,r.title,r.occurred_at,r.total,(SELECT jsonb_build_object('contributions',COALESCE(jsonb_agg(x.value ORDER BY x.position) FILTER(WHERE x.kind='contribution'),'[]'::jsonb),'shares',COALESCE(jsonb_agg(x.value ORDER BY x.position) FILTER(WHERE x.kind='share'),'[]'::jsonb),'obligations',COALESCE(jsonb_agg(x.value ORDER BY x.position) FILTER(WHERE x.kind='obligation'),'[]'::jsonb)) FROM (SELECT 'contribution' kind,c.position,jsonb_build_object('participant_kind',c.participant_kind,'contact_id',c.participant_contact_id,'amount',c.amount::text,'evidence',c.evidence_kind) value FROM sharing.contributions c WHERE c.bill_id=b.id AND c.user_id=b.user_id AND c.revision=b.current_revision UNION ALL SELECT 'share',s.position,jsonb_build_object('participant_kind',s.participant_kind,'contact_id',s.participant_contact_id,'amount',s.amount::text) FROM sharing.participant_shares s WHERE s.bill_id=b.id AND s.user_id=b.user_id AND s.revision=b.current_revision UNION ALL SELECT 'obligation',o.position,jsonb_build_object('id',o.id,'debtor_kind',o.debtor_kind,'debtor_contact_id',o.debtor_contact_id,'creditor_kind',o.creditor_kind,'creditor_contact_id',o.creditor_contact_id,'amount',o.original_amount::text,'settled_amount',o.settled_amount::text) FROM sharing.obligations o WHERE o.bill_id=b.id AND o.user_id=b.user_id AND o.revision=b.current_revision) x) allocations FROM sharing.bills b JOIN sharing.bill_revisions r ON r.bill_id=b.id AND r.user_id=b.user_id AND r.revision=b.current_revision WHERE b.id=$1 AND b.user_id=$2").bind(id.into_uuid()).bind(user.into_uuid()).fetch_optional(&mut **tx).await.map_err(database)?;
+    let row=sqlx::query("SELECT b.id,b.user_id,b.currency,b.current_revision,b.status,b.active_settlements,b.version,r.title,r.occurred_at,r.total,(SELECT max(pr.revision) FROM sharing.bill_revisions pr WHERE pr.bill_id=b.id AND pr.user_id=b.user_id AND pr.accounting_status='posted') accounted_revision,r.last_error accounting_error,NOT EXISTS(SELECT 1 FROM sharing.obligations remaining WHERE remaining.bill_id=b.id AND remaining.user_id=b.user_id AND remaining.revision=b.current_revision AND remaining.settled_amount<remaining.original_amount) fully_settled,(SELECT jsonb_build_object('contributions',COALESCE(jsonb_agg(x.value ORDER BY x.position) FILTER(WHERE x.kind='contribution'),'[]'::jsonb),'shares',COALESCE(jsonb_agg(x.value ORDER BY x.position) FILTER(WHERE x.kind='share'),'[]'::jsonb),'obligations',COALESCE(jsonb_agg(x.value ORDER BY x.position) FILTER(WHERE x.kind='obligation'),'[]'::jsonb)) FROM (SELECT 'contribution' kind,c.position,jsonb_build_object('participant_kind',c.participant_kind,'contact_id',c.participant_contact_id,'amount',c.amount::text,'evidence',jsonb_strip_nulls(jsonb_build_object('kind',c.evidence_kind,'account_id',c.ledger_account_id,'allocations',CASE WHEN c.evidence_kind='existing_journals' THEN COALESCE((SELECT jsonb_agg(jsonb_build_object('journal_id',a.ledger_journal_id,'amount',a.amount::text,'currency',a.currency) ORDER BY a.position) FROM sharing.contribution_journal_allocations a WHERE a.contribution_id=c.id AND a.user_id=c.user_id),'[]'::jsonb) END))) value FROM sharing.contributions c WHERE c.bill_id=b.id AND c.user_id=b.user_id AND c.revision=b.current_revision UNION ALL SELECT 'share',s.position,jsonb_build_object('participant_kind',s.participant_kind,'contact_id',s.participant_contact_id,'amount',s.amount::text) FROM sharing.participant_shares s WHERE s.bill_id=b.id AND s.user_id=b.user_id AND s.revision=b.current_revision UNION ALL SELECT 'obligation',o.position,jsonb_build_object('id',o.id,'debtor_kind',o.debtor_kind,'debtor_contact_id',o.debtor_contact_id,'creditor_kind',o.creditor_kind,'creditor_contact_id',o.creditor_contact_id,'amount',o.original_amount::text,'settled_amount',o.settled_amount::text,'remaining_amount',(o.original_amount-o.settled_amount)::text) FROM sharing.obligations o WHERE o.bill_id=b.id AND o.user_id=b.user_id AND o.revision=b.current_revision) x) allocations FROM sharing.bills b JOIN sharing.bill_revisions r ON r.bill_id=b.id AND r.user_id=b.user_id AND r.revision=b.current_revision WHERE b.id=$1 AND b.user_id=$2").bind(id.into_uuid()).bind(user.into_uuid()).fetch_optional(&mut **tx).await.map_err(database)?;
     row.map(row_to_bill_view).transpose()
 }
 fn row_to_bill_view(row: sqlx::postgres::PgRow) -> Result<BillView, SharingError> {
@@ -1188,6 +1860,12 @@ fn row_to_bill_view(row: sqlx::postgres::PgRow) -> Result<BillView, SharingError
             .map_err(|error| SharingError::Persistence(error.to_string()))?,
         current_revision: u32::try_from(row.get::<i32, _>("current_revision"))
             .map_err(|_| SharingError::ArithmeticOverflow)?,
+        accounted_revision: row
+            .get::<Option<i32>, _>("accounted_revision")
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| SharingError::ArithmeticOverflow)?,
+        accounting_error: row.get("accounting_error"),
         status,
         version: BillVersion(
             u64::try_from(row.get::<i64, _>("version"))
@@ -1195,25 +1873,10 @@ fn row_to_bill_view(row: sqlx::postgres::PgRow) -> Result<BillView, SharingError
         ),
         active_settlements: u32::try_from(row.get::<i32, _>("active_settlements"))
             .map_err(|_| SharingError::ArithmeticOverflow)?,
+        fully_settled: row.get("fully_settled"),
         allocations: row
             .get::<Option<serde_json::Value>, _>("allocations")
             .unwrap_or_else(|| json!({})),
-    })
-}
-fn bill_view_from_domain(bill: &BillSplit) -> Result<BillView, SharingError> {
-    let revision = bill.current_revision();
-    Ok(BillView {
-        id: bill.id(),
-        user_id: bill.user_id(),
-        title: revision.title.clone(),
-        occurred_at: revision.occurred_at,
-        total: revision.total.amount(),
-        currency: revision.total.currency().clone(),
-        current_revision: revision.number,
-        status: bill.status(),
-        version: bill.version(),
-        active_settlements: bill.active_settlements(),
-        allocations: json!({"contributions":revision.contributions,"shares":revision.shares,"obligations":revision.obligations}),
     })
 }
 
