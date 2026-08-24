@@ -3,13 +3,17 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::contexts::classification::public::CategoryId;
 use crate::shared_kernel::{
     CausationId, CorrelationId, CurrencyCode, EventId, IdempotencyKey, Money, UserId,
 };
 
-pub use super::application::accounts::LedgerFacade;
+use super::application::capabilities::{
+    LedgerCommandCapability, LedgerInternalAccountingCapability, LedgerQueryCapability,
+    LedgerReconciliationCapability,
+};
 
 pub use super::domain::{
     AccountAuthority, AccountKind, AccountLifecycle, AccountNature, AccountVersion,
@@ -21,8 +25,312 @@ pub use super::domain::{
     ReconciliationVersion, SourceReference, SystemAccountRole, TransactionAnnotation,
 };
 
+/// Concrete, cloneable Ledger contract with type-erased application services.
+#[derive(Clone)]
+pub struct LedgerFacade {
+    commands: Arc<dyn LedgerCommandCapability>,
+    queries: Arc<dyn LedgerQueryCapability>,
+    reconciliation: Arc<dyn LedgerReconciliationCapability>,
+    internal_accounting: Arc<dyn LedgerInternalAccountingCapability>,
+}
+
+impl LedgerFacade {
+    pub(crate) fn new<T>(application: Arc<T>) -> Self
+    where
+        T: LedgerCommandCapability
+            + LedgerQueryCapability
+            + LedgerReconciliationCapability
+            + LedgerInternalAccountingCapability
+            + 'static,
+    {
+        Self {
+            commands: application.clone(),
+            queries: application.clone(),
+            reconciliation: application.clone(),
+            internal_accounting: application,
+        }
+    }
+
+    pub async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError> {
+        self.commands.open_account(command).await
+    }
+    pub async fn open_provider_observed_account(
+        &self,
+        command: OpenProviderObservedAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        self.commands.open_provider_observed_account(command).await
+    }
+    pub async fn rename_account(
+        &self,
+        command: RenameAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        self.commands.rename_account(command).await
+    }
+    pub async fn archive_account(
+        &self,
+        command: ArchiveAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        self.commands.archive_account(command).await
+    }
+    pub async fn restore_account(
+        &self,
+        command: RestoreAccount,
+    ) -> Result<AccountResult, LedgerError> {
+        self.commands.restore_account(command).await
+    }
+    pub async fn record_manual_transaction(
+        &self,
+        command: RecordManualTransaction,
+    ) -> Result<TransactionResult, LedgerError> {
+        self.commands.record_manual_transaction(command).await
+    }
+    pub async fn transfer(&self, command: TransferFunds) -> Result<TransferResult, LedgerError> {
+        self.commands.transfer(command).await
+    }
+    pub async fn update_annotation(
+        &self,
+        command: UpdateTransactionAnnotation,
+    ) -> Result<AnnotationResult, LedgerError> {
+        self.commands.update_annotation(command).await
+    }
+    pub async fn correct_balance(
+        &self,
+        command: CorrectBalance,
+    ) -> Result<FinancialChangeResult, LedgerError> {
+        self.commands.correct_balance(command).await
+    }
+    pub async fn reverse_transaction(
+        &self,
+        command: ReverseTransaction,
+    ) -> Result<FinancialChangeResult, LedgerError> {
+        self.commands.reverse_transaction(command).await
+    }
+    pub async fn replace_transaction(
+        &self,
+        command: ReplaceTransaction,
+    ) -> Result<ReplacementResult, LedgerError> {
+        self.commands.replace_transaction(command).await
+    }
+
+    pub async fn validate_provider_account_binding(
+        &self,
+        command: ValidateProviderAccountBinding,
+    ) -> Result<ProviderAccountBindingResult, LedgerError> {
+        self.queries
+            .validate_provider_account_binding(command)
+            .await
+    }
+    pub async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError> {
+        self.queries.list_accounts(user_id).await
+    }
+    pub async fn get_account(
+        &self,
+        user_id: UserId,
+        id: LedgerAccountId,
+    ) -> Result<AccountView, LedgerError> {
+        self.queries.get_account(user_id, id).await
+    }
+    pub async fn account_activity(
+        &self,
+        user_id: UserId,
+        account_id: LedgerAccountId,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        self.queries
+            .account_activity(user_id, account_id, after, limit)
+            .await
+    }
+    pub async fn list_journals(
+        &self,
+        user_id: UserId,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        self.queries.list_journals(user_id, after, limit).await
+    }
+    pub async fn get_journal(
+        &self,
+        user_id: UserId,
+        id: JournalEntryId,
+    ) -> Result<JournalView, LedgerError> {
+        self.queries.get_journal(user_id, id).await
+    }
+    pub async fn verify_projection(&self) -> Result<Vec<ProjectionMismatch>, LedgerError> {
+        self.queries.verify_projection().await
+    }
+    pub async fn rebuild_projection(&self) -> Result<(), LedgerError> {
+        self.queries.rebuild_projection().await
+    }
+
+    pub async fn observe_provider_balance(
+        &self,
+        command: ObserveProviderBalance,
+    ) -> Result<ReconciliationResult, LedgerError> {
+        self.reconciliation.observe_provider_balance(command).await
+    }
+    pub async fn approve_reconciliation(
+        &self,
+        command: ApproveReconciliation,
+    ) -> Result<ReconciliationResult, LedgerError> {
+        self.reconciliation.approve_reconciliation(command).await
+    }
+    pub async fn dismiss_reconciliation(
+        &self,
+        command: DismissReconciliation,
+    ) -> Result<ReconciliationResult, LedgerError> {
+        self.reconciliation.dismiss_reconciliation(command).await
+    }
+    pub async fn list_reconciliations(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<ReconciliationView>, LedgerError> {
+        self.reconciliation.list_reconciliations(user_id).await
+    }
+    pub async fn get_reconciliation(
+        &self,
+        user_id: UserId,
+        id: ReconciliationCaseId,
+    ) -> Result<ReconciliationView, LedgerError> {
+        self.reconciliation.get_reconciliation(user_id, id).await
+    }
+
+    pub async fn ensure_typed_control_account(
+        &self,
+        command: EnsureTypedControlAccount,
+    ) -> Result<ControlAccountResult, LedgerError> {
+        self.internal_accounting
+            .ensure_typed_control_account(command)
+            .await
+    }
+    pub async fn record_expense_and_control_balances(
+        &self,
+        command: RecordExpenseAndControlBalances,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .record_expense_and_control_balances(command)
+            .await
+    }
+    pub async fn import_provider_transaction(
+        &self,
+        command: ImportProviderTransaction,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .import_provider_transaction(command)
+            .await
+    }
+    pub async fn transition_provider_transaction_state(
+        &self,
+        command: TransitionProviderTransactionState,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .transition_provider_transaction_state(command)
+            .await
+    }
+    pub async fn reverse_provider_transaction(
+        &self,
+        command: ReverseProviderTransaction,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .reverse_provider_transaction(command)
+            .await
+    }
+    pub async fn settle_receivable_or_payable(
+        &self,
+        command: SettleReceivableOrPayable,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .settle_receivable_or_payable(command)
+            .await
+    }
+    pub async fn record_principal_disbursement(
+        &self,
+        command: RecordPrincipalDisbursement,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .record_principal_disbursement(command)
+            .await
+    }
+    pub async fn record_principal_repayment(
+        &self,
+        command: RecordPrincipalRepayment,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .record_principal_repayment(command)
+            .await
+    }
+    pub async fn record_interest_and_fee(
+        &self,
+        command: RecordInterestAndFee,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .record_interest_and_fee(command)
+            .await
+    }
+    pub async fn record_interest_or_fee_accrual(
+        &self,
+        command: RecordInterestOrFeeAccrual,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .record_interest_or_fee_accrual(command)
+            .await
+    }
+    pub async fn reclassify_expense_to_receivable_or_payable(
+        &self,
+        command: ReclassifyExpenseToReceivableOrPayable,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .reclassify_expense_to_receivable_or_payable(command)
+            .await
+    }
+    pub async fn reclassify_imported_settlement(
+        &self,
+        command: ReclassifyImportedSettlement,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .reclassify_imported_settlement(command)
+            .await
+    }
+    pub async fn write_off_liability_or_receivable(
+        &self,
+        command: WriteOffLiabilityOrReceivable,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .write_off_liability_or_receivable(command)
+            .await
+    }
+    pub async fn record_cash_control_settlement(
+        &self,
+        command: RecordCashControlSettlement,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .record_cash_control_settlement(command)
+            .await
+    }
+    pub async fn cancel_or_reverse_cash_control_settlement(
+        &self,
+        command: CancelOrReverseCashControlSettlement,
+    ) -> Result<InternalAccountingResult, LedgerError> {
+        self.internal_accounting
+            .cancel_or_reverse_cash_control_settlement(command)
+            .await
+    }
+}
+
 /// Stable bounded-context name used in integration envelopes.
 pub const CONTEXT_NAME: &str = "ledger";
+
+/// Published Ledger journal and reconciliation event names.
+pub const JOURNAL_POSTED_V1: &str = "ledger.journal-posted.v1";
+pub const JOURNAL_REVERSED_V1: &str = "ledger.journal-reversed.v1";
+pub const JOURNAL_REPLACED_V1: &str = "ledger.journal-replaced.v1";
+pub const RECONCILIATION_OBSERVED_V1: &str = "ledger.reconciliation-observed.v1";
+pub const RECONCILIATION_MATCHED_V1: &str = "ledger.reconciliation-matched.v1";
+pub const RECONCILIATION_SUPERSEDED_V1: &str = "ledger.reconciliation-superseded.v1";
+pub const RECONCILIATION_IGNORED_OLDER_V1: &str = "ledger.reconciliation-ignored-older.v1";
+pub const RECONCILIATION_APPROVED_V1: &str = "ledger.reconciliation-approved.v1";
+pub const RECONCILIATION_DISMISSED_V1: &str = "ledger.reconciliation-dismissed.v1";
+pub const RECONCILIATION_STALE_V1: &str = "ledger.reconciliation-stale.v1";
 
 /// Opens a manual user-visible Ledger account.
 #[derive(Clone, Debug)]
@@ -343,6 +651,19 @@ pub struct PostingView {
     pub display_effect: Decimal,
 }
 
+/// Complete mutable metadata associated with a transaction journal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalAnnotationView {
+    pub version: AnnotationVersion,
+    pub description: String,
+    pub category_id: Option<CategoryId>,
+    pub note: Option<String>,
+    pub tags: Vec<String>,
+    pub budget_visibility: BudgetVisibility,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Auditable journal-entry read model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalView {
@@ -358,8 +679,9 @@ pub struct JournalView {
     pub correlation_id: CorrelationId,
     pub relations: JournalRelations,
     pub postings: Vec<PostingView>,
-    pub annotation_version: Option<AnnotationVersion>,
-    pub category_id: Option<CategoryId>,
+    pub annotation: Option<JournalAnnotationView>,
+    pub reversed_by_journal_id: Option<JournalEntryId>,
+    pub replaced_by_journal_id: Option<JournalEntryId>,
     pub correction: Option<CorrectionView>,
 }
 

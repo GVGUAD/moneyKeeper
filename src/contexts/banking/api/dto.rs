@@ -24,7 +24,6 @@ pub(crate) struct MappingRequest {
 }
 #[derive(Deserialize)]
 pub(crate) struct MappingChangeRequest {
-    pub(crate) resource_id: Uuid,
     pub(crate) expected_version: i64,
     pub(crate) reason: String,
     pub(crate) ledger_account_id: Option<Uuid>,

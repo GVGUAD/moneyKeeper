@@ -18,8 +18,8 @@ use rust_decimal::Decimal;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 async fn account(pool: &PgPool, user: Uuid, currency: &str) -> Uuid {
     let id = Uuid::new_v4();
@@ -39,7 +39,7 @@ async fn account(pool: &PgPool, user: Uuid, currency: &str) -> Uuid {
 
 #[tokio::test]
 async fn internal_command_control_accounts_and_expense_recipe_are_closed_and_balanced() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let currency = CurrencyCode::new("UAH").unwrap();
@@ -202,8 +202,8 @@ async fn internal_command_control_accounts_and_expense_recipe_are_closed_and_bal
 
 #[tokio::test]
 async fn reconciliation_orders_observations_and_fences_approval_to_captured_balance() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, _pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger =
         moneykeeper::contexts::ledger::build_with_categories(&verified, contexts.categories);
     let user = UserId::generate();
@@ -390,7 +390,7 @@ async fn reconciliation_orders_observations_and_fences_approval_to_captured_bala
 
 #[tokio::test]
 async fn archived_account_accepts_only_explicit_reconciliation_correction() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, _pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let account = ledger
@@ -509,7 +509,7 @@ async fn posting(
 
 #[tokio::test]
 async fn schema_rejects_unbalanced_cross_tenant_wrong_currency_and_mutation() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let user = Uuid::new_v4();
     let other = Uuid::new_v4();
     let cash = account(&pool, user, "UAH").await;
@@ -621,7 +621,7 @@ async fn schema_rejects_unbalanced_cross_tenant_wrong_currency_and_mutation() {
 
 #[tokio::test]
 async fn schema_accepts_balanced_multi_currency_and_freezes_account_currency() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let user = Uuid::new_v4();
     let uah_a = account(&pool, user, "UAH").await;
     let uah_b = account(&pool, user, "UAH").await;
@@ -656,7 +656,7 @@ async fn schema_accepts_balanced_multi_currency_and_freezes_account_currency() {
 
 #[tokio::test]
 async fn schema_constrains_idempotency_numeric_bounds_reversals_and_reconciliation() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let user = Uuid::new_v4();
     let cash = account(&pool, user, "UAH").await;
     let savings = account(&pool, user, "UAH").await;
@@ -781,7 +781,7 @@ fn open_command(
 
 #[tokio::test]
 async fn account_command_posts_opening_balances_and_replays_exactly() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
 
@@ -884,7 +884,7 @@ async fn account_command_posts_opening_balances_and_replays_exactly() {
 
 #[tokio::test]
 async fn account_command_versions_and_tenant_scope_metadata_changes() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, _pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let opened = ledger
@@ -981,7 +981,7 @@ async fn unit_of_work_rolls_back_every_financial_stage() {
         ("audit_events", "INSERT"),
         ("integration.outbox_messages", "INSERT"),
     ] {
-        let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+        let (verified, pool) = test_support::fresh_runtime().await;
         let ledger = moneykeeper::contexts::ledger::build(&verified);
         sqlx::query(
             "CREATE FUNCTION ledger.fail_test_write() RETURNS TRIGGER LANGUAGE plpgsql AS $$ \
@@ -1036,8 +1036,8 @@ async fn unit_of_work_rolls_back_every_financial_stage() {
 
 #[tokio::test]
 async fn manual_transaction_posts_income_and_expense_for_asset_and_liability() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = moneykeeper::contexts::ledger::build_with_categories(
         &verified,
         contexts.categories.clone(),
@@ -1180,8 +1180,8 @@ fn manual_command(
 
 #[tokio::test]
 async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_replay() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = moneykeeper::contexts::ledger::build_with_categories(
         &verified,
         contexts.categories.clone(),
@@ -1389,7 +1389,7 @@ async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_repla
 
 #[tokio::test]
 async fn transfer_posts_same_currency_fx_and_fees_atomically() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let source = ledger
@@ -1510,7 +1510,7 @@ async fn transfer_posts_same_currency_fx_and_fees_atomically() {
 
 #[tokio::test]
 async fn transfer_rejects_same_account_cross_tenant_and_preserves_nature_signs() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, _pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let other = UserId::generate();
@@ -1634,8 +1634,8 @@ async fn transfer_rejects_same_account_cross_tenant_and_preserves_nature_signs()
 
 #[tokio::test]
 async fn immutable_correction_reversal_and_annotation_changes_preserve_history() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = moneykeeper::contexts::ledger::build_with_categories(
         &verified,
         contexts.categories.clone(),
@@ -1827,7 +1827,7 @@ async fn immutable_correction_reversal_and_annotation_changes_preserve_history()
 
 #[tokio::test]
 async fn correction_normalizes_liability_sign_and_rejects_zero_delta() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, _pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let account = ledger
@@ -1888,8 +1888,8 @@ async fn correction_normalizes_liability_sign_and_rejects_zero_delta() {
 
 #[tokio::test]
 async fn queries_are_tenant_scoped_stable_and_projection_is_rebuildable() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger =
         moneykeeper::contexts::ledger::build_with_categories(&verified, contexts.categories);
     let user = UserId::generate();
@@ -1966,7 +1966,7 @@ async fn queries_are_tenant_scoped_stable_and_projection_is_rebuildable() {
         .await
         .unwrap();
     assert_eq!(detail.postings.len(), 2);
-    assert_eq!(detail.annotation_version.unwrap().get(), 1);
+    assert_eq!(detail.annotation.unwrap().version.get(), 1);
 
     sqlx::query(
         "UPDATE ledger.account_balances SET signed_balance = signed_balance + 7 \

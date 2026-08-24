@@ -1,4 +1,4 @@
-//! Finance V2 bounded contexts.
+//! Moneykeeper bounded contexts.
 //!
 //! Each context keeps its implementation private and exposes collaboration
 //! contracts through its `public` module only.

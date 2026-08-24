@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::{Router, routing::get};
-use moneykeeper::bootstrap::v2::serve;
+use moneykeeper::bootstrap::serve;
 use moneykeeper::bootstrap::workers::{
     REQUIRED_WORKERS, Readiness, WorkerDefinition, WorkerRegistry,
 };

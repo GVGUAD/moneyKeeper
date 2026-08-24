@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::api::v2::{AuthenticatedUser, V2ApiError, V2Json};
+use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::classification::public::{
     CategoryCatalog, CategoryCatalogFacade, CategoryCommand, CategoryId, ClassificationError,
 };
@@ -16,8 +16,8 @@ use super::dto::{
 pub(crate) async fn create(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(categories): State<CategoryCatalogFacade>,
-    V2Json(request): V2Json<CreateCategoryRequest>,
-) -> Result<(StatusCode, Json<CategoryResponse>), V2ApiError> {
+    ApiJson(request): ApiJson<CreateCategoryRequest>,
+) -> Result<(StatusCode, Json<CategoryResponse>), ApiError> {
     let category = categories
         .create(
             CategoryCommand {
@@ -38,7 +38,7 @@ pub(crate) async fn create(
 pub(crate) async fn list(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(categories): State<CategoryCatalogFacade>,
-) -> Result<Json<Vec<CategoryResponse>>, V2ApiError> {
+) -> Result<Json<Vec<CategoryResponse>>, ApiError> {
     categories
         .list(user_id)
         .await
@@ -57,7 +57,7 @@ pub(crate) async fn get(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(categories): State<CategoryCatalogFacade>,
     Path(id): Path<Uuid>,
-) -> Result<Json<CategoryResponse>, V2ApiError> {
+) -> Result<Json<CategoryResponse>, ApiError> {
     categories
         .get(user_id, CategoryId::new(id))
         .await
@@ -69,8 +69,8 @@ pub(crate) async fn rename(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(categories): State<CategoryCatalogFacade>,
     Path(id): Path<Uuid>,
-    V2Json(request): V2Json<RenameCategoryRequest>,
-) -> Result<Json<CategoryResponse>, V2ApiError> {
+    ApiJson(request): ApiJson<RenameCategoryRequest>,
+) -> Result<Json<CategoryResponse>, ApiError> {
     let expected_version = validate_expected_version(request.expected_version)?;
     categories
         .rename(
@@ -89,8 +89,8 @@ pub(crate) async fn archive(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(categories): State<CategoryCatalogFacade>,
     Path(id): Path<Uuid>,
-    V2Json(request): V2Json<ExpectedVersionRequest>,
-) -> Result<Json<CategoryResponse>, V2ApiError> {
+    ApiJson(request): ApiJson<ExpectedVersionRequest>,
+) -> Result<Json<CategoryResponse>, ApiError> {
     let expected_version = validate_expected_version(request.expected_version)?;
     categories
         .archive(user_id, CategoryId::new(id), expected_version, Utc::now())
@@ -103,8 +103,8 @@ pub(crate) async fn restore(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(categories): State<CategoryCatalogFacade>,
     Path(id): Path<Uuid>,
-    V2Json(request): V2Json<ExpectedVersionRequest>,
-) -> Result<Json<CategoryResponse>, V2ApiError> {
+    ApiJson(request): ApiJson<ExpectedVersionRequest>,
+) -> Result<Json<CategoryResponse>, ApiError> {
     let expected_version = validate_expected_version(request.expected_version)?;
     categories
         .restore(user_id, CategoryId::new(id), expected_version, Utc::now())
@@ -113,24 +113,22 @@ pub(crate) async fn restore(
         .map_err(map_error)
 }
 
-fn map_error(error: ClassificationError) -> V2ApiError {
+fn map_error(error: ClassificationError) -> ApiError {
     if error.is_not_found() {
-        V2ApiError::not_found("category was not found")
+        ApiError::not_found("category was not found")
     } else if error.is_duplicate_name() || error.is_version_conflict() || error.is_archived() {
-        V2ApiError::conflict("category conflict")
+        ApiError::conflict("category conflict")
     } else if error.is_invalid_name() {
-        V2ApiError::bad_request("invalid category")
+        ApiError::bad_request("invalid category")
     } else {
         debug_assert!(error.is_persistence());
-        V2ApiError::internal()
+        ApiError::internal()
     }
 }
 
-fn validate_expected_version(expected_version: i64) -> Result<i64, V2ApiError> {
+fn validate_expected_version(expected_version: i64) -> Result<i64, ApiError> {
     if expected_version < 1 {
-        return Err(V2ApiError::bad_request(
-            "expected_version must be at least 1",
-        ));
+        return Err(ApiError::bad_request("expected_version must be at least 1"));
     }
     Ok(expected_version)
 }

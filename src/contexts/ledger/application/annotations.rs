@@ -11,14 +11,14 @@ use super::super::{
     public::{AnnotationResult, UpdateTransactionAnnotation},
 };
 use super::{
-    accounts::{LedgerFacade, integration_event},
+    accounts::{LedgerApplication, integration_event},
     ports::{
         AnnotationStore, AuditRecord, AuditStore, CommandReceiptStore, LedgerOutboxStore,
         LedgerUnitOfWork, TransactionControl,
     },
 };
 
-impl LedgerFacade {
+impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
     /// Updates transaction metadata without mutating its journal or postings.
     pub async fn update_annotation(
         &self,

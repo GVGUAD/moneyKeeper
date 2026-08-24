@@ -1,0 +1,80 @@
+@startuml
+title Moneykeeper bounded contexts and dependency direction
+
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+package "Inbound adapters" {
+  [HTTP API] as api
+}
+
+package "Bounded contexts" {
+  [Supporting catalogs\nReference Data / Classification / Preferences] as supporting
+  [Ledger] as ledger
+  [Banking] as banking
+  [Mail] as mail
+  [Recurring] as recurring
+  [Sharing] as sharing
+  [Loans] as loans
+  [Portfolio] as portfolio
+  [Reporting] as reporting
+}
+
+package "Integration runtime" {
+  database "PostgreSQL outbox" as outbox
+  [RecurringEventConsumer\nrecurring-event-policy-v1] as recurring_consumer
+  [ReportingEventConsumer\nreporting-projections-v1] as reporting_consumer
+}
+
+package "Infrastructure adapters" {
+  [PostgreSQL repositories] as postgres
+  [Provider / crypto clients] as providers
+}
+
+api --> supporting : public façades
+api --> ledger : public façade
+api --> banking : public façade
+api --> mail : public façade
+api --> recurring : public façade
+api --> sharing : public façade
+api --> loans : public façade
+api --> portfolio : public façade
+api --> reporting : public façade
+
+banking --> ledger : public capability
+banking --> supporting : currency capability
+recurring --> ledger : annotation capability
+sharing --> ledger : accounting capability
+loans --> ledger : accounting capability
+portfolio --> ledger : settlement capability
+
+postgres ..> supporting : implements ports
+postgres ..> ledger : implements ports
+postgres ..> banking : implements ports
+postgres ..> mail : implements ports
+postgres ..> recurring : implements ports
+postgres ..> sharing : implements ports
+postgres ..> loans : implements ports
+postgres ..> portfolio : implements ports
+postgres ..> reporting : implements ports
+providers ..> banking : implements ports
+providers ..> mail : implements ports
+
+ledger --> outbox : published facts
+supporting --> outbox : FX facts
+mail --> outbox : receipt evidence
+recurring --> outbox : recurring facts
+sharing --> outbox : sharing facts
+loans --> outbox : loan facts
+portfolio --> outbox : portfolio facts
+outbox --> recurring_consumer
+outbox --> reporting_consumer
+recurring_consumer --> recurring : public façade
+reporting_consumer --> reporting : public façade
+
+note bottom of api
+  api -> public/application -> domain
+  infrastructure implements inward-facing ports
+end note
+@enduml

@@ -1,7 +1,7 @@
-mod v2_test_support;
+mod test_support;
 
 use chrono::{Days, Utc};
-use moneykeeper::bootstrap::v2::{phase4_workers, phase6_workers, supporting_contexts};
+use moneykeeper::bootstrap::{build_contexts, event_consumers, loan_accounting_workers};
 use moneykeeper::contexts::ledger::public::{AccountKind, AccountNature, OpenAccount};
 use moneykeeper::contexts::loans::public::{
     LoanDirection, MovementAmounts, MovementKind, OpenLoan, RecordLoanMovement,
@@ -12,10 +12,10 @@ use rust_decimal_macros::dec;
 
 #[tokio::test]
 async fn borrowed_loan_posts_components_closes_and_projects_without_principal_income() {
-    let pool = v2_test_support::fresh_v2_pool().await;
-    let contexts = supporting_contexts(&pool);
-    let workers = phase6_workers(&pool);
-    let events = phase4_workers(&pool);
+    let pool = test_support::fresh_pool().await;
+    let contexts = build_contexts(&pool);
+    let workers = loan_accounting_workers(&pool);
+    let events = event_consumers(&pool);
     let user = UserId::generate();
     let currency = CurrencyCode::new("UAH").unwrap();
     let now = Utc::now();
@@ -157,7 +157,7 @@ async fn borrowed_loan_posts_components_closes_and_projects_without_principal_in
     assert_eq!(closed.status, "closed");
 
     for _ in 0..40 {
-        events.route_event_once().await.unwrap();
+        events.run_reporting_once().await.unwrap();
     }
     let summary = contexts
         .reporting
@@ -200,5 +200,5 @@ fn movement(
     }
 }
 fn key(value: &str) -> IdempotencyKey {
-    IdempotencyKey::new(format!("phase6-{value}")).unwrap()
+    IdempotencyKey::new(format!("loans-{value}")).unwrap()
 }

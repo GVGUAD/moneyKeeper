@@ -1,9 +1,10 @@
-mod v2_test_support;
+mod test_support;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{Duration, TimeZone, Utc};
+use moneykeeper::contexts::banking::adapters::Aes256CredentialCipher;
 use moneykeeper::{
     contexts::banking::{self, public::*},
     shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId},
@@ -30,8 +31,8 @@ async fn banking_fixture() -> (
     ProviderConnectionId,
     Vec<ExternalResourceId>,
 ) {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let supporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let supporting = moneykeeper::bootstrap::build_contexts(&verified);
     let banking = banking::build_with_ledger(
         &verified,
         Arc::new(Aes256CredentialCipher::new("test-key", [6_u8; 32]).unwrap()),

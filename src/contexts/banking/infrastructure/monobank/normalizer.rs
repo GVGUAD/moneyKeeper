@@ -4,44 +4,13 @@ use rust_decimal::Decimal;
 
 use crate::{
     contexts::banking::{
-        application::ProviderFailureClass,
+        application::{NormalizedResource, NormalizedSnapshot, ProviderFailureClass},
         domain::{FundingModel, ResourceKind},
     },
     shared_kernel::{CurrencyCode, Money},
 };
 
 use super::dto::ClientInfoDto;
-
-#[derive(Clone)]
-pub struct NormalizedResource {
-    pub external_resource_id: String,
-    pub kind: ResourceKind,
-    pub funding_model: FundingModel,
-    pub currency: CurrencyCode,
-    pub masked_label: String,
-    pub provider_balance: Money,
-    pub credit_limit: Option<Money>,
-}
-
-impl std::fmt::Debug for NormalizedResource {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("NormalizedResource")
-            .field("external_resource_id", &"[REDACTED]")
-            .field("kind", &self.kind)
-            .field("funding_model", &self.funding_model)
-            .field("currency", &self.currency)
-            .field("masked_label", &"[REDACTED]")
-            .field("provider_balance", &self.provider_balance)
-            .field("credit_limit", &self.credit_limit)
-            .finish()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct NormalizedSnapshot {
-    pub resources: Vec<NormalizedResource>,
-}
 
 pub struct MonobankAdapter;
 

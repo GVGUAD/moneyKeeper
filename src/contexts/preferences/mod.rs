@@ -7,8 +7,11 @@ mod infrastructure;
 pub(crate) mod api;
 pub mod public;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
+use std::sync::Arc;
 
-pub(crate) fn build(pool: &VerifiedV2Pool) -> public::PreferencesFacade {
-    public::PreferencesFacade::new(infrastructure::PgPreferences::new(pool.pool().clone()))
+pub(crate) fn build(pool: &VerifiedDatabase) -> public::PreferencesFacade {
+    public::PreferencesFacade::new(Arc::new(infrastructure::PgPreferences::new(
+        pool.pool().clone(),
+    )))
 }

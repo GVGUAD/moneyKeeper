@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
 
 use super::{IntegrationEvent, postgres::PgOutboxStore};
 
@@ -145,7 +145,7 @@ where
     /// Returns [`OutboxError::InvalidConfiguration`] for an empty holder or an
     /// unsafe retry/claim policy.
     pub fn new(
-        pool: &VerifiedV2Pool,
+        pool: &VerifiedDatabase,
         holder: impl Into<String>,
         publisher: P,
         config: DispatcherConfig,

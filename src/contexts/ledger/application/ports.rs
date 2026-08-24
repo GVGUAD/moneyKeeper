@@ -2,6 +2,7 @@
 
 #![allow(async_fn_in_trait)]
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
@@ -14,6 +15,54 @@ use super::super::domain::{
     ReconciliationCase, ReconciliationCaseId, SourceReference, SystemAccountRole,
     TransactionAnnotation,
 };
+use super::super::public::{
+    AccountView, ActivityCursor, JournalView, ProjectionMismatch, ReconciliationView,
+};
+
+/// Read-only accounting facts required by Ledger query use cases.
+#[async_trait]
+pub(crate) trait LedgerQueryPort: Send + Sync {
+    async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError>;
+    async fn get_account(
+        &self,
+        user_id: UserId,
+        id: LedgerAccountId,
+    ) -> Result<AccountView, LedgerError>;
+    async fn account_activity(
+        &self,
+        user_id: UserId,
+        account_id: LedgerAccountId,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn list_journals(
+        &self,
+        user_id: UserId,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn get_journal(
+        &self,
+        user_id: UserId,
+        id: JournalEntryId,
+    ) -> Result<JournalView, LedgerError>;
+    async fn list_reconciliations(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<ReconciliationView>, LedgerError>;
+    async fn get_reconciliation(
+        &self,
+        user_id: UserId,
+        id: ReconciliationCaseId,
+    ) -> Result<ReconciliationView, LedgerError>;
+}
+
+/// Operational projection verification and rebuild boundary.
+#[async_trait]
+pub(crate) trait ProjectionRebuildPort: Send + Sync {
+    async fn verify(&self) -> Result<Vec<ProjectionMismatch>, LedgerError>;
+    async fn rebuild(&self) -> Result<(), LedgerError>;
+}
 
 /// Durable idempotency result read inside a command transaction.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,6 +89,7 @@ pub(crate) struct AuditRecord {
 }
 
 /// Starts exactly one PostgreSQL transaction per Ledger command.
+#[async_trait]
 pub(crate) trait LedgerUnitOfWork {
     type Tx<'a>: LedgerAccountStore
         + JournalStore
@@ -51,6 +101,7 @@ pub(crate) trait LedgerUnitOfWork {
         + AuditStore
         + LedgerOutboxStore
         + TransactionControl
+        + Send
     where
         Self: 'a;
 
@@ -65,6 +116,7 @@ pub(crate) struct ReconciliationStream {
     pub active_case_id: Option<ReconciliationCaseId>,
 }
 
+#[async_trait]
 pub(crate) trait ReconciliationStore {
     async fn lock_reconciliation_stream(
         &mut self,
@@ -102,6 +154,7 @@ pub(crate) trait ReconciliationStore {
 }
 
 /// Versioned transaction-metadata persistence.
+#[async_trait]
 pub(crate) trait AnnotationStore {
     async fn find_annotation(
         &mut self,
@@ -129,6 +182,7 @@ pub(crate) struct JournalSnapshot {
 }
 
 /// Aggregate-shaped account persistence within the caller's transaction.
+#[async_trait]
 pub(crate) trait LedgerAccountStore {
     async fn find_account(
         &mut self,
@@ -161,6 +215,7 @@ pub(crate) trait LedgerAccountStore {
 }
 
 /// Immutable journal aggregate persistence.
+#[async_trait]
 pub(crate) trait JournalStore {
     async fn find_journal(
         &mut self,
@@ -191,6 +246,7 @@ pub(crate) struct CorrectionDetail<'a> {
     pub recorded_at: DateTime<Utc>,
 }
 
+#[async_trait]
 pub(crate) trait CorrectionStore {
     async fn insert_correction_detail(
         &mut self,
@@ -199,6 +255,7 @@ pub(crate) trait CorrectionStore {
 }
 
 /// Rebuildable balance-projection writes bound to the journal transaction.
+#[async_trait]
 pub(crate) trait ProjectionStore {
     async fn apply_postings(&mut self, journal: &JournalEntry) -> Result<(), LedgerError>;
     async fn signed_balance(
@@ -210,6 +267,7 @@ pub(crate) trait ProjectionStore {
 }
 
 /// Scoped, payload-sensitive command receipt persistence.
+#[async_trait]
 pub(crate) trait CommandReceiptStore {
     async fn find_receipt(
         &mut self,
@@ -248,16 +306,19 @@ pub(crate) trait CommandReceiptStore {
 }
 
 /// Append-only audit persistence.
+#[async_trait]
 pub(crate) trait AuditStore {
     async fn append_audit(&mut self, record: &AuditRecord) -> Result<(), LedgerError>;
 }
 
 /// Transactional outbox persistence owned by the same SQL transaction.
+#[async_trait]
 pub(crate) trait LedgerOutboxStore {
     async fn append_outbox(&mut self, event: &IntegrationEvent) -> Result<(), LedgerError>;
 }
 
 /// Consumes the transaction to commit or roll it back.
+#[async_trait]
 pub(crate) trait TransactionControl: Sized {
     async fn commit(self) -> Result<(), LedgerError>;
     async fn rollback(self) -> Result<(), LedgerError>;

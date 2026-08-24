@@ -648,7 +648,7 @@ impl<'a> From<&'a RawEmail> for SerializableEmail<'a> {
 mod tests {
     use super::*;
     use crate::contexts::mail::application::ports::{GmailPage, OAuthTokens};
-    use crate::infrastructure::v2_db::initialize_v2;
+    use crate::infrastructure::database::initialize_database;
     use testcontainers::ImageExt;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::postgres::Postgres;
@@ -699,7 +699,7 @@ mod tests {
             .expect("start PostgreSQL 16");
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let database_url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
-        let verified = initialize_v2(&database_url).await.unwrap();
+        let verified = initialize_database(&database_url).await.unwrap();
         let pool = verified.pool();
 
         let user_id = Uuid::new_v4();

@@ -1,4 +1,4 @@
-//! Isolated V2 Loans routes.
+//! Loans HTTP routes.
 
 use super::handlers;
 use crate::contexts::loans::public::LoansFacade;

@@ -1,4 +1,6 @@
-//! Finance V2 composition and lifecycle barriers.
+//! Moneykeeper composition and lifecycle barriers.
 
-pub mod v2;
+mod runtime;
 pub mod workers;
+
+pub use runtime::*;

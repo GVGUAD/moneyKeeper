@@ -1,22 +1,22 @@
-mod v2_test_support;
+mod test_support;
 
 use std::borrow::Cow;
 
-use moneykeeper::infrastructure::test_db::FreshV2Database;
-use moneykeeper::infrastructure::v2_db::V2_MIGRATOR;
+use moneykeeper::infrastructure::database::DATABASE_MIGRATOR;
+use moneykeeper::infrastructure::test_db::FreshDatabase;
 use sqlx::{Executor, PgPool};
 
-async fn fresh_database() -> FreshV2Database {
-    v2_test_support::fresh_v2_database().await
+async fn fresh_database() -> FreshDatabase {
+    test_support::fresh_database().await
 }
 
-async fn assert_rejected_before_v2_migrations(database: &FreshV2Database) {
+async fn assert_rejected_before_migrations(database: &FreshDatabase) {
     let error = database
         .initialize()
         .await
         .expect_err("unmarked non-empty database must be rejected");
     assert!(
-        format!("{error:#}").contains("refusing non-Finance-V2 database"),
+        format!("{error:#}").contains("refusing non-Moneykeeper database"),
         "unexpected error: {error:#}"
     );
 
@@ -26,30 +26,39 @@ async fn assert_rejected_before_v2_migrations(database: &FreshV2Database) {
             .fetch_one(&pool)
             .await
             .unwrap();
-    let v2_marker: Option<String> =
+    let lineage_marker: Option<String> =
         sqlx::query_scalar("SELECT to_regclass('shared_kernel.database_lineage')::text")
             .fetch_one(&pool)
             .await
             .unwrap();
     assert!(migration_history.is_none());
-    assert!(v2_marker.is_none());
+    assert!(lineage_marker.is_none());
 }
 
 #[tokio::test]
-async fn database_generation_empty_database_migrates_to_complete_v2() {
+async fn database_generation_empty_database_migrates_to_complete_baseline() {
     let database = fresh_database().await;
-    database.initialize().await.expect("initialize empty V2 DB");
+    database
+        .initialize()
+        .await
+        .expect("initialize empty Moneykeeper database");
 }
 
 #[tokio::test]
-async fn database_generation_complete_v2_reopens_idempotently() {
+async fn database_generation_complete_baseline_reopens_idempotently() {
     let database = fresh_database().await;
-    database.initialize().await.expect("initialize V2 DB");
-    database.initialize().await.expect("reopen marked V2 DB");
+    database
+        .initialize()
+        .await
+        .expect("initialize Moneykeeper database");
+    database
+        .initialize()
+        .await
+        .expect("reopen marked Moneykeeper database");
 }
 
 #[tokio::test]
-async fn nonempty_unmarked_database_is_rejected_before_v2_migrations_run() {
+async fn nonempty_unmarked_database_is_rejected_before_migrations_run() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();
     pool.execute("CREATE TABLE public.unrelated_data (id BIGINT PRIMARY KEY)")
@@ -62,7 +71,7 @@ async fn nonempty_unmarked_database_is_rejected_before_v2_migrations_run() {
         .await
         .expect_err("arbitrary non-empty database must be rejected");
     assert!(
-        format!("{error:#}").contains("refusing non-Finance-V2 database"),
+        format!("{error:#}").contains("refusing non-Moneykeeper database"),
         "unexpected error: {error:#}"
     );
 
@@ -76,7 +85,7 @@ async fn nonempty_unmarked_database_is_rejected_before_v2_migrations_run() {
 }
 
 #[tokio::test]
-async fn empty_custom_schema_is_rejected_before_v2_migrations_run() {
+async fn empty_custom_schema_is_rejected_before_migrations_run() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();
     pool.execute("CREATE SCHEMA arbitrary_application")
@@ -84,11 +93,11 @@ async fn empty_custom_schema_is_rejected_before_v2_migrations_run() {
         .unwrap();
     pool.close().await;
 
-    assert_rejected_before_v2_migrations(&database).await;
+    assert_rejected_before_migrations(&database).await;
 }
 
 #[tokio::test]
-async fn public_types_routines_and_procedures_are_rejected_before_v2_migrations_run() {
+async fn public_types_routines_and_procedures_are_rejected_before_migrations_run() {
     for ddl in [
         "CREATE TYPE public.arbitrary_state AS ENUM ('new')",
         "CREATE FUNCTION public.arbitrary_function() RETURNS INTEGER \
@@ -101,12 +110,12 @@ async fn public_types_routines_and_procedures_are_rejected_before_v2_migrations_
         pool.execute(ddl).await.unwrap();
         pool.close().await;
 
-        assert_rejected_before_v2_migrations(&database).await;
+        assert_rejected_before_migrations(&database).await;
     }
 }
 
 #[tokio::test]
-async fn nondefault_extension_is_rejected_before_v2_migrations_run() {
+async fn nondefault_extension_is_rejected_before_migrations_run() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();
     pool.execute("CREATE EXTENSION hstore")
@@ -114,11 +123,11 @@ async fn nondefault_extension_is_rejected_before_v2_migrations_run() {
         .expect("PostgreSQL 16 test image must provide hstore");
     pool.close().await;
 
-    assert_rejected_before_v2_migrations(&database).await;
+    assert_rejected_before_migrations(&database).await;
 }
 
 #[tokio::test]
-async fn empty_database_is_initialized_as_finance_v2() {
+async fn empty_database_is_initialized_with_stable_lineage() {
     let database = fresh_database().await;
     let verified = database.initialize().await.unwrap();
     let mut connection = verified.acquire().await.unwrap();
@@ -132,7 +141,7 @@ async fn empty_database_is_initialized_as_finance_v2() {
 }
 
 #[tokio::test]
-async fn already_marked_v2_database_is_reopened_idempotently() {
+async fn already_marked_database_is_reopened_idempotently() {
     let database = fresh_database().await;
     database.initialize().await.unwrap();
     let verified = database.initialize().await.unwrap();
@@ -171,7 +180,7 @@ async fn database_generation_wrong_lineage_marker_is_rejected_before_migration()
         .await
         .expect_err("wrong marker must be rejected");
     assert!(
-        format!("{error:#}").contains("invalid Finance V2 lineage marker"),
+        format!("{error:#}").contains("invalid Moneykeeper lineage marker"),
         "unexpected error: {error:#}"
     );
 
@@ -189,7 +198,7 @@ async fn database_generation_partial_lineage_resumes_to_the_embedded_baseline() 
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();
     let partial = sqlx::migrate::Migrator {
-        migrations: Cow::Owned(V2_MIGRATOR.iter().take(4).cloned().collect()),
+        migrations: Cow::Owned(DATABASE_MIGRATOR.iter().take(4).cloned().collect()),
         ..sqlx::migrate::Migrator::DEFAULT
     };
     partial.run(&pool).await.unwrap();
@@ -204,14 +213,14 @@ async fn database_generation_partial_lineage_resumes_to_the_embedded_baseline() 
     let verified = database
         .initialize()
         .await
-        .expect("marked partial V2 lineage should resume");
+        .expect("marked partial Moneykeeper lineage should resume");
     let mut connection = verified.acquire().await.unwrap();
     let after: Vec<i64> =
         sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&mut *connection)
             .await
             .unwrap();
-    let expected: Vec<i64> = V2_MIGRATOR
+    let expected: Vec<i64> = DATABASE_MIGRATOR
         .iter()
         .filter(|migration| migration.migration_type.is_up_migration())
         .map(|migration| migration.version)
@@ -220,11 +229,66 @@ async fn database_generation_partial_lineage_resumes_to_the_embedded_baseline() 
 }
 
 #[tokio::test]
+async fn split_event_consumer_migration_seeds_both_receipts_and_retains_history() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let before_split = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            DATABASE_MIGRATOR
+                .iter()
+                .filter(|migration| migration.version < 12)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    before_split.run(&pool).await.unwrap();
+
+    let message_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO integration.inbox_receipts \
+         (consumer_name, message_id, event_type, received_at, processed_at) \
+         VALUES ('finance-v2-phase4-router', $1, 'ledger.journal-posted.v1', \
+                 '2026-08-23T10:00:00Z', '2026-08-23T10:00:01Z')",
+    )
+    .bind(message_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+    let consumers: Vec<String> = sqlx::query_scalar(
+        "SELECT consumer_name FROM integration.inbox_receipts \
+         WHERE message_id = $1 ORDER BY consumer_name",
+    )
+    .bind(message_id)
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        consumers,
+        vec![
+            "finance-v2-phase4-router",
+            "recurring-event-policy-v1",
+            "reporting-projections-v1",
+        ]
+    );
+
+    let split = DATABASE_MIGRATOR
+        .iter()
+        .find(|migration| migration.version == 12)
+        .expect("migration 0012 must remain embedded");
+    assert_eq!(split.description, "split event consumer receipts");
+}
+
+#[tokio::test]
 async fn database_generation_failure_returns_no_pool_and_redacts_database_password() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();
     let root_only = sqlx::migrate::Migrator {
-        migrations: Cow::Owned(V2_MIGRATOR.iter().take(1).cloned().collect()),
+        migrations: Cow::Owned(DATABASE_MIGRATOR.iter().take(1).cloned().collect()),
         ..sqlx::migrate::Migrator::DEFAULT
     };
     root_only.run(&pool).await.unwrap();
@@ -239,7 +303,7 @@ async fn database_generation_failure_returns_no_pool_and_redacts_database_passwo
         .await
         .expect_err("conflicting partial database must not produce a verified pool");
     let message = format!("{error:#}");
-    assert!(message.contains("run Finance V2 migrations"), "{message}");
+    assert!(message.contains("run Moneykeeper migrations"), "{message}");
     assert!(!message.contains("postgres:postgres"), "{message}");
     assert!(!message.contains(database.database_url()), "{message}");
 
@@ -408,7 +472,7 @@ async fn root_migration_seeds_and_constrains_reference_and_tenant_data() {
 }
 
 #[tokio::test]
-async fn banking_migration_installs_the_phase_three_baseline() {
+async fn banking_migration_installs_the_owned_storage_baseline() {
     let database = fresh_database().await;
     let verified = database.initialize().await.unwrap();
     let mut connection = verified.acquire().await.unwrap();
@@ -480,7 +544,7 @@ async fn third_migration_installs_the_strict_ledger_baseline() {
 }
 
 #[tokio::test]
-async fn phase_four_migrations_install_context_owned_storage() {
+async fn feature_context_migrations_install_owned_storage() {
     let database = fresh_database().await;
     let verified = database.initialize().await.unwrap();
     let mut connection = verified.acquire().await.unwrap();

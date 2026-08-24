@@ -1,8 +1,9 @@
 //! Concrete PostgreSQL Ledger unit of work.
 
+use async_trait::async_trait;
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
 
 use super::super::{
     application::ports::{LedgerUnitOfWork, TransactionControl},
@@ -16,7 +17,7 @@ pub(crate) struct PgLedgerUnitOfWork {
 }
 
 impl PgLedgerUnitOfWork {
-    pub(crate) fn new(pool: &VerifiedV2Pool) -> Self {
+    pub(crate) fn new(pool: &VerifiedDatabase) -> Self {
         Self {
             pool: pool.pool().clone(),
         }
@@ -28,28 +29,30 @@ pub(crate) struct PgLedgerTransaction<'a> {
     pub(super) transaction: Transaction<'a, Postgres>,
 }
 
+#[async_trait]
 impl LedgerUnitOfWork for PgLedgerUnitOfWork {
     type Tx<'a> = PgLedgerTransaction<'a>;
 
     async fn begin(&self) -> Result<Self::Tx<'_>, LedgerError> {
         Ok(PgLedgerTransaction {
-            transaction: self.pool.begin().await.map_err(LedgerError::database)?,
+            transaction: self.pool.begin().await.map_err(LedgerError::storage)?,
         })
     }
 }
 
+#[async_trait]
 impl TransactionControl for PgLedgerTransaction<'_> {
     async fn commit(self) -> Result<(), LedgerError> {
         self.transaction
             .commit()
             .await
-            .map_err(LedgerError::database)
+            .map_err(LedgerError::storage)
     }
 
     async fn rollback(self) -> Result<(), LedgerError> {
         self.transaction
             .rollback()
             .await
-            .map_err(LedgerError::database)
+            .map_err(LedgerError::storage)
     }
 }

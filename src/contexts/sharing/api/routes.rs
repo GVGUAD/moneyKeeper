@@ -1,4 +1,4 @@
-//! Sharing isolated V2 routes.
+//! Sharing HTTP routes.
 use super::handlers;
 use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 use crate::contexts::sharing::public::SharingFacade;

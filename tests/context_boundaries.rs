@@ -61,6 +61,76 @@ fn context_http_adapters_contain_no_sql_or_sqlx() {
 }
 
 #[test]
+fn domain_application_and_public_layers_have_no_outward_framework_dependencies() {
+    let contexts_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/contexts");
+    for context in CONTEXTS {
+        let root = contexts_root.join(context);
+        for file in rust_files(&root) {
+            let relative = file.strip_prefix(&root).unwrap();
+            let is_inner_layer = relative == Path::new("application.rs")
+                || relative == Path::new("domain.rs")
+                || relative == Path::new("public.rs")
+                || relative.starts_with("application")
+                || relative.starts_with("domain");
+            if !is_inner_layer {
+                continue;
+            }
+            let source = fs::read_to_string(&file).unwrap();
+            for forbidden in [
+                "sqlx::",
+                "axum::",
+                "reqwest::",
+                "crate::bootstrap",
+                "crate::infrastructure",
+                "::infrastructure::",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{} imports outward dependency {forbidden}",
+                    file.display()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn context_http_adapters_use_their_own_public_contract() {
+    let contexts_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/contexts");
+    for context in CONTEXTS {
+        let api_root = contexts_root.join(context).join("api");
+        if !api_root.exists() {
+            continue;
+        }
+        for file in rust_files(&api_root) {
+            let source = fs::read_to_string(&file).unwrap();
+            if let Some(private) = private_context_import(&source, context) {
+                panic!(
+                    "{} bypasses its public contract through {private}",
+                    file.display()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn active_rust_has_no_roadmap_stage_or_transitional_version_identifiers() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for source_root in [root.join("src"), root.join("tests")] {
+        for file in rust_files(&source_root) {
+            let source = fs::read_to_string(&file).unwrap();
+            if let Some(identifier) = transitional_identifier(&source) {
+                panic!(
+                    "{} contains roadmap-era Rust identifier {identifier}",
+                    file.display()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn process_managers_use_only_public_context_contracts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/integration/process_managers");
     if !root.exists() {
@@ -107,6 +177,83 @@ fn checker_rejects_deliberate_context_and_process_manager_violations() {
     let process_violation = "use crate::contexts::ledger::domain::Journal;\n\
                              const SQL: &str = \"UPDATE ledger.journals SET x = 1\";";
     assert!(process_manager_violation(process_violation).is_some());
+    assert_eq!(
+        transitional_identifier("struct Phase4Router;"),
+        Some("Phase4Router")
+    );
+    assert_eq!(
+        transitional_identifier("fn ledger_api_v2() {}"),
+        Some("ledger_api_v2")
+    );
+    assert_eq!(
+        transitional_identifier("const URL: &str = \"https://example/v2\";"),
+        None
+    );
+}
+
+fn transitional_identifier(source: &str) -> Option<&str> {
+    let mut in_string = false;
+    let mut escaped = false;
+    for line in source.lines() {
+        if in_string {
+            escaped = false;
+        }
+        let mut start = None;
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                index += 1;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = true;
+                index += 1;
+                continue;
+            }
+            if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+                break;
+            }
+            if byte.is_ascii_alphanumeric() || byte == b'_' {
+                start.get_or_insert(index);
+            } else if let Some(token_start) = start.take() {
+                let token = &line[token_start..index];
+                if is_transitional_identifier(token) {
+                    return Some(token);
+                }
+            }
+            index += 1;
+        }
+        if let Some(token_start) = start {
+            let token = &line[token_start..];
+            if is_transitional_identifier(token) {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+fn is_transitional_identifier(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    let roadmap_suffix = lower.strip_prefix("phase");
+    roadmap_suffix.is_some_and(|suffix| {
+        let digits = suffix.trim_start_matches('_');
+        !digits.is_empty()
+            && digits
+                .chars()
+                .next()
+                .is_some_and(|value| value.is_ascii_digit())
+    }) || (lower != "migrations_v2"
+        && (lower == "v2" || lower.starts_with("v2_") || lower.ends_with("_v2")))
 }
 
 fn assert_context_source_isolated(context: &str, file: &Path, source: &str) {

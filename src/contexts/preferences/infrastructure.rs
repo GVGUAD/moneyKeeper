@@ -1,9 +1,11 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::shared_kernel::{CurrencyCode, UserId};
 
+use super::application::PreferencesRepository;
 use super::domain::UserPreferences;
 use super::public::PreferencesError;
 
@@ -37,15 +39,15 @@ pub(crate) struct PgPreferences {
 }
 
 impl PgPreferences {
-    /// Creates a preferences capability backed by a Finance V2 pool.
+    /// Creates a preferences capability backed by a Moneykeeper pool.
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+}
 
-    pub(crate) async fn find(
-        &self,
-        user_id: UserId,
-    ) -> Result<Option<UserPreferences>, PreferencesError> {
+#[async_trait]
+impl PreferencesRepository for PgPreferences {
+    async fn find(&self, user_id: UserId) -> Result<Option<UserPreferences>, PreferencesError> {
         sqlx::query_as::<_, PreferencesRow>(
             "SELECT user_id, base_currency::text AS base_currency, version, \
                     created_at, updated_at \
@@ -54,12 +56,12 @@ impl PgPreferences {
         .bind(user_id.into_uuid())
         .fetch_optional(&self.pool)
         .await
-        .map_err(PreferencesError::database)?
+        .map_err(PreferencesError::storage)?
         .map(PreferencesRow::into_domain)
         .transpose()
     }
 
-    pub(crate) async fn save(
+    async fn save(
         &self,
         preferences: &UserPreferences,
         expected_version: i64,
@@ -77,7 +79,7 @@ impl PgPreferences {
             .bind(preferences.updated_at())
             .execute(&self.pool)
             .await
-            .map_err(PreferencesError::database)?
+            .map_err(PreferencesError::storage)?
         } else {
             sqlx::query(
                 "UPDATE preferences.user_preferences \
@@ -91,7 +93,7 @@ impl PgPreferences {
             .bind(expected_version)
             .execute(&self.pool)
             .await
-            .map_err(PreferencesError::database)?
+            .map_err(PreferencesError::storage)?
         };
         if result.rows_affected() == 0 {
             return Err(PreferencesError::version_conflict());

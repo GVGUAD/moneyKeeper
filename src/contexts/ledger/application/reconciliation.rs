@@ -18,16 +18,16 @@ use super::super::{
     },
 };
 use super::{
-    accounts::{LedgerFacade, integration_event},
+    accounts::{LedgerApplication, integration_event},
     commit::commit_journal,
     ports::{
         AuditRecord, AuditStore, CommandReceiptStore, CorrectionDetail, CorrectionStore,
-        LedgerAccountStore, LedgerOutboxStore, LedgerUnitOfWork, ProjectionStore,
+        LedgerAccountStore, LedgerOutboxStore, LedgerQueryPort, LedgerUnitOfWork, ProjectionStore,
         ReconciliationStore, ReconciliationStream, TransactionControl,
     },
 };
 
-impl LedgerFacade {
+impl<U: LedgerUnitOfWork, Q: LedgerQueryPort, P> LedgerApplication<U, Q, P> {
     pub async fn observe_provider_balance(
         &self,
         command: ObserveProviderBalance,

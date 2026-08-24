@@ -7,8 +7,11 @@ mod infrastructure;
 pub(crate) mod api;
 pub mod public;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
+use std::sync::Arc;
 
-pub(crate) fn build(pool: &VerifiedV2Pool) -> public::CategoryCatalogFacade {
-    public::CategoryCatalogFacade::new(infrastructure::PgCategoryCatalog::new(pool.pool().clone()))
+pub(crate) fn build(pool: &VerifiedDatabase) -> public::CategoryCatalogFacade {
+    public::CategoryCatalogFacade::new(Arc::new(infrastructure::PgCategoryCatalog::new(
+        pool.pool().clone(),
+    )))
 }

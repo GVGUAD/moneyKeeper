@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use moneykeeper::bootstrap::v2::{self, RuntimeConfig};
-use moneykeeper::infrastructure::db::create_pool;
+use moneykeeper::bootstrap::{self, RuntimeConfig};
+use moneykeeper::infrastructure::database::initialize_database;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -15,9 +15,9 @@ async fn main() -> anyhow::Result<()> {
     // Validate every startup-critical secret and address before touching the
     // database or any external provider.
     let config = RuntimeConfig::from_environment()?;
-    let pool = create_pool(config.database_url()).await?;
+    let pool = initialize_database(config.database_url()).await?;
 
-    // The V2 lineage marker and complete embedded baseline have now passed.
+    // The stable lineage marker and complete embedded baseline have now passed.
     // Only after that safety boundary may startup perform external I/O.
     let jwks: jsonwebtoken::jwk::JwkSet = reqwest::get(config.jwks_url())
         .await
@@ -29,10 +29,10 @@ async fn main() -> anyhow::Result<()> {
         .context("decode Supabase JWKS")?;
     let listener = tokio::net::TcpListener::bind(config.bind_address())
         .await
-        .context("bind Finance V2 HTTP listener")?;
-    tracing::info!(address = %config.bind_address(), "Finance V2 listener bound with readiness false");
+        .context("bind Moneykeeper HTTP listener")?;
+    tracing::info!(address = %config.bind_address(), "Moneykeeper listener bound with readiness false");
 
-    v2::run(
+    bootstrap::run(
         listener,
         &pool,
         Arc::new(jwks),

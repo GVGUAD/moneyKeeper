@@ -4,16 +4,19 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use super::application::ports::{
+    LoanAccountingWorkflowRepository, LoanAgreementRepository, LoanMovementRepository,
+};
 pub use super::domain::{
     AnnualRate, ComponentBalances, Counterparty, LoanAgreement, LoanAgreementId, LoanDirection,
     LoanError, LoanMovement, LoanMovementId, LoanStatus, LoanTerms, MovementComponents,
     MovementKind, MovementStatus, TermRevision, TermRevisionId,
 };
-use super::infrastructure::{PgLoansStore, StoreError};
 use crate::contexts::ledger::public::{
     AccountKind, AccountNature, ControlAccountRole, JournalEntryId, LedgerAccountId,
 };
 use crate::shared_kernel::{CorrelationId, CurrencyCode, EventId, IdempotencyKey, UserId};
+use std::sync::Arc;
 
 pub const CONTEXT_NAME: &str = "loans";
 pub const AGREEMENT_OPENED_V1: &str = "loans.agreement-opened.v1";
@@ -26,12 +29,22 @@ pub const AGREEMENT_CLOSED_V1: &str = "loans.agreement-closed.v1";
 
 #[derive(Clone)]
 pub struct LoansFacade {
-    pub(crate) store: PgLoansStore,
+    agreements: Arc<dyn LoanAgreementRepository>,
+    movements: Arc<dyn LoanMovementRepository>,
+    accounting: Arc<dyn LoanAccountingWorkflowRepository>,
 }
 
 impl LoansFacade {
-    pub(crate) fn new(store: PgLoansStore) -> Self {
-        Self { store }
+    pub(crate) fn new(
+        agreements: Arc<dyn LoanAgreementRepository>,
+        movements: Arc<dyn LoanMovementRepository>,
+        accounting: Arc<dyn LoanAccountingWorkflowRepository>,
+    ) -> Self {
+        Self {
+            agreements,
+            movements,
+            accounting,
+        }
     }
     pub async fn open(&self, command: OpenLoan) -> Result<LoanCommandResult, LoansError> {
         let hash = super::application::commands::canonical_request_hash(
@@ -41,7 +54,7 @@ impl LoansFacade {
             &OpenLoanHash::from(&command),
         )
         .map_err(|_| LoansError::invalid("request"))?;
-        self.store.open(command, hash).await.map_err(Into::into)
+        self.agreements.open(command, hash).await
     }
     pub async fn revise_terms(
         &self,
@@ -54,7 +67,7 @@ impl LoansFacade {
             &ReviseLoanTermsHash::from(&command),
         )
         .map_err(|_| LoansError::invalid("request"))?;
-        self.store.revise(command, hash).await.map_err(Into::into)
+        self.agreements.revise(command, hash).await
     }
     pub async fn record_movement(
         &self,
@@ -67,10 +80,7 @@ impl LoansFacade {
             &RecordLoanMovementHash::from(&command),
         )
         .map_err(|_| LoansError::invalid("request"))?;
-        self.store
-            .record_movement(command, hash)
-            .await
-            .map_err(Into::into)
+        self.movements.record_movement(command, hash).await
     }
     pub async fn close(
         &self,
@@ -89,37 +99,33 @@ impl LoansFacade {
             &body,
         )
         .map_err(|_| LoansError::invalid("request"))?;
-        self.store
+        self.agreements
             .close(user, id, expected, key.as_str(), hash, correlation, now)
             .await
-            .map_err(Into::into)
     }
     pub async fn list(&self, user: UserId) -> Result<Vec<LoanView>, LoansError> {
-        self.store.list(user).await.map_err(Into::into)
+        self.agreements.list(user).await
     }
     pub async fn get(
         &self,
         user: UserId,
         id: LoanAgreementId,
     ) -> Result<Option<LoanView>, LoansError> {
-        self.store.get(user, id).await.map_err(Into::into)
+        self.agreements.get(user, id).await
     }
     pub async fn term_revisions(
         &self,
         user: UserId,
         id: LoanAgreementId,
     ) -> Result<Vec<serde_json::Value>, LoansError> {
-        self.store
-            .term_revisions(user, id)
-            .await
-            .map_err(Into::into)
+        self.agreements.term_revisions(user, id).await
     }
     pub async fn movements(
         &self,
         user: UserId,
         id: LoanAgreementId,
     ) -> Result<Vec<LoanMovementView>, LoansError> {
-        self.store.movements(user, id).await.map_err(Into::into)
+        self.movements.movements(user, id).await
     }
     pub async fn movement(
         &self,
@@ -127,13 +133,10 @@ impl LoansFacade {
         id: LoanAgreementId,
         movement: LoanMovementId,
     ) -> Result<Option<LoanMovementView>, LoansError> {
-        self.store
-            .movement(user, id, movement)
-            .await
-            .map_err(Into::into)
+        self.movements.movement(user, id, movement).await
     }
     pub async fn pending_openings(&self, limit: i64) -> Result<Vec<LoanView>, LoansError> {
-        self.store.pending_openings(limit).await.map_err(Into::into)
+        self.accounting.pending_openings(limit).await
     }
     pub async fn confirm_opening(
         &self,
@@ -142,10 +145,9 @@ impl LoansFacade {
         account: LedgerAccountId,
         now: DateTime<Utc>,
     ) -> Result<(), LoansError> {
-        self.store
+        self.accounting
             .confirm_opening(user, id, account, now)
             .await
-            .map_err(Into::into)
     }
     pub async fn fail_opening(
         &self,
@@ -154,19 +156,13 @@ impl LoansFacade {
         error: &str,
         now: DateTime<Utc>,
     ) -> Result<(), LoansError> {
-        self.store
-            .fail_opening(user, id, error, now)
-            .await
-            .map_err(Into::into)
+        self.accounting.fail_opening(user, id, error, now).await
     }
     pub async fn pending_accounting(
         &self,
         limit: i64,
     ) -> Result<Vec<PendingLoanMovement>, LoansError> {
-        self.store
-            .pending_movements(limit)
-            .await
-            .map_err(Into::into)
+        self.accounting.pending_movements(limit).await
     }
     pub async fn confirm_accounting(
         &self,
@@ -176,10 +172,9 @@ impl LoansFacade {
         journal: JournalEntryId,
         now: DateTime<Utc>,
     ) -> Result<LoanEventV1, LoansError> {
-        self.store
+        self.accounting
             .confirm_movement(user, agreement, movement, journal, now)
             .await
-            .map_err(Into::into)
     }
     pub async fn fail_accounting(
         &self,
@@ -189,10 +184,9 @@ impl LoansFacade {
         error: &str,
         now: DateTime<Utc>,
     ) -> Result<(), LoansError> {
-        self.store
+        self.accounting
             .fail_movement(user, agreement, movement, error, now)
             .await
-            .map_err(Into::into)
     }
     pub async fn request_reversal(
         &self,
@@ -205,19 +199,13 @@ impl LoansFacade {
             &RequestLoanReversalHash::from(&command),
         )
         .map_err(|_| LoansError::invalid("request"))?;
-        self.store
-            .request_reversal(command, hash)
-            .await
-            .map_err(Into::into)
+        self.movements.request_reversal(command, hash).await
     }
     pub async fn pending_reversals(
         &self,
         limit: i64,
     ) -> Result<Vec<PendingLoanReversal>, LoansError> {
-        self.store
-            .pending_reversals(limit)
-            .await
-            .map_err(Into::into)
+        self.accounting.pending_reversals(limit).await
     }
     pub async fn confirm_reversal(
         &self,
@@ -225,10 +213,9 @@ impl LoansFacade {
         reversal: JournalEntryId,
         now: DateTime<Utc>,
     ) -> Result<LoanEventV1, LoansError> {
-        self.store
+        self.accounting
             .confirm_reversal(pending, reversal, now)
             .await
-            .map_err(Into::into)
     }
     pub async fn request_replacement(
         &self,
@@ -242,19 +229,15 @@ impl LoansFacade {
             &RecordLoanMovementHash::from(&command),
         )
         .map_err(|_| LoansError::invalid("request"))?;
-        self.store
+        self.movements
             .request_replacement(command, original, hash)
             .await
-            .map_err(Into::into)
     }
     pub async fn pending_replacements(
         &self,
         limit: i64,
     ) -> Result<Vec<PendingLoanReplacement>, LoansError> {
-        self.store
-            .pending_replacements(limit)
-            .await
-            .map_err(Into::into)
+        self.accounting.pending_replacements(limit).await
     }
     pub async fn confirm_replacement_reversal(
         &self,
@@ -262,10 +245,9 @@ impl LoansFacade {
         reversal: JournalEntryId,
         now: DateTime<Utc>,
     ) -> Result<(), LoansError> {
-        self.store
+        self.accounting
             .confirm_replacement_reversal(pending, reversal, now)
             .await
-            .map_err(Into::into)
     }
 }
 
@@ -274,6 +256,8 @@ impl LoansFacade {
 pub struct LoansError {
     kind: LoansErrorKind,
     message: &'static str,
+    #[source]
+    source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LoansErrorKind {
@@ -287,6 +271,38 @@ impl LoansError {
         Self {
             kind: LoansErrorKind::Invalid,
             message: "invalid loan command",
+            source: None,
+        }
+    }
+    pub(crate) fn not_found(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(LoansErrorKind::NotFound, "loan was not found", source)
+    }
+    pub(crate) fn conflict(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(
+            LoansErrorKind::Conflict,
+            "loan command conflicts with current state",
+            source,
+        )
+    }
+    pub(crate) fn invalid_source(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(LoansErrorKind::Invalid, "invalid loan command", source)
+    }
+    pub(crate) fn persistence(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(
+            LoansErrorKind::Persistence,
+            "loan persistence failed",
+            source,
+        )
+    }
+    fn with_source(
+        kind: LoansErrorKind,
+        message: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            message,
+            source: Some(Box::new(source)),
         }
     }
     pub fn is_not_found(&self) -> bool {
@@ -297,28 +313,6 @@ impl LoansError {
     }
     pub fn is_invalid(&self) -> bool {
         self.kind == LoansErrorKind::Invalid
-    }
-}
-impl From<StoreError> for LoansError {
-    fn from(value: StoreError) -> Self {
-        match value {
-            StoreError::NotFound => Self {
-                kind: LoansErrorKind::NotFound,
-                message: "loan was not found",
-            },
-            StoreError::VersionConflict | StoreError::IdempotencyConflict => Self {
-                kind: LoansErrorKind::Conflict,
-                message: "loan command conflicts with current state",
-            },
-            StoreError::Invalid(_) => Self {
-                kind: LoansErrorKind::Invalid,
-                message: "invalid loan command",
-            },
-            StoreError::Database(_) => Self {
-                kind: LoansErrorKind::Persistence,
-                message: "loan persistence failed",
-            },
-        }
     }
 }
 

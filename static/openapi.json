@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Moneykeeper Finance V2",
+    "title": "Moneykeeper",
     "version": "0.1.0-foundation",
-    "description": "Finance V2 context-first contract mounted by the default runtime at unversioned paths."
+    "description": "Moneykeeper context-first contract mounted by the default runtime at unversioned paths."
   },
   "paths": {
     "/portfolio-accounts": {
@@ -184,13 +184,14 @@
         "operationId": "openLedgerAccount", "summary": "Open a Ledger account",
         "description": "Opens a tenant-owned manual account and records a non-zero opening balance through an immutable balanced journal. Requires Idempotency-Key.",
         "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OpenAccount"}}}},
-        "responses": {"201": {"description": "Account opened"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "responses": {"201": {"description": "Account opened", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AccountResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       },
       "get": {
         "operationId": "listLedgerAccounts", "summary": "List Ledger accounts",
         "description": "Lists the authenticated user's visible active and archived accounts with exact signed and display balances.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger accounts"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger accounts", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/LedgerAccount"}}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/accounts/{id}": {
@@ -198,13 +199,13 @@
       "get": {
         "operationId": "getLedgerAccount", "summary": "Get a Ledger account",
         "description": "Returns one tenant-owned account; another user's identity is indistinguishable from a missing account.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger account"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Ledger account", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/LedgerAccount"}}}}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       },
       "patch": {
         "operationId": "renameLedgerAccount", "summary": "Rename a Ledger account",
         "description": "Renames account metadata using expected_version and an Idempotency-Key without changing its currency or accounting facts.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameAccount"}}}},
-        "responses": {"200": {"description": "Account renamed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameAccount"}}}},
+        "responses": {"200": {"description": "Account renamed", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AccountResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/accounts/{id}/archive": {
@@ -212,8 +213,8 @@
       "post": {
         "operationId": "archiveLedgerAccount", "summary": "Archive a Ledger account",
         "description": "Archives an account at expected_version while preserving its full balance and immutable journal history.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
-        "responses": {"200": {"description": "Account archived"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
+        "responses": {"200": {"description": "Account archived", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AccountResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/accounts/{id}/restore": {
@@ -221,8 +222,8 @@
       "post": {
         "operationId": "restoreLedgerAccount", "summary": "Restore a Ledger account",
         "description": "Restores an archived account at expected_version without rewriting any historical accounting facts.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
-        "responses": {"200": {"description": "Account restored"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedAccountVersion"}}}},
+        "responses": {"200": {"description": "Account restored", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AccountResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/accounts/{id}/activity": {
@@ -230,28 +231,28 @@
       "get": {
         "operationId": "listLedgerAccountActivity", "summary": "List account activity",
         "description": "Lists immutable journal details with stable occurred-at and ledger-sequence cursor ordering.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Account activity"}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/AfterOccurredAt"},{"$ref":"#/components/parameters/AfterSequence"},{"$ref":"#/components/parameters/ActivityLimit"}], "responses": {"200": {"description": "Account activity", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Journal"}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions": {
       "post": {
         "operationId": "recordManualTransaction", "summary": "Record income or expense",
         "description": "Records positive catalog-validated Money through the closed manual income or expense journal recipe.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualTransaction"}}}},
-        "responses": {"201": {"description": "Transaction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManualTransaction"}}}},
+        "responses": {"201": {"description": "Transaction posted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/TransactionResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       },
       "get": {
         "operationId": "listLedgerTransactions", "summary": "List transactions",
         "description": "Lists tenant journal facts with stable reverse chronological cursor pagination.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transactions"}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/AfterOccurredAt"},{"$ref":"#/components/parameters/AfterSequence"},{"$ref":"#/components/parameters/ActivityLimit"}], "responses": {"200": {"description": "Transactions", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Journal"}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}": {
       "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
         "operationId": "getLedgerTransaction", "summary": "Get a transaction",
-        "description": "Returns immutable postings, source, relations, timing, sequence, and annotation version for one tenant journal.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transaction detail"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "description": "Returns immutable postings, source, relations, timing, sequence, full effective annotation, and incoming supersession links for one tenant journal.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transaction detail", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/Journal"}}}}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}/annotation": {
@@ -259,8 +260,8 @@
       "patch": {
         "operationId": "updateTransactionAnnotation", "summary": "Update transaction annotation",
         "description": "Updates mutable transaction metadata at expected_version while keeping the journal and postings immutable.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnnotationUpdate"}}}},
-        "responses": {"200": {"description": "Annotation updated"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnnotationUpdate"}}}},
+        "responses": {"200": {"description": "Annotation updated", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AnnotationResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}/reversals": {
@@ -268,7 +269,7 @@
       "post": {
         "operationId": "reverseLedgerTransaction", "summary": "Reverse a transaction",
         "description": "Creates exactly one immutable inverse journal linked to the original; the original is never modified.",
-        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Reversal posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ReverseTransaction"}}}}, "responses": {"201": {"description": "Reversal posted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/FinancialChangeResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}/replacements": {
@@ -276,14 +277,14 @@
       "post": {
         "operationId": "replaceLedgerTransaction", "summary": "Replace a transaction",
         "description": "Atomically records an exact reversal and a controlled corrected manual transaction linked to the original.",
-        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Replacement posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ReplaceTransaction"}}}}, "responses": {"201": {"description": "Replacement posted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ReplacementResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transfers": {
       "post": {
         "operationId": "transferLedgerFunds", "summary": "Transfer funds",
         "description": "Atomically posts a same-currency or FX transfer, optional fee, exact implied rate, and all clearing legs.",
-        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Transfer posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Transfer"}}}}, "responses": {"201": {"description": "Transfer posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/accounts/{id}/balance-corrections": {
@@ -291,7 +292,7 @@
       "post": {
         "operationId": "correctLedgerBalance", "summary": "Correct an account balance",
         "description": "Posts the explicit delta to an observed target display balance under a balance-version fence; zero deltas are rejected.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BalanceCorrection"}}}},
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BalanceCorrection"}}}},
         "responses": {"201": {"description": "Correction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
@@ -315,7 +316,7 @@
       "post": {
         "operationId": "approveReconciliation", "summary": "Approve a balance reconciliation",
         "description": "Posts a visible correction only when both case expected_version and captured expected_balance_version still match.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApproveReconciliation"}}}},
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApproveReconciliation"}}}},
         "responses": {"200": {"description": "Reconciliation approved"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
@@ -324,7 +325,7 @@
       "post": {
         "operationId": "dismissReconciliation", "summary": "Dismiss a balance reconciliation",
         "description": "Dismisses one pending case at expected_version without creating any journal or changing a balance.",
-        "security": [{"bearerAuth": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DismissReconciliation"}}}},
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DismissReconciliation"}}}},
         "responses": {"200": {"description": "Reconciliation dismissed"}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
@@ -332,84 +333,84 @@
       "post": {
         "operationId": "connectMonobank", "summary": "Connect Monobank",
         "description": "Accepts a Monobank token for encrypted validation and resource discovery without returning the secret.",
-        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Connection validation queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ConnectMonobank"}}}}, "responses": {"202": {"description": "Connection validation queued", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ConnectionResult"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections": {
       "get": {
         "operationId": "listProviderConnections", "summary": "List provider connections",
         "description": "Lists provider connections and lifecycle versions for the authenticated tenant.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connections"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connections", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ProviderConnection"}}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}": {
       "get": {
         "operationId": "getProviderConnection", "summary": "Get a provider connection",
         "description": "Returns one tenant-scoped provider connection without credential material.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Provider connection"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}], "responses": {"200": {"description": "Provider connection", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ProviderConnection"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/disconnect": {
       "post": {
         "operationId": "disconnectProviderConnection", "summary": "Disconnect a provider connection",
         "description": "Disconnects a connection under an optimistic connection-version fence while retaining history.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Connection disconnected"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ExpectedVersion"}}}}, "responses": {"200": {"description": "Connection disconnected", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ProviderConnection"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/credential-replacements": {
       "post": {
         "operationId": "replaceProviderCredential", "summary": "Replace a provider credential",
         "description": "Encrypts a replacement provider token and advances its generation under a version fence.",
-        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Replacement validation queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ReplaceCredential"}}}}, "responses": {"202": {"description": "Replacement validation queued", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ConnectionResult"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/webhook-rotations": {
       "post": {
         "operationId": "rotateProviderWebhook", "summary": "Rotate a webhook credential",
         "description": "Creates a new high-entropy callback credential and invalidates the previous lookup digest.",
-        "security": [{"bearerAuth": []}], "responses": {"201": {"description": "Webhook credential rotated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ExpectedVersion"}}}}, "responses": {"201": {"description": "Webhook credential rotated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/resources": {
       "get": {
         "operationId": "listProviderResources", "summary": "List discovered resources",
         "description": "Lists external provider resources and their mapping state for one tenant connection.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "External resources"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}], "responses": {"200": {"description": "External resources", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/ProviderResource"}}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/resource-mappings": {
       "post": {
         "operationId": "mapProviderResource", "summary": "Map a provider resource",
         "description": "Binds a discovered resource to a compatible Ledger account or creates a provider-observed account.",
-        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Mapping accepted"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateResourceMapping"}}}}, "responses": {"202": {"description": "Mapping accepted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ResourceMappingResult"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations": {
       "post": {
         "operationId": "deactivateProviderResourceMapping", "summary": "Deactivate a resource mapping",
         "description": "Ends an active mapping under a resource-version fence without deleting mapping history.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Mapping deactivated"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"mapping_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ChangeResourceMapping"}}}}, "responses": {"200": {"description": "Mapping deactivated", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ResourceMappingResult"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements": {
       "post": {
         "operationId": "replaceProviderResourceMapping", "summary": "Replace a resource mapping",
         "description": "Deactivates the current mapping and establishes a versioned replacement.",
-        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Replacement accepted"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"name":"mapping_id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ChangeResourceMapping"}}}}, "responses": {"202": {"description": "Replacement accepted", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ResourceMappingResult"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-connections/{id}/sync-jobs": {
       "post": {
         "operationId": "requestProviderSync", "summary": "Request a provider sync",
         "description": "Creates an idempotent durable sync job for a bounded statement interval.",
-        "security": [{"bearerAuth": []}], "responses": {"202": {"description": "Sync queued"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}},{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RequestSync"}}}}, "responses": {"202": {"description": "Sync queued", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/SyncJob"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/sync-jobs/{id}": {
       "get": {
         "operationId": "getProviderSync", "summary": "Get a provider sync job",
         "description": "Returns durable progress and fencing state for one tenant sync job.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Sync job"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "security": [{"bearerAuth": []}], "parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string","format":"uuid"}}], "responses": {"200": {"description": "Sync job", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/SyncJob"}}}}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/provider-events/{id}": {
@@ -499,7 +500,10 @@
       "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
     },
     "parameters": {
-      "IdempotencyKey": {"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":200}}
+      "IdempotencyKey": {"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":200}},
+      "AfterOccurredAt": {"name":"after_occurred_at","in":"query","required":false,"schema":{"type":"string","format":"date-time"}},
+      "AfterSequence": {"name":"after_sequence","in":"query","required":false,"schema":{"type":"integer","format":"int64","minimum":1}},
+      "ActivityLimit": {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":200,"default":50}}
     },
     "responses": {
       "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
@@ -584,15 +588,44 @@
           "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}
         }
       },
+      "DecimalString": {"type":"string","pattern":"^-?[0-9]+(\\.[0-9]+)?$"},
+      "NullableDecimalString": {"type":["string","null"],"pattern":"^-?[0-9]+(\\.[0-9]+)?$"},
+      "AccountKind": {"type":"string","enum":["cash","debit_card","credit_card","current","savings","jar","loan_payable","loan_receivable","system"]},
+      "AccountNature": {"type":"string","enum":["asset","liability","equity","income","expense"]},
+      "AccountAuthority": {"type":"string","enum":["manual","provider_observed","system"]},
+      "AccountLifecycle": {"type":"string","enum":["active","archived"]},
+      "LedgerAccount": {
+        "type":"object",
+        "required":["id","user_id","name","currency","nature","kind","authority","visibility","lifecycle","version","signed_balance","display_balance","balance_version","as_of","provider_reported","available","reconciliation_difference"],
+        "properties":{
+          "id":{"type":"string","format":"uuid"},"user_id":{"type":"string","format":"uuid"},"name":{"type":"string"},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},
+          "nature":{"$ref":"#/components/schemas/AccountNature"},"kind":{"$ref":"#/components/schemas/AccountKind"},"authority":{"$ref":"#/components/schemas/AccountAuthority"},
+          "visibility":{"type":"string","enum":["user_visible","hidden"]},"lifecycle":{"$ref":"#/components/schemas/AccountLifecycle"},"version":{"type":"integer","minimum":1},
+          "signed_balance":{"$ref":"#/components/schemas/DecimalString"},"display_balance":{"$ref":"#/components/schemas/DecimalString"},"balance_version":{"type":"integer","minimum":0},"as_of":{"type":"string","format":"date-time"},
+          "provider_reported":{"$ref":"#/components/schemas/NullableDecimalString"},"available":{"$ref":"#/components/schemas/NullableDecimalString"},"reconciliation_difference":{"$ref":"#/components/schemas/NullableDecimalString"}
+        }
+      },
+      "AccountResult": {"type":"object","required":["account","opening_journal_id","replayed"],"properties":{"account":{"$ref":"#/components/schemas/LedgerAccount"},"opening_journal_id":{"type":["string","null"],"format":"uuid"},"replayed":{"type":"boolean"}}},
+      "AccountEffect": {"type":"object","required":["account_id","currency","signed_amount","display_effect","signed_balance","display_balance","balance_version"],"properties":{"account_id":{"type":"string","format":"uuid"},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"signed_amount":{"$ref":"#/components/schemas/DecimalString"},"display_effect":{"$ref":"#/components/schemas/DecimalString"},"signed_balance":{"$ref":"#/components/schemas/DecimalString"},"display_balance":{"$ref":"#/components/schemas/DecimalString"},"balance_version":{"type":"integer","minimum":0}}},
+      "Posting": {"type":"object","required":["id","account_id","account_kind","account_nature","account_authority","position","currency","signed_amount","display_effect"],"properties":{"id":{"type":"string","format":"uuid"},"account_id":{"type":"string","format":"uuid"},"account_kind":{"$ref":"#/components/schemas/AccountKind"},"account_nature":{"$ref":"#/components/schemas/AccountNature"},"account_authority":{"$ref":"#/components/schemas/AccountAuthority"},"position":{"type":"integer","minimum":0},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"signed_amount":{"$ref":"#/components/schemas/DecimalString"},"display_effect":{"$ref":"#/components/schemas/DecimalString"}}},
+      "JournalAnnotation": {"type":"object","required":["version","description","category_id","note","tags","budget_visibility","created_at","updated_at"],"properties":{"version":{"type":"integer","minimum":1},"description":{"type":"string"},"category_id":{"type":["string","null"],"format":"uuid"},"note":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"budget_visibility":{"type":"string","enum":["included","excluded"]},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
+      "JournalRelations": {"type":"object","required":["reverses_transaction_id","corrects_transaction_id","replaces_transaction_id"],"properties":{"reverses_transaction_id":{"type":["string","null"],"format":"uuid"},"corrects_transaction_id":{"type":["string","null"],"format":"uuid"},"replaces_transaction_id":{"type":["string","null"],"format":"uuid"}}},
+      "JournalActor": {"type":"object","required":["kind"],"properties":{"kind":{"type":"string","enum":["user","system","external"]},"user_id":{"type":"string","format":"uuid"},"source_kind":{"type":"string"},"source_reference":{"type":"string"}}},
+      "Correction": {"type":"object","required":["account_id","before_display_balance","target_display_balance","display_delta","observed_balance_version","reason","observed_at"],"properties":{"account_id":{"type":"string","format":"uuid"},"before_display_balance":{"$ref":"#/components/schemas/DecimalString"},"target_display_balance":{"$ref":"#/components/schemas/DecimalString"},"display_delta":{"$ref":"#/components/schemas/DecimalString"},"observed_balance_version":{"type":"integer","minimum":0},"reason":{"type":"string"},"observed_at":{"type":"string","format":"date-time"}}},
+      "Journal": {"type":"object","required":["id","user_id","ledger_sequence","source","purpose","actor","description","occurred_at","recorded_at","correlation_id","relations","postings","annotation","reversed_by_journal_id","replaced_by_journal_id","correction"],"properties":{"id":{"type":"string","format":"uuid"},"user_id":{"type":"string","format":"uuid"},"ledger_sequence":{"type":"integer","format":"int64","minimum":1},"source":{"type":"string","enum":["manual","import","system","correction","reconciliation"]},"purpose":{"type":"string","enum":["ordinary","correction","reversal","approved_reconciliation"]},"actor":{"$ref":"#/components/schemas/JournalActor"},"description":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"},"recorded_at":{"type":"string","format":"date-time"},"correlation_id":{"type":"string","format":"uuid"},"relations":{"$ref":"#/components/schemas/JournalRelations"},"postings":{"type":"array","minItems":2,"items":{"$ref":"#/components/schemas/Posting"}},"annotation":{"oneOf":[{"$ref":"#/components/schemas/JournalAnnotation"},{"type":"null"}]},"reversed_by_journal_id":{"type":["string","null"],"format":"uuid"},"replaced_by_journal_id":{"type":["string","null"],"format":"uuid"},"correction":{"oneOf":[{"$ref":"#/components/schemas/Correction"},{"type":"null"}]}}},
+      "TransactionResult": {"type":"object","required":["journal_entry_id","effects","annotation_version","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"annotation_version":{"type":"integer","minimum":1},"replayed":{"type":"boolean"}}},
+      "AnnotationResult": {"type":"object","required":["journal_entry_id","version","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"version":{"type":"integer","minimum":1},"replayed":{"type":"boolean"}}},
+      "FinancialChangeResult": {"type":"object","required":["journal_entry_id","effects","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"replayed":{"type":"boolean"}}},
+      "ReplacementResult": {"type":"object","required":["reversal_journal_entry_id","replacement_journal_entry_id","effects","replayed"],"properties":{"reversal_journal_entry_id":{"type":"string","format":"uuid"},"replacement_journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"replayed":{"type":"boolean"}}},
       "OpenAccount": {
         "type": "object", "additionalProperties": false,
         "required": ["name", "currency", "kind", "nature", "opening_balance"],
         "properties": {
           "name": {"type": "string", "minLength": 1, "maxLength": 100},
           "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
-          "kind": {"type": "string", "enum": ["cash", "debit_card", "credit_card", "current", "savings", "jar", "loan_payable", "loan_receivable"]},
+          "kind": {"type": "string", "enum": ["cash", "debit_card", "credit_card", "current", "savings", "jar"]},
           "nature": {"type": "string", "enum": ["asset", "liability"]},
-          "opening_balance": {"type": "string"}, "occurred_at": {"type": "string", "format": "date-time"}
+          "opening_balance": {"$ref":"#/components/schemas/DecimalString"}, "occurred_at": {"type": "string", "format": "date-time"}
         }
       },
       "RenameAccount": {
@@ -609,31 +642,46 @@
         "properties": {
           "account_id": {"type": "string", "format": "uuid"}, "kind": {"type": "string", "enum": ["income", "expense"]},
           "amount": {"$ref": "#/components/schemas/MoneyInput"}, "description": {"type": "string"},
-          "category_id": {"type": ["string", "null"], "format": "uuid"}, "tags": {"type": "array", "items": {"type": "string"}}
+          "category_id": {"type": ["string", "null"], "format": "uuid"}, "note":{"type":["string","null"]}, "tags": {"type": "array", "items": {"type": "string"}},
+          "budget_visibility":{"type":"string","enum":["included","excluded"],"default":"included"},"occurred_at":{"type":"string","format":"date-time"}
         }
       },
       "AnnotationUpdate": {
         "type": "object", "additionalProperties": false, "required": ["expected_version"],
-        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "description": {"type": "string"}, "category_id": {"type": ["string", "null"], "format": "uuid"}}
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "description": {"type": "string"}, "category_id": {"type": ["string", "null"], "format": "uuid"},"clear_category":{"type":"boolean","default":false},"note":{"type":["string","null"]},"clear_note":{"type":"boolean","default":false},"tags":{"type":"array","items":{"type":"string"}},"budget_visibility":{"type":"string","enum":["included","excluded"]},"occurred_at":{"type":"string","format":"date-time"}}
       },
+      "ReverseTransaction": {"type":"object","additionalProperties":false,"required":["reason"],"properties":{"reason":{"type":"string","minLength":1,"maxLength":500},"occurred_at":{"type":"string","format":"date-time"}}},
+      "ReplaceTransaction": {"type":"object","additionalProperties":false,"required":["account_id","kind","amount","description"],"properties":{"account_id":{"type":"string","format":"uuid"},"kind":{"type":"string","enum":["income","expense"]},"amount":{"$ref":"#/components/schemas/MoneyInput"},"description":{"type":"string"},"category_id":{"type":["string","null"],"format":"uuid"},"note":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"budget_visibility":{"type":"string","enum":["included","excluded"],"default":"included"},"occurred_at":{"type":"string","format":"date-time"}}},
+      "Transfer": {"type":"object","additionalProperties":false,"required":["source_account_id","target_account_id","source_amount","target_amount","description"],"properties":{"source_account_id":{"type":"string","format":"uuid"},"target_account_id":{"type":"string","format":"uuid"},"source_amount":{"$ref":"#/components/schemas/MoneyInput"},"target_amount":{"$ref":"#/components/schemas/MoneyInput"},"fee":{"oneOf":[{"$ref":"#/components/schemas/MoneyInput"},{"type":"null"}]},"implied_rate":{"type":["string","null"],"pattern":"^[0-9]+(\\.[0-9]+)?$"},"description":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"}}},
       "BalanceCorrection": {
         "type": "object", "additionalProperties": false,
         "required": ["target_display_balance", "expected_balance_version", "reason", "observed_at"],
         "properties": {
           "target_display_balance": {"$ref": "#/components/schemas/MoneyInput"},
           "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"},
-          "observed_at": {"type": "string", "format": "date-time"}
+          "observed_at": {"type": "string", "format": "date-time"},"occurred_at":{"type":"string","format":"date-time"}
         }
       },
       "ApproveReconciliation": {
         "type": "object", "additionalProperties": false,
         "required": ["expected_version", "expected_balance_version", "reason"],
-        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"}}
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "expected_balance_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"},"occurred_at":{"type":"string","format":"date-time"}}
       },
       "DismissReconciliation": {
         "type": "object", "additionalProperties": false, "required": ["expected_version", "reason"],
-        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"}}
+        "properties": {"expected_version": {"type": "integer", "minimum": 1}, "reason": {"type": "string"},"occurred_at":{"type":"string","format":"date-time"}}
       },
+      "ConnectMonobank": {"type":"object","additionalProperties":false,"required":["x_token"],"properties":{"x_token":{"type":"string","minLength":1}}},
+      "ReplaceCredential": {"type":"object","additionalProperties":false,"required":["x_token","expected_version"],"properties":{"x_token":{"type":"string","minLength":1},"expected_version":{"type":"integer","minimum":1}}},
+      "ProviderConnection": {"type":"object","required":["id","user_id","provider","state","credential_generation","version","webhook_configured","created_at","updated_at"],"properties":{"id":{"type":"string","format":"uuid"},"user_id":{"type":"string","format":"uuid"},"provider":{"type":"string","enum":["monobank"]},"state":{"type":"string","enum":["pending","active","pending_credential_validation","needs_reauth","revoked"]},"credential_generation":{"type":"integer","minimum":1},"version":{"type":"integer","minimum":1},"webhook_configured":{"type":"boolean"},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
+      "ConnectionResult": {"type":"object","required":["connection","replayed"],"properties":{"connection":{"$ref":"#/components/schemas/ProviderConnection"},"replayed":{"type":"boolean"}}},
+      "ResourceMapping": {"type":"object","required":["id","resource_id","ledger_account_id","mapping_version","state","effective_at","ended_at"],"properties":{"id":{"type":"string","format":"uuid"},"resource_id":{"type":"string","format":"uuid"},"ledger_account_id":{"type":["string","null"],"format":"uuid"},"mapping_version":{"type":"integer","minimum":1},"state":{"type":"string","enum":["pending_account_creation","active","inactive","needs_review","failed"]},"effective_at":{"type":"string","format":"date-time"},"ended_at":{"type":["string","null"],"format":"date-time"}}},
+      "ProviderResource": {"type":"object","required":["id","connection_id","kind","funding_model","currency","masked_label","discovery_state","version","current_mapping"],"properties":{"id":{"type":"string","format":"uuid"},"connection_id":{"type":"string","format":"uuid"},"kind":{"type":"string","enum":["card","current_account","jar","security_portfolio","unsupported"]},"funding_model":{"type":"string","enum":["own_funds","revolving_credit","unknown"]},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"masked_label":{"type":"string"},"discovery_state":{"type":"string","enum":["active","needs_review","unsupported","removed"]},"version":{"type":"integer","minimum":1},"current_mapping":{"oneOf":[{"$ref":"#/components/schemas/ResourceMapping"},{"type":"null"}]}}},
+      "CreateResourceMapping": {"type":"object","additionalProperties":false,"required":["resource_id","expected_version"],"properties":{"resource_id":{"type":"string","format":"uuid"},"ledger_account_id":{"type":["string","null"],"format":"uuid"},"account_name":{"type":["string","null"],"minLength":1,"maxLength":100},"expected_version":{"type":"integer","minimum":1}}},
+      "ChangeResourceMapping": {"type":"object","additionalProperties":false,"required":["expected_version","reason"],"properties":{"expected_version":{"type":"integer","minimum":1},"reason":{"type":"string","minLength":1,"maxLength":500},"ledger_account_id":{"type":["string","null"],"format":"uuid"},"account_name":{"type":["string","null"],"minLength":1,"maxLength":100}}},
+      "ResourceMappingResult": {"type":"object","required":["mapping","replayed"],"properties":{"mapping":{"$ref":"#/components/schemas/ResourceMapping"},"replayed":{"type":"boolean"}}},
+      "RequestSync": {"type":"object","additionalProperties":false,"required":["requested_from","requested_to"],"properties":{"requested_from":{"type":"string","format":"date-time"},"requested_to":{"type":"string","format":"date-time"},"overlap_seconds":{"type":"integer","minimum":0,"default":0}}},
+      "SyncJob": {"type":"object","required":["id","user_id","connection_id","requested_from","requested_to","overlap_seconds","connection_version","credential_generation","state","cursor","attempts","next_retry_at","last_error","fencing_token","lease_holder","lease_expires_at"],"properties":{"id":{"type":"string","format":"uuid"},"user_id":{"type":"string","format":"uuid"},"connection_id":{"type":"string","format":"uuid"},"requested_from":{"type":"string","format":"date-time"},"requested_to":{"type":"string","format":"date-time"},"overlap_seconds":{"type":"integer","minimum":0},"connection_version":{"type":"integer","minimum":1},"credential_generation":{"type":"integer","minimum":1},"state":{"type":"string","enum":["requested","running","waiting_for_events","retry_due","completed","failed","cancelled"]},"cursor":{"type":["string","null"]},"attempts":{"type":"integer","minimum":0},"next_retry_at":{"type":["string","null"],"format":"date-time"},"last_error":{"type":["string","null"]},"fencing_token":{"type":"integer","minimum":0},"lease_holder":{"type":["string","null"]},"lease_expires_at":{"type":["string","null"],"format":"date-time"}}},
       "SharingExpectedVersion": {"type":"object","required":["expected_version"],"properties":{"expected_version":{"type":"integer","minimum":1}}},
       "SharingContactCommand": {"type":"object","required":["display_name"],"properties":{"display_name":{"type":"string","minLength":1,"maxLength":200},"note":{"type":["string","null"]},"expected_version":{"type":"integer","minimum":1}}},
       "BillSplitCommand": {"type":"object","required":["title","occurred_at","total","contributions","shares"],"properties":{"title":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"},"total":{"$ref":"#/components/schemas/MoneyInput"},"contributions":{"type":"array","minItems":1,"items":{"type":"object"}},"shares":{"type":"object"}}},

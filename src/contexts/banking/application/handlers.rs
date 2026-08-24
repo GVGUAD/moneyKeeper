@@ -2,7 +2,11 @@
 
 use std::sync::Arc;
 
-use super::ports::{CredentialBinding, CredentialCipher, ProviderClient};
+use super::ports::{
+    ConnectionRepository, CredentialBinding, CredentialCipher, NormalizedResource,
+    ObservationRepository, ProviderClient, ProviderEventRepository, ResourceRepository,
+    SyncJobRepository, WebhookCredential, WebhookRepository, WebhookSecrets,
+};
 use super::{
     AccountingProcessView, BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork,
     BalanceObservationView, BindExistingResource, ConnectProvider, ConnectionResult,
@@ -12,30 +16,48 @@ use super::{
     ResourceMappingResult, RotateWebhookCredential, WebhookReceiptOutcome, WebhookRotationResult,
 };
 use crate::contexts::banking::domain::BankingError;
-use crate::contexts::banking::infrastructure::PgBankingStore;
 use crate::shared_kernel::UserId;
 
 #[derive(Clone)]
 pub struct BankingFacade {
-    pub(crate) store: PgBankingStore,
+    pub(crate) connections: Arc<dyn ConnectionRepository>,
+    pub(crate) resources: Arc<dyn ResourceRepository>,
+    pub(crate) provider_events: Arc<dyn ProviderEventRepository>,
+    pub(crate) sync_jobs: Arc<dyn SyncJobRepository>,
+    pub(crate) observations: Arc<dyn ObservationRepository>,
+    pub(crate) webhooks: Arc<dyn WebhookRepository>,
     pub(crate) cipher: Arc<dyn CredentialCipher>,
     pub(crate) provider: Arc<dyn ProviderClient>,
     pub(crate) ledger: Option<crate::contexts::ledger::public::LedgerFacade>,
     pub(crate) currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
-    pub(crate) webhook_secrets: super::super::infrastructure::WebhookSecretManager,
+    pub(crate) webhook_secrets: Arc<dyn WebhookSecrets>,
 }
 
 impl BankingFacade {
-    pub(crate) fn new(
-        store: PgBankingStore,
+    pub(crate) fn new<R>(
+        repositories: Arc<R>,
         cipher: Arc<dyn CredentialCipher>,
         provider: Arc<dyn ProviderClient>,
         ledger: Option<crate::contexts::ledger::public::LedgerFacade>,
         currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
-        webhook_secrets: super::super::infrastructure::WebhookSecretManager,
-    ) -> Self {
+        webhook_secrets: Arc<dyn WebhookSecrets>,
+    ) -> Self
+    where
+        R: ConnectionRepository
+            + ResourceRepository
+            + ProviderEventRepository
+            + SyncJobRepository
+            + ObservationRepository
+            + WebhookRepository
+            + 'static,
+    {
         Self {
-            store,
+            connections: repositories.clone(),
+            resources: repositories.clone(),
+            provider_events: repositories.clone(),
+            sync_jobs: repositories.clone(),
+            observations: repositories.clone(),
+            webhooks: repositories,
             cipher,
             provider,
             ledger,
@@ -48,14 +70,16 @@ impl BankingFacade {
         &self,
         command: ConnectProvider,
     ) -> Result<ConnectionResult, BankingError> {
-        self.store.connect(command, self.cipher.as_ref()).await
+        self.connections
+            .connect(command, self.cipher.as_ref())
+            .await
     }
 
     pub async fn replace_provider_credential(
         &self,
         command: ReplaceProviderCredential,
     ) -> Result<ConnectionResult, BankingError> {
-        self.store
+        self.connections
             .replace_credential(command, self.cipher.as_ref())
             .await
     }
@@ -64,7 +88,7 @@ impl BankingFacade {
         &self,
         user_id: UserId,
         connection_id: super::super::domain::ProviderConnectionId,
-    ) -> Result<Vec<super::super::infrastructure::NormalizedResource>, BankingError> {
+    ) -> Result<Vec<NormalizedResource>, BankingError> {
         use crate::contexts::reference_data::public::CurrencyCatalog;
         let currencies = self
             .currencies
@@ -80,7 +104,7 @@ impl BankingFacade {
             })
             .collect();
         let resources = self
-            .store
+            .resources
             .validate_and_discover(
                 user_id,
                 connection_id,
@@ -91,7 +115,7 @@ impl BankingFacade {
             .await?;
         for resource in &resources {
             let resource_id = self
-                .store
+                .resources
                 .resource_id_by_external(user_id, connection_id, &resource.external_resource_id)
                 .await?;
             let comparability =
@@ -105,7 +129,7 @@ impl BankingFacade {
                     )
                 };
             let now = chrono::Utc::now();
-            self.store
+            self.observations
                 .record_balance_observation(RecordBalanceObservation {
                     user_id,
                     connection_id,
@@ -127,14 +151,14 @@ impl BankingFacade {
         &self,
         user_id: UserId,
     ) -> Result<Vec<ProviderConnectionView>, BankingError> {
-        self.store.list_connections(user_id).await
+        self.connections.list_connections(user_id).await
     }
     pub async fn get_connection(
         &self,
         user_id: UserId,
         id: super::super::domain::ProviderConnectionId,
     ) -> Result<ProviderConnectionView, BankingError> {
-        self.store.get_connection(user_id, id).await
+        self.connections.get_connection(user_id, id).await
     }
     pub async fn disconnect(
         &self,
@@ -143,42 +167,66 @@ impl BankingFacade {
         expected: super::super::domain::ConnectionVersion,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<ProviderConnectionView, BankingError> {
-        self.store.disconnect(user_id, id, expected, now).await
+        self.connections
+            .disconnect(user_id, id, expected, now)
+            .await
     }
     pub async fn list_resources(
         &self,
         user_id: UserId,
         connection_id: super::super::domain::ProviderConnectionId,
     ) -> Result<Vec<ExternalResourceView>, BankingError> {
-        self.store.list_resources(user_id, connection_id).await
+        self.resources.list_resources(user_id, connection_id).await
+    }
+    pub async fn require_resource_connection(
+        &self,
+        user_id: UserId,
+        connection_id: super::super::domain::ProviderConnectionId,
+        resource_id: super::super::domain::ExternalResourceId,
+    ) -> Result<(), BankingError> {
+        self.resources
+            .require_resource_connection(user_id, connection_id, resource_id)
+            .await
+    }
+    pub async fn resource_for_mapping(
+        &self,
+        user_id: UserId,
+        connection_id: super::super::domain::ProviderConnectionId,
+        mapping_id: super::super::domain::ResourceMappingId,
+    ) -> Result<super::super::domain::ExternalResourceId, BankingError> {
+        self.resources
+            .resource_for_mapping(user_id, connection_id, mapping_id)
+            .await
     }
     pub async fn get_provider_event(
         &self,
         user_id: UserId,
         id: super::super::domain::ProviderEventId,
     ) -> Result<ProviderEventView, BankingError> {
-        self.store.get_provider_event(user_id, id).await
+        self.provider_events.get_provider_event(user_id, id).await
     }
     pub async fn get_accounting_process(
         &self,
         user_id: UserId,
         id: uuid::Uuid,
     ) -> Result<AccountingProcessView, BankingError> {
-        self.store.get_accounting_process(user_id, id).await
+        self.provider_events
+            .get_accounting_process(user_id, id)
+            .await
     }
     pub async fn get_balance_observation(
         &self,
         user_id: UserId,
         id: super::super::domain::BalanceObservationId,
     ) -> Result<BalanceObservationView, BankingError> {
-        self.store.get_balance_observation(user_id, id).await
+        self.observations.get_balance_observation(user_id, id).await
     }
     pub async fn provider_account_summary(
         &self,
         user_id: UserId,
         account_id: crate::contexts::ledger::public::LedgerAccountId,
     ) -> Result<ProviderAccountSummary, BankingError> {
-        self.store
+        self.resources
             .provider_account_summary(user_id, account_id)
             .await
     }
@@ -189,7 +237,7 @@ impl BankingFacade {
     ) -> Result<ResourceMappingResult, BankingError> {
         let ledger = self.ledger.as_ref().ok_or(BankingError::InvalidState)?;
         let resource = self
-            .store
+            .resources
             .resource_binding(command.user_id, command.resource_id)
             .await?;
         if resource.version != command.expected_resource_version {
@@ -214,7 +262,7 @@ impl BankingFacade {
         ) {
             return Err(BankingError::IncompatibleMapping);
         }
-        self.store.commit_mapping(command).await
+        self.resources.commit_mapping(command).await
     }
 
     pub async fn create_and_map_resource(
@@ -222,7 +270,7 @@ impl BankingFacade {
         command: CreateAndMapResource,
     ) -> Result<ResourceMappingResult, BankingError> {
         let ledger = self.ledger.as_ref().ok_or(BankingError::InvalidState)?;
-        let pending = self.store.ensure_pending_mapping(&command).await?;
+        let pending = self.resources.ensure_pending_mapping(&command).await?;
         if pending.mapping.ledger_account_id.is_some() && pending.mapping.state == "active" {
             return Ok(ResourceMappingResult {
                 replayed: true,
@@ -230,7 +278,7 @@ impl BankingFacade {
             });
         }
         let resource = self
-            .store
+            .resources
             .resource_binding(command.user_id, command.resource_id)
             .await?;
         let (kind, nature) = resource.expected_ledger_account()?;
@@ -260,7 +308,7 @@ impl BankingFacade {
             )
             .await
             .map_err(|_| BankingError::IncompatibleMapping)?;
-        self.store
+        self.resources
             .complete_pending_mapping(
                 command.user_id,
                 command.resource_id,
@@ -276,14 +324,14 @@ impl BankingFacade {
         &self,
         command: DeactivateResourceMapping,
     ) -> Result<ResourceMappingResult, BankingError> {
-        self.store.deactivate_mapping(command).await
+        self.resources.deactivate_mapping(command).await
     }
 
     pub async fn intake_provider_event(
         &self,
         command: IntakeProviderEvent,
     ) -> Result<ProviderEventReceipt, BankingError> {
-        self.store.intake_provider_event(command).await
+        self.provider_events.intake_provider_event(command).await
     }
 
     pub async fn claim_provider_import(
@@ -291,7 +339,7 @@ impl BankingFacade {
         user_id: UserId,
         provider_event_id: super::super::domain::ProviderEventId,
     ) -> Result<Option<ProviderImportWork>, BankingError> {
-        self.store
+        self.provider_events
             .claim_provider_import(user_id, provider_event_id)
             .await
     }
@@ -299,21 +347,21 @@ impl BankingFacade {
     pub async fn next_provider_import_candidate(
         &self,
     ) -> Result<Option<(UserId, super::super::domain::ProviderEventId)>, BankingError> {
-        self.store.next_provider_import_candidate().await
+        self.provider_events.next_provider_import_candidate().await
     }
 
     pub async fn complete_provider_import(
         &self,
         outcome: ProviderImportOutcome,
     ) -> Result<ProviderImportOutcome, BankingError> {
-        self.store.complete_provider_import(outcome).await
+        self.provider_events.complete_provider_import(outcome).await
     }
 
     pub async fn record_balance_observation(
         &self,
         command: RecordBalanceObservation,
     ) -> Result<BalanceObservationView, BankingError> {
-        self.store.record_balance_observation(command).await
+        self.observations.record_balance_observation(command).await
     }
 
     pub async fn claim_balance_observation(
@@ -321,7 +369,7 @@ impl BankingFacade {
         user_id: UserId,
         observation_id: super::super::domain::BalanceObservationId,
     ) -> Result<Option<BalanceObservationDeliveryWork>, BankingError> {
-        self.store
+        self.observations
             .claim_balance_observation(user_id, observation_id)
             .await
     }
@@ -329,14 +377,16 @@ impl BankingFacade {
     pub async fn next_balance_observation_candidate(
         &self,
     ) -> Result<Option<(UserId, super::super::domain::BalanceObservationId)>, BankingError> {
-        self.store.next_balance_observation_candidate().await
+        self.observations.next_balance_observation_candidate().await
     }
 
     pub async fn complete_balance_observation(
         &self,
         outcome: BalanceObservationDeliveryOutcome,
     ) -> Result<BalanceObservationDeliveryOutcome, BankingError> {
-        self.store.complete_balance_observation(outcome).await
+        self.observations
+            .complete_balance_observation(outcome)
+            .await
     }
 
     pub async fn rotate_webhook_credential(
@@ -345,7 +395,7 @@ impl BankingFacade {
     ) -> Result<WebhookRotationResult, BankingError> {
         let credential = self.webhook_secrets.generate();
         let digest = self.webhook_secrets.digest(&credential);
-        self.store
+        self.webhooks
             .rotate_webhook(command, credential, digest, self.cipher.as_ref())
             .await
     }
@@ -354,11 +404,11 @@ impl BankingFacade {
         &self,
         credential: &str,
     ) -> Result<bool, BankingError> {
-        let credential = super::super::infrastructure::WebhookCredential::new(credential)?;
-        self.store
+        let credential = WebhookCredential::new(credential)?;
+        self.webhooks
             .validate_webhook_digest(
                 &self.webhook_secrets.digest(&credential),
-                &self.webhook_secrets,
+                self.webhook_secrets.as_ref(),
             )
             .await
     }
@@ -371,12 +421,12 @@ impl BankingFacade {
         if body.len() > 1_048_576 {
             return Err(BankingError::InvalidValue("webhook body is too large"));
         }
-        let credential = super::super::infrastructure::WebhookCredential::new(credential)?;
-        self.store
+        let credential = WebhookCredential::new(credential)?;
+        self.webhooks
             .receive_webhook(
                 &self.webhook_secrets.digest(&credential),
                 body,
-                &self.webhook_secrets,
+                self.webhook_secrets.as_ref(),
             )
             .await
     }
@@ -388,7 +438,7 @@ impl BankingFacade {
         callback_base: &str,
     ) -> Result<(), BankingError> {
         let work = self
-            .store
+            .webhooks
             .webhook_registration_work(user_id, connection_id)
             .await?;
         let token = self.cipher.decrypt(
@@ -418,7 +468,7 @@ impl BankingFacade {
         );
         match self.provider.register_webhook(&token, &url).await {
             Ok(()) => {
-                self.store
+                self.webhooks
                     .complete_webhook_registration(
                         user_id,
                         connection_id,
@@ -428,7 +478,7 @@ impl BankingFacade {
                     .await
             }
             Err(_) => {
-                self.store
+                self.webhooks
                     .complete_webhook_registration(
                         user_id,
                         connection_id,

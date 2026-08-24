@@ -1,11 +1,11 @@
-mod v2_test_support;
+mod test_support;
 
 use sqlx::Row;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn schema_installs_tenant_safe_immutable_loan_storage() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     for table in [
         "agreements",
         "term_revisions",
@@ -46,7 +46,7 @@ async fn schema_installs_tenant_safe_immutable_loan_storage() {
 
 #[tokio::test]
 async fn schema_rejects_negative_confirmed_components_and_mutating_posted_facts() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let user = Uuid::new_v4();
     let agreement = Uuid::new_v4();
     let now = chrono::Utc::now();

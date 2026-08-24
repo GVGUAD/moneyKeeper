@@ -7,8 +7,8 @@ use moneykeeper::{
     shared_kernel::{CorrelationId, CurrencyCode, EventId, UserId},
 };
 use rust_decimal_macros::dec;
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 fn event(version: u32) -> LedgerEventV1 {
     LedgerEventV1 {
         metadata: LedgerEventMetadataV1 {
@@ -41,8 +41,8 @@ fn projector_dispatch_rejects_unknown_major_versions() {
 
 #[tokio::test]
 async fn reporting_applies_events_exactly_once_and_never_regresses_reconciliation() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let reporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified).reporting;
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let reporting = moneykeeper::bootstrap::build_contexts(&verified).reporting;
     let user = UserId::generate();
     let account_id = moneykeeper::contexts::ledger::public::LedgerAccountId::generate();
     let balance_event = LedgerEventV1 {

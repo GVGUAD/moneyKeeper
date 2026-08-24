@@ -1,7 +1,7 @@
-mod v2_test_support;
+mod test_support;
 use chrono::Utc;
 use moneykeeper::{
-    bootstrap::v2,
+    bootstrap,
     contexts::sharing::public::*,
     shared_kernel::{CorrelationId, CurrencyCode, EventId, UserId},
 };
@@ -22,8 +22,8 @@ fn metadata(user: UserId, sequence: u64) -> SharingEventMetadataV1 {
 
 #[tokio::test]
 async fn reporting_projects_deduplicates_cancels_and_rebuilds_bill_positions() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let reporting = v2::supporting_contexts(&verified).reporting;
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let reporting = bootstrap::build_contexts(&verified).reporting;
     let user = UserId::generate();
     let bill = BillSplitId::generate();
     let positioned = SharingEventV1 {

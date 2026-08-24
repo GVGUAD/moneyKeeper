@@ -1,7 +1,7 @@
-mod v2_test_support;
+mod test_support;
 use chrono::Utc;
 use moneykeeper::{
-    bootstrap::v2,
+    bootstrap,
     contexts::portfolio::public::*,
     shared_kernel::{CorrelationId, EventId, UserId},
 };
@@ -23,8 +23,8 @@ fn event(user: UserId, sequence: u64, fact: PortfolioEventFactV1) -> PortfolioEv
 }
 #[tokio::test]
 async fn reporting_consumes_portfolio_value_once_and_rebuilds_exactly() {
-    let (verified, _) = v2_test_support::fresh_v2_runtime().await;
-    let reporting = v2::supporting_contexts(&verified).reporting;
+    let (verified, _) = test_support::fresh_runtime().await;
+    let reporting = bootstrap::build_contexts(&verified).reporting;
     let user = UserId::generate();
     let account = PortfolioAccountId::generate();
     let instrument = InstrumentId::generate();
@@ -90,8 +90,8 @@ async fn reporting_consumes_portfolio_value_once_and_rebuilds_exactly() {
 }
 #[tokio::test]
 async fn missing_cost_or_price_is_explicitly_incomplete() {
-    let (verified, _) = v2_test_support::fresh_v2_runtime().await;
-    let reporting = v2::supporting_contexts(&verified).reporting;
+    let (verified, _) = test_support::fresh_runtime().await;
+    let reporting = bootstrap::build_contexts(&verified).reporting;
     let user = UserId::generate();
     reporting
         .apply_portfolio_event(event(

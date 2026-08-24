@@ -1,7 +1,7 @@
-mod v2_test_support;
+mod test_support;
 use chrono::{Duration, Utc};
 use moneykeeper::{
-    bootstrap::v2,
+    bootstrap,
     contexts::portfolio::public::*,
     shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, UserId},
 };
@@ -9,7 +9,7 @@ use rust_decimal_macros::dec;
 
 #[tokio::test]
 async fn schema_installs_tenant_safe_immutable_portfolio_storage() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     for table in [
         "instruments",
         "accounts",
@@ -59,8 +59,8 @@ async fn schema_installs_tenant_safe_immutable_portfolio_storage() {
 
 #[tokio::test]
 async fn command_is_atomic_idempotent_and_fifo_projection_is_exact() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = v2::supporting_contexts(&verified);
+    let (verified, _pool) = test_support::fresh_runtime().await;
+    let contexts = bootstrap::build_contexts(&verified);
     let portfolio = contexts.portfolio;
     let user = UserId::generate();
     let now = Utc::now();
@@ -178,8 +178,8 @@ async fn command_is_atomic_idempotent_and_fifo_projection_is_exact() {
 
 #[tokio::test]
 async fn valuation_is_append_only_and_never_creates_cash_process() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let portfolio = v2::supporting_contexts(&verified).portfolio;
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let portfolio = bootstrap::build_contexts(&verified).portfolio;
     let user = UserId::generate();
     let now = Utc::now();
     let instrument = portfolio

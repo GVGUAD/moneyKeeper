@@ -1,5 +1,6 @@
 //! PostgreSQL Loans aggregate store and atomic unit of work.
 
+use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use crate::contexts::loans::domain::{
 };
 use crate::contexts::loans::public::{
     LoanCommandResult, LoanEventFactV1, LoanEventMetadataV1, LoanEventV1, LoanMovementView,
-    LoanView, MovementAmounts, OpenLoan, PendingLoanMovement, PendingLoanReplacement,
+    LoanView, LoansError, MovementAmounts, OpenLoan, PendingLoanMovement, PendingLoanReplacement,
     PendingLoanReversal, RecordLoanMovement, RequestLoanReversal, ReviseLoanTerms,
 };
 use crate::shared_kernel::{CorrelationId, CurrencyCode, EventId, UserId};
@@ -854,6 +855,231 @@ impl PgLoansStore {
             .bind(replacement.agreement_id.into_uuid()).bind(p.replacement.user_id.into_uuid()).bind(now).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
+    }
+}
+
+fn facade_error(error: StoreError) -> LoansError {
+    match error {
+        StoreError::NotFound => LoansError::not_found(StoreError::NotFound),
+        StoreError::VersionConflict => LoansError::conflict(StoreError::VersionConflict),
+        StoreError::IdempotencyConflict => LoansError::conflict(StoreError::IdempotencyConflict),
+        StoreError::Invalid(field) => LoansError::invalid_source(StoreError::Invalid(field)),
+        StoreError::Database(error) => LoansError::persistence(error),
+    }
+}
+
+#[async_trait]
+impl crate::contexts::loans::application::ports::LoanAgreementRepository for PgLoansStore {
+    async fn open(
+        &self,
+        command: OpenLoan,
+        hash: [u8; 32],
+    ) -> Result<LoanCommandResult, LoansError> {
+        PgLoansStore::open(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn revise(
+        &self,
+        command: ReviseLoanTerms,
+        hash: [u8; 32],
+    ) -> Result<LoanCommandResult, LoansError> {
+        PgLoansStore::revise(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn close(
+        &self,
+        user: UserId,
+        id: LoanAgreementId,
+        expected: u64,
+        key: &str,
+        hash: [u8; 32],
+        correlation: CorrelationId,
+        now: DateTime<Utc>,
+    ) -> Result<LoanCommandResult, LoansError> {
+        PgLoansStore::close(self, user, id, expected, key, hash, correlation, now)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn list(&self, user: UserId) -> Result<Vec<LoanView>, LoansError> {
+        PgLoansStore::list(self, user).await.map_err(facade_error)
+    }
+
+    async fn get(&self, user: UserId, id: LoanAgreementId) -> Result<Option<LoanView>, LoansError> {
+        PgLoansStore::get(self, user, id)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn term_revisions(
+        &self,
+        user: UserId,
+        id: LoanAgreementId,
+    ) -> Result<Vec<Value>, LoansError> {
+        PgLoansStore::term_revisions(self, user, id)
+            .await
+            .map_err(facade_error)
+    }
+}
+
+#[async_trait]
+impl crate::contexts::loans::application::ports::LoanMovementRepository for PgLoansStore {
+    async fn record_movement(
+        &self,
+        command: RecordLoanMovement,
+        hash: [u8; 32],
+    ) -> Result<LoanCommandResult, LoansError> {
+        PgLoansStore::record_movement(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn movements(
+        &self,
+        user: UserId,
+        id: LoanAgreementId,
+    ) -> Result<Vec<LoanMovementView>, LoansError> {
+        PgLoansStore::movements(self, user, id)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn movement(
+        &self,
+        user: UserId,
+        agreement: LoanAgreementId,
+        movement: LoanMovementId,
+    ) -> Result<Option<LoanMovementView>, LoansError> {
+        PgLoansStore::movement(self, user, agreement, movement)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn request_reversal(
+        &self,
+        command: RequestLoanReversal,
+        hash: [u8; 32],
+    ) -> Result<LoanCommandResult, LoansError> {
+        PgLoansStore::request_reversal(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn request_replacement(
+        &self,
+        command: RecordLoanMovement,
+        original: LoanMovementId,
+        hash: [u8; 32],
+    ) -> Result<LoanCommandResult, LoansError> {
+        PgLoansStore::request_replacement(self, command, original, hash)
+            .await
+            .map_err(facade_error)
+    }
+}
+
+#[async_trait]
+impl crate::contexts::loans::application::ports::LoanAccountingWorkflowRepository for PgLoansStore {
+    async fn pending_openings(&self, limit: i64) -> Result<Vec<LoanView>, LoansError> {
+        PgLoansStore::pending_openings(self, limit)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn confirm_opening(
+        &self,
+        user: UserId,
+        id: LoanAgreementId,
+        account: LedgerAccountId,
+        now: DateTime<Utc>,
+    ) -> Result<(), LoansError> {
+        PgLoansStore::confirm_opening(self, user, id, account, now)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn fail_opening(
+        &self,
+        user: UserId,
+        id: LoanAgreementId,
+        error: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), LoansError> {
+        PgLoansStore::fail_opening(self, user, id, error, now)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn pending_movements(&self, limit: i64) -> Result<Vec<PendingLoanMovement>, LoansError> {
+        PgLoansStore::pending_movements(self, limit)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn confirm_movement(
+        &self,
+        user: UserId,
+        agreement: LoanAgreementId,
+        movement: LoanMovementId,
+        journal: JournalEntryId,
+        now: DateTime<Utc>,
+    ) -> Result<LoanEventV1, LoansError> {
+        PgLoansStore::confirm_movement(self, user, agreement, movement, journal, now)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn fail_movement(
+        &self,
+        user: UserId,
+        agreement: LoanAgreementId,
+        movement: LoanMovementId,
+        error: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), LoansError> {
+        PgLoansStore::fail_movement(self, user, agreement, movement, error, now)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn pending_reversals(&self, limit: i64) -> Result<Vec<PendingLoanReversal>, LoansError> {
+        PgLoansStore::pending_reversals(self, limit)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn confirm_reversal(
+        &self,
+        pending: &PendingLoanReversal,
+        reversal: JournalEntryId,
+        now: DateTime<Utc>,
+    ) -> Result<LoanEventV1, LoansError> {
+        PgLoansStore::confirm_reversal(self, pending, reversal, now)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn pending_replacements(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PendingLoanReplacement>, LoansError> {
+        PgLoansStore::pending_replacements(self, limit)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn confirm_replacement_reversal(
+        &self,
+        pending: &PendingLoanReplacement,
+        reversal: JournalEntryId,
+        now: DateTime<Utc>,
+    ) -> Result<(), LoansError> {
+        PgLoansStore::confirm_replacement_reversal(self, pending, reversal, now)
+            .await
+            .map_err(facade_error)
     }
 }
 

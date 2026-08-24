@@ -1,4 +1,4 @@
-//! Isolated Finance V2 composition root.
+//! Moneykeeper composition root and application lifecycle.
 
 use std::{sync::Arc, time::Duration};
 
@@ -15,7 +15,10 @@ use rand::RngCore as _;
 use serde_json::json;
 
 use crate::bootstrap::workers::{Readiness, WorkerRegistry};
-use crate::contexts::banking::public::{Aes256CredentialCipher, BankingFacade, MonobankClient};
+use crate::contexts::banking::{
+    adapters::{Aes256CredentialCipher, MonobankClient},
+    public::BankingFacade,
+};
 use crate::contexts::classification::public::CategoryCatalogFacade;
 use crate::contexts::ledger::public::LedgerFacade;
 use crate::contexts::loans::public::LoansFacade;
@@ -26,20 +29,20 @@ use crate::contexts::recurring::public::RecurringFacade;
 use crate::contexts::reference_data::public::CurrencyCatalogFacade;
 use crate::contexts::reporting::public::ReportingFacade;
 use crate::contexts::sharing::public::SharingFacade;
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
 
 /// Stable production secrets required to build Banking adapters.
 #[derive(Clone)]
-pub struct V2Secrets {
+pub struct RuntimeSecrets {
     banking_key_id: String,
     banking_key: [u8; 32],
     webhook_digest_key: [u8; 32],
 }
 
-impl std::fmt::Debug for V2Secrets {
+impl std::fmt::Debug for RuntimeSecrets {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("V2Secrets")
+            .debug_struct("RuntimeSecrets")
             .field("banking_key_id", &self.banking_key_id)
             .field("banking_key", &"[REDACTED]")
             .field("webhook_digest_key", &"[REDACTED]")
@@ -47,8 +50,8 @@ impl std::fmt::Debug for V2Secrets {
     }
 }
 
-impl V2Secrets {
-    /// Loads and validates the stable Finance V2 cryptographic configuration.
+impl RuntimeSecrets {
+    /// Loads and validates the stable Moneykeeper cryptographic configuration.
     pub fn from_environment() -> anyhow::Result<Self> {
         let banking_key_id = required_environment("FINANCE_V2_ENCRYPTION_KEY_ID")?;
         anyhow::ensure!(
@@ -70,7 +73,7 @@ impl V2Secrets {
         rand::rngs::OsRng.fill_bytes(&mut banking_key);
         rand::rngs::OsRng.fill_bytes(&mut webhook_digest_key);
         Self {
-            banking_key_id: "ephemeral-v2".to_owned(),
+            banking_key_id: "ephemeral-moneykeeper".to_owned(),
             banking_key,
             webhook_digest_key,
         }
@@ -99,7 +102,7 @@ pub struct RuntimeConfig {
     database_url: String,
     bind_address: std::net::SocketAddr,
     supabase_url: reqwest::Url,
-    secrets: V2Secrets,
+    secrets: RuntimeSecrets,
 }
 
 impl std::fmt::Debug for RuntimeConfig {
@@ -139,7 +142,7 @@ impl RuntimeConfig {
             database_url,
             bind_address,
             supabase_url,
-            secrets: V2Secrets::from_environment()?,
+            secrets: RuntimeSecrets::from_environment()?,
         })
     }
 
@@ -157,15 +160,15 @@ impl RuntimeConfig {
             .expect("validated base URL accepts the static JWKS path")
     }
 
-    pub fn secrets(&self) -> &V2Secrets {
+    pub fn secrets(&self) -> &RuntimeSecrets {
         &self.secrets
     }
 }
 
-/// Public supporting-context capabilities assembled only after V2 lineage
+/// Public context capabilities assembled only after database lineage
 /// verification. Concrete PostgreSQL adapters remain context-private.
 #[derive(Clone)]
-pub struct SupportingContexts {
+pub struct ContextFacades {
     pub currencies: CurrencyCatalogFacade,
     pub categories: CategoryCatalogFacade,
     pub preferences: PreferencesFacade,
@@ -179,16 +182,16 @@ pub struct SupportingContexts {
     pub portfolio: PortfolioFacade,
 }
 
-/// Builds all Phase 1 supporting capabilities from a verified database.
-pub fn supporting_contexts(pool: &VerifiedV2Pool) -> SupportingContexts {
-    supporting_contexts_with_secrets(pool, &V2Secrets::ephemeral())
+/// Builds all public context capabilities from a verified database.
+pub fn build_contexts(pool: &VerifiedDatabase) -> ContextFacades {
+    build_contexts_with_secrets(pool, &RuntimeSecrets::ephemeral())
 }
 
 /// Builds all context façades with stable production cryptographic material.
-pub fn supporting_contexts_with_secrets(
-    pool: &VerifiedV2Pool,
-    secrets: &V2Secrets,
-) -> SupportingContexts {
+pub fn build_contexts_with_secrets(
+    pool: &VerifiedDatabase,
+    secrets: &RuntimeSecrets,
+) -> ContextFacades {
     let categories = crate::contexts::classification::build(pool);
     let currencies = crate::contexts::reference_data::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories.clone());
@@ -196,14 +199,14 @@ pub fn supporting_contexts_with_secrets(
         pool,
         Arc::new(
             Aes256CredentialCipher::new(&secrets.banking_key_id, secrets.banking_key)
-                .expect("validated Finance V2 key has the required length"),
+                .expect("validated Moneykeeper key has the required length"),
         ),
         Arc::new(MonobankClient::new("https://api.monobank.ua")),
         ledger.clone(),
         currencies.clone(),
         secrets.webhook_digest_key,
     );
-    SupportingContexts {
+    ContextFacades {
         currencies,
         categories: categories.clone(),
         preferences: crate::contexts::preferences::build(pool),
@@ -222,17 +225,13 @@ pub fn supporting_contexts_with_secrets(
     }
 }
 
-/// Builds the isolated Finance V2 supporting-context router.
-///
-/// This function does not spawn workers and is intentionally unused by
-/// `main.rs` before the Phase 8 cutover.
-pub fn router(pool: &VerifiedV2Pool, jwks: Arc<JwkSet>) -> Router {
-    crate::api::v2::router(supporting_contexts(pool), jwks)
+/// Builds the Moneykeeper HTTP router without spawning background workers.
+pub fn router(pool: &VerifiedDatabase, jwks: Arc<JwkSet>) -> Router {
+    crate::api::router(build_contexts(pool), jwks)
 }
 
-/// Bounded Phase 4 worker entry points. Timers may call these methods, but all
-/// durable scheduling, cursor, retry, and fencing state remains in PostgreSQL.
-pub struct Phase4Workers {
+/// Owning-context maintenance workers constructed by the composition root.
+pub(crate) struct ContextMaintenanceWorkers {
     mail: crate::contexts::mail::infrastructure::sync_worker::MailSyncWorker<
         crate::contexts::mail::infrastructure::gmail::GmailClient,
         crate::contexts::mail::infrastructure::oauth::GoogleOAuthClient,
@@ -242,7 +241,6 @@ pub struct Phase4Workers {
     >,
     recurring:
         crate::contexts::recurring::infrastructure::categorization_worker::CategorizationWorker,
-    events: crate::integration::process_managers::phase4_router::Phase4EventRouter,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -254,8 +252,8 @@ pub struct WorkerRunReport {
     pub fenced: bool,
 }
 
-impl Phase4Workers {
-    pub async fn run_mail_once(&self) -> anyhow::Result<WorkerRunReport> {
+impl ContextMaintenanceWorkers {
+    pub(crate) async fn run_mail_once(&self) -> anyhow::Result<WorkerRunReport> {
         let report = self.mail.run_once().await?;
         Ok(WorkerRunReport {
             claimed: report.claimed,
@@ -266,7 +264,7 @@ impl Phase4Workers {
         })
     }
 
-    pub async fn run_nbu_once(&self) -> anyhow::Result<WorkerRunReport> {
+    pub(crate) async fn run_reference_data_once(&self) -> anyhow::Result<WorkerRunReport> {
         let report = self.fx.run_once().await?;
         Ok(WorkerRunReport {
             claimed: report.claimed,
@@ -277,7 +275,7 @@ impl Phase4Workers {
         })
     }
 
-    pub async fn run_recurring_once(&self) -> anyhow::Result<WorkerRunReport> {
+    pub(crate) async fn run_recurring_once(&self) -> anyhow::Result<WorkerRunReport> {
         let report = self.recurring.run_once().await?;
         Ok(WorkerRunReport {
             claimed: report.claimed,
@@ -287,33 +285,15 @@ impl Phase4Workers {
             fenced: report.fenced,
         })
     }
-
-    pub async fn route_event_once(&self) -> anyhow::Result<WorkerRunReport> {
-        let report = self.events.run_once().await?;
-        Ok(WorkerRunReport {
-            claimed: report.routed || report.ignored,
-            records: u32::from(report.routed),
-            replayed: 0,
-            retry_scheduled: false,
-            fenced: false,
-        })
-    }
 }
 
-/// Constructs workers without spawning them or changing the legacy runtime.
-pub fn phase4_workers(pool: &VerifiedV2Pool) -> Phase4Workers {
-    phase4_workers_with_secrets(pool, &V2Secrets::ephemeral())
-}
-
-pub(crate) fn phase4_workers_with_secrets(
-    pool: &VerifiedV2Pool,
-    secrets: &V2Secrets,
-) -> Phase4Workers {
+pub(crate) fn context_maintenance_workers(
+    pool: &VerifiedDatabase,
+    secrets: &RuntimeSecrets,
+) -> ContextMaintenanceWorkers {
     let categories = crate::contexts::classification::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
-    let recurring = crate::contexts::recurring::build(pool);
-    let reporting = crate::contexts::reporting::build(pool);
-    Phase4Workers {
+    ContextMaintenanceWorkers {
         mail: crate::contexts::mail::infrastructure::sync_worker::MailSyncWorker::new(
             pool.pool().clone(),
             crate::contexts::mail::infrastructure::gmail::GmailClient::new(
@@ -324,7 +304,7 @@ pub(crate) fn phase4_workers_with_secrets(
                 &secrets.banking_key_id,
                 secrets.banking_key,
             )
-            .expect("validated Finance V2 Mail key configuration"),
+            .expect("validated Moneykeeper Mail key configuration"),
             "finance-v2-mail",
             Duration::from_secs(30),
         )
@@ -346,25 +326,61 @@ pub(crate) fn phase4_workers_with_secrets(
             Duration::from_secs(30),
         )
         .expect("static Recurring worker configuration is valid"),
-        events: crate::integration::process_managers::phase4_router::Phase4EventRouter::new(
+    }
+}
+
+/// Independent durable event consumers for Recurring and Reporting.
+pub struct EventConsumers {
+    recurring: crate::integration::event_consumers::RecurringEventConsumer,
+    reporting: crate::integration::event_consumers::ReportingEventConsumer,
+}
+
+impl EventConsumers {
+    pub async fn run_recurring_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.recurring.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed(),
+            records: u32::from(report.applied),
+            ..WorkerRunReport::default()
+        })
+    }
+
+    pub async fn run_reporting_once(&self) -> anyhow::Result<WorkerRunReport> {
+        let report = self.reporting.run_once().await?;
+        Ok(WorkerRunReport {
+            claimed: report.claimed(),
+            records: u32::from(report.applied),
+            ..WorkerRunReport::default()
+        })
+    }
+}
+
+pub fn event_consumers(pool: &VerifiedDatabase) -> EventConsumers {
+    let categories = crate::contexts::classification::build(pool);
+    let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
+    EventConsumers {
+        recurring: crate::integration::event_consumers::RecurringEventConsumer::new(
+            pool.pool().clone(),
+            ledger.clone(),
+            crate::contexts::recurring::build(pool),
+        ),
+        reporting: crate::integration::event_consumers::ReportingEventConsumer::new(
             pool.pool().clone(),
             ledger,
-            recurring,
-            reporting,
+            crate::contexts::reporting::build(pool),
         ),
     }
 }
 
-/// Explicit Phase 6 worker entry points. They are constructed only by the V2
-/// composition root and are never started by the legacy runtime.
-pub struct Phase6Workers {
+/// Loan accounting process managers coordinated through public contracts.
+pub struct LoanAccountingWorkers {
     opening: crate::integration::process_managers::loan_opening::LoanOpeningWorker,
     accounting: crate::integration::process_managers::loan_accounting::LoanAccountingWorker,
     reversal: crate::integration::process_managers::loan_reversal::LoanReversalWorker,
     replacement: crate::integration::process_managers::loan_replacement::LoanReplacementWorker,
 }
 
-impl Phase6Workers {
+impl LoanAccountingWorkers {
     pub async fn run_opening_once(&self) -> anyhow::Result<WorkerRunReport> {
         let report = self.opening.run_once().await?;
         Ok(WorkerRunReport {
@@ -407,11 +423,11 @@ impl Phase6Workers {
     }
 }
 
-pub fn phase6_workers(pool: &VerifiedV2Pool) -> Phase6Workers {
+pub fn loan_accounting_workers(pool: &VerifiedDatabase) -> LoanAccountingWorkers {
     let categories = crate::contexts::classification::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
     let loans = crate::contexts::loans::build(pool);
-    Phase6Workers {
+    LoanAccountingWorkers {
         opening: crate::integration::process_managers::loan_opening::LoanOpeningWorker::new(
             loans.clone(),
             ledger.clone(),
@@ -432,12 +448,15 @@ pub fn phase6_workers(pool: &VerifiedV2Pool) -> Phase6Workers {
     }
 }
 
-/// Explicit Phase 7 Portfolio cash worker; never started by the legacy runtime.
-pub struct Phase7Workers {
-    cash: crate::contexts::portfolio::infrastructure::cash_worker::PortfolioCashSettlementWorker,
+/// Portfolio cash settlement runner coordinated through the Ledger contract.
+pub struct PortfolioSettlementRunner {
+    cash: crate::contexts::portfolio::application::cash_settlement::PortfolioCashSettlementService<
+        crate::contexts::portfolio::infrastructure::PgPortfolioCashSettlementRepository,
+        LedgerFacade,
+    >,
 }
-impl Phase7Workers {
-    pub async fn run_cash_once(&self) -> anyhow::Result<WorkerRunReport> {
+impl PortfolioSettlementRunner {
+    pub async fn run_once(&self) -> anyhow::Result<WorkerRunReport> {
         let r = self.cash.run_once().await?;
         Ok(WorkerRunReport {
             claimed: r.claimed,
@@ -448,28 +467,16 @@ impl Phase7Workers {
         })
     }
 }
-pub fn phase7_workers(pool: &VerifiedV2Pool) -> Phase7Workers {
+pub fn portfolio_settlement_runner(pool: &VerifiedDatabase) -> PortfolioSettlementRunner {
     let categories = crate::contexts::classification::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
-    Phase7Workers{cash:crate::contexts::portfolio::infrastructure::cash_worker::PortfolioCashSettlementWorker::new(pool.pool().clone(),ledger)}
-}
-
-/// Phase 5 cross-context coordinators, built only for the isolated V2 lineage.
-pub struct Phase5Coordinators {
-    pub accounting:
-        crate::integration::process_managers::sharing_accounting::SharingAccountingCoordinator,
-    pub settlement:
-        crate::integration::process_managers::sharing_settlement::SharingSettlementCoordinator,
-    pub reporting: ReportingFacade,
-}
-
-pub fn phase5_coordinators(pool: &VerifiedV2Pool) -> Phase5Coordinators {
-    let categories = crate::contexts::classification::build(pool);
-    let ledger = crate::contexts::ledger::build_with_categories(pool, categories);
-    Phase5Coordinators {
-        accounting: crate::integration::process_managers::sharing_accounting::SharingAccountingCoordinator::new(ledger.clone()),
-        settlement: crate::integration::process_managers::sharing_settlement::SharingSettlementCoordinator::new(ledger),
-        reporting: crate::contexts::reporting::build(pool),
+    PortfolioSettlementRunner {
+        cash: crate::contexts::portfolio::application::cash_settlement::PortfolioCashSettlementService::new(
+            crate::contexts::portfolio::infrastructure::PgPortfolioCashSettlementRepository::new(
+                pool.pool().clone(),
+            ),
+            ledger,
+        ),
     }
 }
 
@@ -517,26 +524,26 @@ impl BankingWorkers {
     }
 }
 
-pub fn banking_workers(contexts: &SupportingContexts) -> BankingWorkers {
+pub fn banking_workers(contexts: &ContextFacades) -> BankingWorkers {
     BankingWorkers {
         banking: contexts.banking.clone(),
         ledger: contexts.ledger.clone(),
     }
 }
 
-/// Builds and runs the complete Finance V2 HTTP and worker composition from a
+/// Builds and runs the complete Moneykeeper HTTP and worker composition from a
 /// verified database. No unchecked PostgreSQL pool can enter this boundary.
 pub async fn run<F>(
     listener: tokio::net::TcpListener,
-    pool: &VerifiedV2Pool,
+    pool: &VerifiedDatabase,
     jwks: Arc<JwkSet>,
-    secrets: &V2Secrets,
+    secrets: &RuntimeSecrets,
     shutdown: F,
 ) -> anyhow::Result<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    let contexts = supporting_contexts_with_secrets(pool, secrets);
+    let contexts = build_contexts_with_secrets(pool, secrets);
     let workers = crate::bootstrap::workers::production(pool, &contexts, secrets)?;
     let business_router = crate::api::routes::router(contexts, jwks);
     serve(
@@ -549,7 +556,7 @@ where
     .await
 }
 
-/// Serves a prepared Finance V2 router behind the worker/readiness barrier.
+/// Serves a prepared Moneykeeper router behind the worker/readiness barrier.
 ///
 /// The supplied listener begins with readiness false. Worker startup failure
 /// shuts it down without ever allowing business traffic. During shutdown,
@@ -594,8 +601,8 @@ where
             readiness.mark_not_ready();
             let _ = stop_http.send(true);
             http.await
-                .context("join not-ready Finance V2 HTTP listener")??;
-            return Err(error.context("Finance V2 worker barrier failed"));
+                .context("join not-ready Moneykeeper HTTP listener")??;
+            return Err(error.context("Moneykeeper worker barrier failed"));
         }
     };
     readiness.mark_ready();
@@ -603,7 +610,7 @@ where
     shutdown.await;
     readiness.mark_not_ready();
     let _ = stop_http.send(true);
-    http.await.context("join Finance V2 HTTP listener")??;
+    http.await.context("join Moneykeeper HTTP listener")??;
     worker_runtime.shutdown().await
 }
 

@@ -12,7 +12,7 @@ impl BankingFacade {
         &self,
         command: RequestSyncJob,
     ) -> Result<SyncJobView, BankingError> {
-        self.store.request_sync_job(command).await
+        self.sync_jobs.request_sync_job(command).await
     }
 
     pub async fn claim_due_sync_job(
@@ -21,7 +21,7 @@ impl BankingFacade {
         now: DateTime<Utc>,
         lease_seconds: i64,
     ) -> Result<Option<SyncJobView>, BankingError> {
-        self.store
+        self.sync_jobs
             .claim_due_sync_job(holder, now, lease_seconds)
             .await
     }
@@ -30,14 +30,14 @@ impl BankingFacade {
         &self,
         command: BeginSyncPage,
     ) -> Result<SyncPageView, BankingError> {
-        self.store.begin_sync_page(command).await
+        self.sync_jobs.begin_sync_page(command).await
     }
 
     pub async fn complete_sync_page(
         &self,
         command: CompleteSyncPage,
     ) -> Result<SyncJobView, BankingError> {
-        self.store.complete_sync_page(command).await
+        self.sync_jobs.complete_sync_page(command).await
     }
 
     pub async fn get_sync_job(
@@ -45,6 +45,6 @@ impl BankingFacade {
         user_id: crate::shared_kernel::UserId,
         id: crate::contexts::banking::domain::SyncJobId,
     ) -> Result<SyncJobView, BankingError> {
-        self.store.get_sync_job(user_id, id).await
+        self.sync_jobs.get_sync_job(user_id, id).await
     }
 }

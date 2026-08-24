@@ -1,9 +1,8 @@
 //! Task-oriented Portfolio command DTOs.
 
-use crate::{
-    contexts::{ledger::public::LedgerAccountId, portfolio::domain::*},
-    shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, UserId},
-};
+use super::super::domain::*;
+use crate::contexts::ledger::public::LedgerAccountId;
+use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, UserId};
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};

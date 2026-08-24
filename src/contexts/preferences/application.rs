@@ -1,14 +1,24 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::contexts::reference_data::public::CurrencyCatalog;
 use crate::shared_kernel::{CurrencyCode, UserId};
 
 use super::domain::UserPreferences;
-use super::infrastructure::PgPreferences;
 use super::public::{PreferencesError, PreferencesView};
 
-pub(crate) async fn get(
-    preferences: &PgPreferences,
+#[async_trait]
+pub(crate) trait PreferencesRepository: Send + Sync {
+    async fn find(&self, user_id: UserId) -> Result<Option<UserPreferences>, PreferencesError>;
+    async fn save(
+        &self,
+        preferences: &UserPreferences,
+        expected_version: i64,
+    ) -> Result<(), PreferencesError>;
+}
+
+pub(crate) async fn get<R: PreferencesRepository + ?Sized>(
+    preferences: &R,
     user_id: UserId,
     now: DateTime<Utc>,
 ) -> Result<PreferencesView, PreferencesError> {
@@ -19,14 +29,18 @@ pub(crate) async fn get(
         .into())
 }
 
-pub(crate) async fn set_base_currency<C: CurrencyCatalog>(
-    preferences: &PgPreferences,
+pub(crate) async fn set_base_currency<R, C>(
+    preferences: &R,
     currencies: &C,
     user_id: UserId,
     base_currency: CurrencyCode,
     expected_version: i64,
     now: DateTime<Utc>,
-) -> Result<PreferencesView, PreferencesError> {
+) -> Result<PreferencesView, PreferencesError>
+where
+    R: PreferencesRepository + ?Sized,
+    C: CurrencyCatalog,
+{
     currencies
         .require_enabled(base_currency.clone())
         .await

@@ -1,4 +1,4 @@
-//! Periodic Finance V2 worker registry and graceful cancellation barrier.
+//! Periodic Moneykeeper worker registry and graceful cancellation barrier.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -21,9 +21,10 @@ pub const REQUIRED_WORKERS: &[&str] = &[
     "banking-sync",
     "mail-sync",
     "recurring-lifecycle",
+    "recurring-event-policy",
     "outbox-dispatch",
     "process-manager-retries",
-    "reporting-consumers",
+    "reporting-projections",
     "reference-data-sync",
 ];
 
@@ -196,7 +197,7 @@ fn spawn_worker(
                 }
                 _ = ticker.tick() => {
                     if let Err(error) = (definition.run_once)().await {
-                        tracing::warn!(worker = %definition.name, ?error, "Finance V2 worker iteration failed");
+                        tracing::warn!(worker = %definition.name, ?error, "Moneykeeper worker iteration failed");
                     }
                 }
             }
@@ -215,7 +216,7 @@ impl WorkerRuntime {
     pub async fn shutdown(self) -> anyhow::Result<()> {
         let _ = self.shutdown.send(true);
         for handle in self.handles {
-            handle.await.context("join Finance V2 worker")?;
+            handle.await.context("join Moneykeeper worker")?;
         }
         Ok(())
     }
@@ -236,18 +237,19 @@ impl crate::integration::outbox::EventPublisher for InProcessPublisher {
     }
 }
 
-/// Builds the complete Finance V2 registry from a verified database only.
+/// Builds the complete Moneykeeper registry from a verified database only.
 pub fn production(
-    pool: &crate::infrastructure::v2_db::VerifiedV2Pool,
-    contexts: &super::v2::SupportingContexts,
-    secrets: &super::v2::V2Secrets,
+    pool: &crate::infrastructure::database::VerifiedDatabase,
+    contexts: &super::runtime::ContextFacades,
+    secrets: &super::runtime::RuntimeSecrets,
 ) -> anyhow::Result<WorkerRegistry> {
     use crate::integration::outbox::{DispatcherConfig, OutboxDispatcher};
 
-    let banking = Arc::new(super::v2::banking_workers(contexts));
-    let phase4 = Arc::new(super::v2::phase4_workers_with_secrets(pool, secrets));
-    let phase6 = Arc::new(super::v2::phase6_workers(pool));
-    let phase7 = Arc::new(super::v2::phase7_workers(pool));
+    let banking = Arc::new(super::runtime::banking_workers(contexts));
+    let maintenance = Arc::new(super::runtime::context_maintenance_workers(pool, secrets));
+    let event_consumers = Arc::new(super::runtime::event_consumers(pool));
+    let loan_accounting = Arc::new(super::runtime::loan_accounting_workers(pool));
+    let portfolio_settlement = Arc::new(super::runtime::portfolio_settlement_runner(pool));
     let outbox = Arc::new(OutboxDispatcher::new(
         pool,
         "finance-v2-outbox",
@@ -265,21 +267,31 @@ pub fn production(
             }
         }),
         WorkerDefinition::new("mail-sync", interval, {
-            let phase4 = Arc::clone(&phase4);
+            let maintenance = Arc::clone(&maintenance);
             move || {
-                let phase4 = Arc::clone(&phase4);
+                let maintenance = Arc::clone(&maintenance);
                 async move {
-                    phase4.run_mail_once().await?;
+                    maintenance.run_mail_once().await?;
                     Ok(())
                 }
             }
         }),
         WorkerDefinition::new("recurring-lifecycle", interval, {
-            let phase4 = Arc::clone(&phase4);
+            let maintenance = Arc::clone(&maintenance);
             move || {
-                let phase4 = Arc::clone(&phase4);
+                let maintenance = Arc::clone(&maintenance);
                 async move {
-                    phase4.run_recurring_once().await?;
+                    maintenance.run_recurring_once().await?;
+                    Ok(())
+                }
+            }
+        }),
+        WorkerDefinition::new("recurring-event-policy", interval, {
+            let event_consumers = Arc::clone(&event_consumers);
+            move || {
+                let event_consumers = Arc::clone(&event_consumers);
+                async move {
+                    event_consumers.run_recurring_once().await?;
                     Ok(())
                 }
             }
@@ -292,31 +304,31 @@ pub fn production(
             }
         }),
         WorkerDefinition::new("process-manager-retries", interval, move || {
-            let phase6 = Arc::clone(&phase6);
-            let phase7 = Arc::clone(&phase7);
+            let loan_accounting = Arc::clone(&loan_accounting);
+            let portfolio_settlement = Arc::clone(&portfolio_settlement);
             async move {
-                phase6.run_opening_once().await?;
-                phase6.run_accounting_once().await?;
-                phase6.run_reversal_once().await?;
-                phase6.run_replacement_once().await?;
-                phase7.run_cash_once().await?;
+                loan_accounting.run_opening_once().await?;
+                loan_accounting.run_accounting_once().await?;
+                loan_accounting.run_reversal_once().await?;
+                loan_accounting.run_replacement_once().await?;
+                portfolio_settlement.run_once().await?;
                 Ok(())
             }
         }),
-        WorkerDefinition::new("reporting-consumers", interval, {
-            let phase4 = Arc::clone(&phase4);
+        WorkerDefinition::new("reporting-projections", interval, {
+            let event_consumers = Arc::clone(&event_consumers);
             move || {
-                let phase4 = Arc::clone(&phase4);
+                let event_consumers = Arc::clone(&event_consumers);
                 async move {
-                    phase4.route_event_once().await?;
+                    event_consumers.run_reporting_once().await?;
                     Ok(())
                 }
             }
         }),
         WorkerDefinition::new("reference-data-sync", interval, move || {
-            let phase4 = Arc::clone(&phase4);
+            let maintenance = Arc::clone(&maintenance);
             async move {
-                phase4.run_nbu_once().await?;
+                maintenance.run_reference_data_once().await?;
                 Ok(())
             }
         }),

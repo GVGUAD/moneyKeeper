@@ -7,8 +7,15 @@ pub mod domain;
 pub(crate) mod infrastructure;
 pub mod public;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
+use std::sync::Arc;
 
-pub(crate) fn build(pool: &VerifiedV2Pool) -> public::SharingFacade {
-    public::SharingFacade::new(infrastructure::PgSharingStore::new(pool.pool().clone()))
+pub(crate) fn build(pool: &VerifiedDatabase) -> public::SharingFacade {
+    let repository = Arc::new(infrastructure::PgSharingStore::new(pool.pool().clone()));
+    public::SharingFacade::new(
+        repository.clone(),
+        repository.clone(),
+        repository.clone(),
+        repository,
+    )
 }

@@ -1,8 +1,10 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::shared_kernel::CurrencyCode;
 
+use super::application::CurrencyRepository;
 use super::domain::CurrencyDefinition;
 use super::public::CurrencyError;
 pub(crate) mod fx_repository;
@@ -42,15 +44,15 @@ pub(crate) struct PgCurrencyCatalog {
 }
 
 impl PgCurrencyCatalog {
-    /// Creates a catalog backed by a verified Finance V2 database pool.
+    /// Creates a catalog backed by a verified Moneykeeper database pool.
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+}
 
-    pub(crate) async fn find(
-        &self,
-        code: CurrencyCode,
-    ) -> Result<Option<CurrencyDefinition>, CurrencyError> {
+#[async_trait]
+impl CurrencyRepository for PgCurrencyCatalog {
+    async fn find(&self, code: CurrencyCode) -> Result<Option<CurrencyDefinition>, CurrencyError> {
         let row = sqlx::query_as::<_, CurrencyRow>(
             "SELECT code::text AS code, numeric_code::text AS numeric_code, name, \
                     minor_unit, enabled, updated_at \
@@ -59,13 +61,11 @@ impl PgCurrencyCatalog {
         .bind(code.as_str())
         .fetch_optional(&self.pool)
         .await
-        .map_err(CurrencyError::database)?;
+        .map_err(CurrencyError::storage)?;
         row.map(CurrencyRow::into_domain).transpose()
     }
 
-    pub(crate) async fn list_enabled_definitions(
-        &self,
-    ) -> Result<Vec<CurrencyDefinition>, CurrencyError> {
+    async fn list_enabled_definitions(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError> {
         sqlx::query_as::<_, CurrencyRow>(
             "SELECT code::text AS code, numeric_code::text AS numeric_code, name, \
                     minor_unit, enabled, updated_at \
@@ -73,7 +73,7 @@ impl PgCurrencyCatalog {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(CurrencyError::database)?
+        .map_err(CurrencyError::storage)?
         .into_iter()
         .map(CurrencyRow::into_domain)
         .collect()

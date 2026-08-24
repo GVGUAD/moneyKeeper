@@ -16,7 +16,7 @@ use super::super::{
     public::{AccountEffect, TransferFunds, TransferResult},
 };
 use super::{
-    accounts::LedgerFacade,
+    accounts::LedgerApplication,
     commit::commit_journal,
     ports::{
         CommandReceiptStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
@@ -24,7 +24,7 @@ use super::{
     },
 };
 
-impl LedgerFacade {
+impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
     /// Transfers exact amounts and optional fees in one immutable journal.
     pub async fn transfer(&self, command: TransferFunds) -> Result<TransferResult, LedgerError> {
         transfer(&self.uow, self.clock.as_ref(), command).await

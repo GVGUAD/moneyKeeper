@@ -1,13 +1,15 @@
 //! Operational balance-projection verification and rebuild.
 
+use async_trait::async_trait;
 use rust_decimal::Decimal;
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
 use crate::shared_kernel::{CurrencyCode, UserId};
 
 use super::super::{
+    application::ports::ProjectionRebuildPort,
     domain::{LedgerAccountId, LedgerError},
     public::ProjectionMismatch,
 };
@@ -18,7 +20,7 @@ pub(crate) struct PgLedgerProjection {
 }
 
 impl PgLedgerProjection {
-    pub(crate) fn new(pool: &VerifiedV2Pool) -> Self {
+    pub(crate) fn new(pool: &VerifiedDatabase) -> Self {
         Self {
             pool: pool.pool().clone(),
         }
@@ -43,7 +45,7 @@ impl PgLedgerProjection {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         rows.into_iter()
             .map(|row| {
                 Ok(ProjectionMismatch {
@@ -60,11 +62,11 @@ impl PgLedgerProjection {
     }
 
     pub(crate) async fn rebuild(&self) -> Result<(), LedgerError> {
-        let mut tx = self.pool.begin().await.map_err(LedgerError::database)?;
+        let mut tx = self.pool.begin().await.map_err(LedgerError::storage)?;
         sqlx::query("LOCK TABLE ledger.account_balances IN EXCLUSIVE MODE")
             .execute(&mut *tx)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
         sqlx::query(
             "UPDATE ledger.account_balances b SET signed_balance = facts.balance, \
                     version = b.version + 1, as_of = clock_timestamp() \
@@ -76,7 +78,18 @@ impl PgLedgerProjection {
         )
         .execute(&mut *tx)
         .await
-        .map_err(LedgerError::database)?;
-        tx.commit().await.map_err(LedgerError::database)
+        .map_err(LedgerError::storage)?;
+        tx.commit().await.map_err(LedgerError::storage)
+    }
+}
+
+#[async_trait]
+impl ProjectionRebuildPort for PgLedgerProjection {
+    async fn verify(&self) -> Result<Vec<ProjectionMismatch>, LedgerError> {
+        PgLedgerProjection::verify(self).await
+    }
+
+    async fn rebuild(&self) -> Result<(), LedgerError> {
+        PgLedgerProjection::rebuild(self).await
     }
 }

@@ -1,4 +1,4 @@
-mod v2_test_support;
+mod test_support;
 
 use std::sync::Arc;
 
@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use axum::body::Bytes;
 use axum_test::TestServer;
 use chrono::Utc;
+use moneykeeper::contexts::banking::adapters::Aes256CredentialCipher;
 use moneykeeper::{
     contexts::banking::{self, public::*},
     shared_kernel::{CorrelationId, IdempotencyKey, UserId},
@@ -22,8 +23,8 @@ impl ProviderClient for FixtureProvider {
 
 #[tokio::test]
 async fn webhook_credentials_are_high_entropy_rotatable_and_queue_replays_once() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let supporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let supporting = moneykeeper::bootstrap::build_contexts(&verified);
     let banking = banking::build_with_ledger(
         &verified,
         Arc::new(Aes256CredentialCipher::new("test-key", [7_u8; 32]).unwrap()),

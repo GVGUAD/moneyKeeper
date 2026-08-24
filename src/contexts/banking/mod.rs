@@ -6,29 +6,36 @@ mod domain;
 mod infrastructure;
 pub mod public;
 
+/// Concrete outer adapters kept separate from Banking's published language.
+pub mod adapters {
+    pub use super::infrastructure::{Aes256CredentialCipher, MonobankAdapter, MonobankClient};
+}
+
 use std::sync::Arc;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
 
 pub fn build_with_adapters(
-    pool: &VerifiedV2Pool,
+    pool: &VerifiedDatabase,
     cipher: Arc<dyn application::CredentialCipher>,
     provider: Arc<dyn application::ProviderClient>,
     currencies: crate::contexts::reference_data::public::CurrencyCatalogFacade,
     webhook_lookup_key: [u8; 32],
 ) -> public::BankingFacade {
     public::BankingFacade::new(
-        infrastructure::PgBankingStore::new(pool),
+        Arc::new(infrastructure::PgBankingStore::new(pool)),
         cipher,
         provider,
         None,
         currencies,
-        infrastructure::WebhookSecretManager::new(webhook_lookup_key),
+        Arc::new(infrastructure::WebhookSecretManager::new(
+            webhook_lookup_key,
+        )),
     )
 }
 
 pub fn build_with_ledger(
-    pool: &VerifiedV2Pool,
+    pool: &VerifiedDatabase,
     cipher: Arc<dyn application::CredentialCipher>,
     provider: Arc<dyn application::ProviderClient>,
     ledger: crate::contexts::ledger::public::LedgerFacade,
@@ -36,12 +43,14 @@ pub fn build_with_ledger(
     webhook_lookup_key: [u8; 32],
 ) -> public::BankingFacade {
     public::BankingFacade::new(
-        infrastructure::PgBankingStore::new(pool),
+        Arc::new(infrastructure::PgBankingStore::new(pool)),
         cipher,
         provider,
         Some(ledger),
         currencies,
-        infrastructure::WebhookSecretManager::new(webhook_lookup_key),
+        Arc::new(infrastructure::WebhookSecretManager::new(
+            webhook_lookup_key,
+        )),
     )
 }
 

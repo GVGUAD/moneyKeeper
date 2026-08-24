@@ -14,12 +14,13 @@ use crate::{
             BeginSyncPage, BindExistingResource, CompleteSyncPage, ConnectProvider,
             ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher,
             DeactivateResourceMapping, ExternalResourceView, IntakeProviderEvent,
-            ProviderAccountSummary, ProviderClient, ProviderConnectionView, ProviderCredential,
-            ProviderEventIntakeOutcome, ProviderEventReadyV1, ProviderEventReceipt,
-            ProviderEventView, ProviderImportOutcome, ProviderImportWork, RecordBalanceObservation,
-            ReplaceProviderCredential, RequestSyncJob, ResourceMappingResult, ResourceMappingView,
-            RotateWebhookCredential, SyncJobView, SyncPageView, WebhookReceiptOutcome,
-            WebhookRotationResult,
+            NormalizedResource, ProviderAccountSummary, ProviderClient, ProviderConnectionView,
+            ProviderCredential, ProviderEventIntakeOutcome, ProviderEventReadyV1,
+            ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
+            RecordBalanceObservation, ReplaceProviderCredential, RequestSyncJob, ResourceBinding,
+            ResourceMappingResult, ResourceMappingView, RotateWebhookCredential, SyncJobView,
+            SyncPageView, WebhookCredential, WebhookReceiptOutcome, WebhookRegistrationWork,
+            WebhookRotationResult, WebhookSecrets,
         },
         domain::{
             BalanceBasis, BalanceComparability, BalanceObservationId, BankingError,
@@ -28,18 +29,13 @@ use crate::{
             ResourceKind, ResourceMappingId, SyncJobId,
         },
     },
-    contexts::ledger::public::{
-        AccountKind, AccountNature, JournalEntryId, LedgerAccountId, ReconciliationCaseId,
-    },
-    infrastructure::v2_db::VerifiedV2Pool,
+    contexts::ledger::public::{JournalEntryId, LedgerAccountId, ReconciliationCaseId},
+    infrastructure::database::VerifiedDatabase,
     integration::{IntegrationEvent, outbox::OutboxWriter, postgres::PgOutboxWriter},
     shared_kernel::{CurrencyCode, EventEnvelope, EventId, Money, UserId},
 };
 
-use super::{
-    MonobankAdapter, NormalizedResource, WebhookCredential, WebhookSecretManager,
-    pg_unit_of_work::PgBankingUnitOfWork, rows::ConnectionRow,
-};
+use super::{MonobankAdapter, pg_unit_of_work::PgBankingUnitOfWork, rows::ConnectionRow};
 
 #[derive(Clone)]
 pub(crate) struct PgBankingStore {
@@ -47,7 +43,7 @@ pub(crate) struct PgBankingStore {
 }
 
 impl PgBankingStore {
-    pub(crate) fn new(pool: &VerifiedV2Pool) -> Self {
+    pub(crate) fn new(pool: &VerifiedDatabase) -> Self {
         Self {
             uow: PgBankingUnitOfWork {
                 pool: pool.pool().clone(),
@@ -306,7 +302,7 @@ impl PgBankingStore {
         user_id: UserId,
         connection_id: ProviderConnectionId,
     ) -> Result<Vec<ExternalResourceView>, BankingError> {
-        let rows=sqlx::query("SELECT id,connection_id,kind,funding_model,currency,masked_label,discovery_state,version FROM banking.external_resources WHERE user_id=$1 AND connection_id=$2 ORDER BY created_at,id").bind(user_id.into_uuid()).bind(connection_id.into_uuid()).fetch_all(&self.uow.pool).await.map_err(database)?;
+        let rows=sqlx::query("SELECT resource.id,resource.connection_id,resource.kind,resource.funding_model,resource.currency,resource.masked_label,resource.discovery_state,resource.version,mapping.id mapping_id,mapping.ledger_account_id,mapping.mapping_version,mapping.state mapping_state,mapping.effective_at mapping_effective_at,mapping.ended_at mapping_ended_at FROM banking.external_resources resource LEFT JOIN LATERAL (SELECT candidate.id,candidate.ledger_account_id,candidate.mapping_version,candidate.state,candidate.effective_at,candidate.ended_at FROM banking.resource_mappings candidate WHERE candidate.external_resource_id=resource.id AND candidate.user_id=resource.user_id AND candidate.state IN ('active','pending_account_creation','needs_review') ORDER BY candidate.mapping_version DESC LIMIT 1) mapping ON true WHERE resource.user_id=$1 AND resource.connection_id=$2 ORDER BY resource.created_at,resource.id").bind(user_id.into_uuid()).bind(connection_id.into_uuid()).fetch_all(&self.uow.pool).await.map_err(database)?;
         rows.into_iter()
             .map(|row| {
                 Ok(ExternalResourceView {
@@ -320,6 +316,19 @@ impl PgBankingStore {
                     masked_label: row.get("masked_label"),
                     discovery_state: row.get("discovery_state"),
                     version: row.get("version"),
+                    current_mapping: row.get::<Option<uuid::Uuid>, _>("mapping_id").map(|id| {
+                        ResourceMappingView {
+                            id: ResourceMappingId::new(id),
+                            resource_id: ExternalResourceId::new(row.get("id")),
+                            ledger_account_id: row
+                                .get::<Option<uuid::Uuid>, _>("ledger_account_id")
+                                .map(LedgerAccountId::new),
+                            mapping_version: row.get("mapping_version"),
+                            state: row.get("mapping_state"),
+                            effective_at: row.get("mapping_effective_at"),
+                            ended_at: row.get("mapping_ended_at"),
+                        }
+                    }),
                 })
             })
             .collect()
@@ -427,6 +436,34 @@ impl PgBankingStore {
     ) -> Result<ExternalResourceId, BankingError> {
         let id:uuid::Uuid=sqlx::query_scalar("SELECT id FROM banking.external_resources WHERE user_id=$1 AND connection_id=$2 AND external_resource_id=$3").bind(user_id.into_uuid()).bind(connection_id.into_uuid()).bind(external).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         Ok(ExternalResourceId::new(id))
+    }
+
+    pub(crate) async fn require_resource_connection(
+        &self,
+        user_id: UserId,
+        connection_id: ProviderConnectionId,
+        resource_id: ExternalResourceId,
+    ) -> Result<(), BankingError> {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM banking.external_resources WHERE id=$1 AND user_id=$2 AND connection_id=$3)")
+            .bind(resource_id.into_uuid()).bind(user_id.into_uuid()).bind(connection_id.into_uuid())
+            .fetch_one(&self.uow.pool).await.map_err(database)?;
+        if exists {
+            Ok(())
+        } else {
+            Err(BankingError::InvalidState)
+        }
+    }
+
+    pub(crate) async fn resource_for_mapping(
+        &self,
+        user_id: UserId,
+        connection_id: ProviderConnectionId,
+        mapping_id: ResourceMappingId,
+    ) -> Result<ExternalResourceId, BankingError> {
+        let resource_id: uuid::Uuid = sqlx::query_scalar("SELECT mapping.external_resource_id FROM banking.resource_mappings mapping JOIN banking.external_resources resource ON resource.id=mapping.external_resource_id AND resource.user_id=mapping.user_id WHERE mapping.id=$1 AND mapping.user_id=$2 AND resource.connection_id=$3")
+            .bind(mapping_id.into_uuid()).bind(user_id.into_uuid()).bind(connection_id.into_uuid())
+            .fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        Ok(ExternalResourceId::new(resource_id))
     }
 
     pub(crate) async fn commit_mapping(
@@ -1074,7 +1111,7 @@ impl PgBankingStore {
     pub(crate) async fn validate_webhook_digest(
         &self,
         digest: &[u8; 32],
-        secrets: &WebhookSecretManager,
+        secrets: &dyn WebhookSecrets,
     ) -> Result<bool, BankingError> {
         let stored:Option<Vec<u8>>=sqlx::query_scalar("SELECT webhook_lookup_digest FROM banking.provider_connections WHERE webhook_lookup_digest=$1 AND state='active'").bind(digest.as_slice()).fetch_optional(&self.uow.pool).await.map_err(database)?.flatten();
         Ok(stored.is_some_and(|stored| secrets.verify_digest(digest, &stored)))
@@ -1084,7 +1121,7 @@ impl PgBankingStore {
         &self,
         digest: &[u8; 32],
         body: &[u8],
-        secrets: &WebhookSecretManager,
+        secrets: &dyn WebhookSecrets,
     ) -> Result<WebhookReceiptOutcome, BankingError> {
         let row=sqlx::query("SELECT id,user_id,webhook_lookup_digest FROM banking.provider_connections WHERE webhook_lookup_digest=$1 AND state='active'").bind(digest.as_slice()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         let stored: Vec<u8> = row.get("webhook_lookup_digest");
@@ -1195,43 +1232,6 @@ impl PgBankingStore {
             pending_credential_envelope_version: row.get("pending_credential_envelope_version"),
             credential_generation: row.get("credential_generation"),
         })
-    }
-}
-
-pub(crate) struct WebhookRegistrationWork {
-    pub(crate) provider: String,
-    pub(crate) credential_generation: i64,
-    pub(crate) webhook_version: i64,
-    pub(crate) provider_envelope: CredentialEnvelope,
-    pub(crate) webhook_envelope: CredentialEnvelope,
-}
-
-pub(crate) struct ResourceBinding {
-    pub(crate) kind: ResourceKind,
-    pub(crate) funding_model: FundingModel,
-    pub(crate) currency: CurrencyCode,
-    pub(crate) version: i64,
-}
-impl ResourceBinding {
-    pub(crate) fn expected_ledger_account(
-        &self,
-    ) -> Result<(AccountKind, AccountNature), BankingError> {
-        match (self.kind, self.funding_model) {
-            (ResourceKind::Card, FundingModel::OwnFunds) => {
-                Ok((AccountKind::DebitCard, AccountNature::Asset))
-            }
-            (ResourceKind::CurrentAccount, FundingModel::OwnFunds) => {
-                Ok((AccountKind::Current, AccountNature::Asset))
-            }
-            (ResourceKind::Jar, FundingModel::OwnFunds) => {
-                Ok((AccountKind::Jar, AccountNature::Asset))
-            }
-            (ResourceKind::Card, FundingModel::RevolvingCredit) => {
-                Ok((AccountKind::CreditCard, AccountNature::Liability))
-            }
-            (ResourceKind::SecurityPortfolio, _) => Err(BankingError::RouteToPortfolio),
-            _ => Err(BankingError::IncompatibleMapping),
-        }
     }
 }
 

@@ -1,17 +1,18 @@
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
-use moneykeeper::bootstrap::v2::supporting_contexts;
+use moneykeeper::bootstrap::build_contexts;
 use moneykeeper::contexts::classification::public::{
     CategoryCatalog, CategoryCommand, CategoryKind,
 };
 use moneykeeper::contexts::preferences::public::Preferences;
 use moneykeeper::contexts::reference_data::public::CurrencyCatalog;
+use moneykeeper::infrastructure::database::DATABASE_MIGRATOR;
 use moneykeeper::integration::IntegrationEvent;
 use moneykeeper::integration::inbox::{ConsumerName, InboxExecutor, InboxOutcome};
 use moneykeeper::integration::outbox::{
@@ -111,8 +112,8 @@ async fn consume_once(
 }
 
 #[tokio::test]
-async fn isolated_finance_v2_foundation_composes_end_to_end() {
-    let database = v2_test_support::fresh_v2_database().await;
+async fn isolated_application_foundation_composes_end_to_end() {
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
     let pool = PgPool::connect(database.database_url()).await.unwrap();
     let migration_versions: Vec<i64> =
@@ -120,14 +121,19 @@ async fn isolated_finance_v2_foundation_composes_end_to_end() {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(migration_versions, (1_i64..=11).collect::<Vec<_>>());
+    let expected_versions = DATABASE_MIGRATOR
+        .iter()
+        .filter(|migration| migration.migration_type.is_up_migration())
+        .map(|migration| migration.version)
+        .collect::<Vec<_>>();
+    assert_eq!(migration_versions, expected_versions);
 
     let now = Utc
         .with_ymd_and_hms(2026, 8, 13, 12, 0, 0)
         .single()
         .unwrap();
     let user_id = UserId::generate();
-    let contexts = supporting_contexts(&verified);
+    let contexts = build_contexts(&verified);
     let currencies = contexts.currencies;
     let categories = contexts.categories;
     let preferences = contexts.preferences;

@@ -152,7 +152,7 @@ impl LedgerError {
         Self::new(LedgerErrorKind::NotFound, "ledger resource was not found")
     }
 
-    pub(crate) fn database(source: sqlx::Error) -> Self {
+    pub(crate) fn storage(source: impl Error + Send + Sync + 'static) -> Self {
         Self::new(
             LedgerErrorKind::Persistence,
             "ledger storage is unavailable",

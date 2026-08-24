@@ -1,4 +1,4 @@
-//! HTTP adapter for the isolated Finance V2 Ledger.
+//! HTTP adapter for the isolated Moneykeeper Ledger.
 
 pub(crate) mod dto;
 pub(crate) mod handlers;

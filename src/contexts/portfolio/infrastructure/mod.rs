@@ -1,9 +1,10 @@
 //! PostgreSQL Portfolio adapters.
 
-pub(crate) mod cash_worker;
+mod cash_settlement_repository;
 mod projection;
 mod queries;
 mod repository;
 mod unit_of_work;
 
-pub(crate) use repository::{PgPortfolioStore, StoreError};
+pub(crate) use cash_settlement_repository::PgPortfolioCashSettlementRepository;
+pub(crate) use repository::PgPortfolioStore;

@@ -1,26 +1,24 @@
-mod v2_test_support;
+mod test_support;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum_test::TestServer;
 use jsonwebtoken::jwk::JwkSet;
-use moneykeeper::api::{routes, v2};
+use moneykeeper::api::routes;
 
 #[test]
-fn default_router_delegates_to_the_exhaustive_v2_manifest() {
-    let default: BTreeSet<_> = routes::ROUTE_MANIFEST.iter().copied().collect();
-    let validated: BTreeSet<_> = v2::ROUTE_MANIFEST.iter().copied().collect();
-    assert_eq!(default, validated);
-    assert!(default.iter().all(|(_, path)| !path.starts_with("/v2")));
+fn default_router_manifest_is_exhaustive_and_unversioned() {
+    let manifest: BTreeSet<_> = routes::ROUTE_MANIFEST.iter().copied().collect();
+    assert_eq!(manifest.len(), routes::ROUTE_MANIFEST.len());
+    assert!(manifest.iter().all(|(_, path)| !path.starts_with("/v2")));
 }
 
 #[tokio::test]
 async fn removed_legacy_mutations_and_versioned_aliases_are_not_found() {
-    let pool = v2_test_support::fresh_v2_pool().await;
+    let pool = test_support::fresh_pool().await;
     let jwks: JwkSet = serde_json::from_value(serde_json::json!({"keys": []})).unwrap();
-    let server =
-        TestServer::new(moneykeeper::bootstrap::v2::router(&pool, Arc::new(jwks))).unwrap();
+    let server = TestServer::new(moneykeeper::bootstrap::router(&pool, Arc::new(jwks))).unwrap();
     let id = uuid::Uuid::new_v4();
 
     for response in [

@@ -8,6 +8,7 @@ use crate::{
     },
     shared_kernel::{CorrelationId, CurrencyCode, EventId, Money, UserId},
 };
+use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -743,6 +744,163 @@ impl PgPortfolioStore {
     ) -> Result<Vec<ValuationView>, StoreError> {
         let rows=sqlx::query("SELECT id,account_id,instrument_id,price_per_instrument,accrued_interest_per_instrument,currency,source,quoted_at,recorded_at FROM portfolio.valuation_snapshots WHERE user_id=$1 AND account_id=$2 AND instrument_id=$3 ORDER BY quoted_at DESC,event_sequence DESC,id DESC").bind(user.into_uuid()).bind(account.into_uuid()).bind(instrument.into_uuid()).fetch_all(&self.pool).await?;
         rows.iter().map(valuation_view).collect()
+    }
+}
+
+fn facade_error(error: StoreError) -> PortfolioFacadeError {
+    match error {
+        StoreError::NotFound => PortfolioFacadeError::not_found(StoreError::NotFound),
+        StoreError::VersionConflict => PortfolioFacadeError::conflict(StoreError::VersionConflict),
+        StoreError::IdempotencyConflict => {
+            PortfolioFacadeError::conflict(StoreError::IdempotencyConflict)
+        }
+        StoreError::Invalid(field) => {
+            PortfolioFacadeError::invalid_source(StoreError::Invalid(field))
+        }
+        StoreError::Database(error) => PortfolioFacadeError::persistence(error),
+    }
+}
+
+#[async_trait]
+impl crate::contexts::portfolio::application::ports::PortfolioAccountInstrumentRepository
+    for PgPortfolioStore
+{
+    async fn create_instrument(
+        &self,
+        command: CreateManualOvdpInstrument,
+        hash: [u8; 32],
+    ) -> Result<PortfolioCommandResult, PortfolioFacadeError> {
+        PgPortfolioStore::create_instrument(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn open_account(
+        &self,
+        command: OpenPortfolioAccount,
+        hash: [u8; 32],
+    ) -> Result<PortfolioCommandResult, PortfolioFacadeError> {
+        PgPortfolioStore::open_account(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn change_account(
+        &self,
+        command: ChangePortfolioAccount,
+        scope: &'static str,
+        lifecycle: Option<AccountLifecycle>,
+        hash: [u8; 32],
+    ) -> Result<PortfolioCommandResult, PortfolioFacadeError> {
+        PgPortfolioStore::change_account(self, command, scope, lifecycle, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn accounts(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<PortfolioAccountView>, PortfolioFacadeError> {
+        PgPortfolioStore::accounts(self, user)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn account(
+        &self,
+        user: UserId,
+        id: PortfolioAccountId,
+    ) -> Result<Option<PortfolioAccountView>, PortfolioFacadeError> {
+        PgPortfolioStore::account(self, user, id)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn instruments(&self, user: UserId) -> Result<Vec<InstrumentView>, PortfolioFacadeError> {
+        PgPortfolioStore::instruments(self, user)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn instrument(
+        &self,
+        user: UserId,
+        id: InstrumentId,
+    ) -> Result<Option<InstrumentView>, PortfolioFacadeError> {
+        PgPortfolioStore::instrument(self, user, id)
+            .await
+            .map_err(facade_error)
+    }
+}
+
+#[async_trait]
+impl crate::contexts::portfolio::application::ports::PortfolioTransactionLotRepository
+    for PgPortfolioStore
+{
+    async fn record(
+        &self,
+        command: RecordPortfolioTransaction,
+        hash: [u8; 32],
+    ) -> Result<PortfolioCommandResult, PortfolioFacadeError> {
+        PgPortfolioStore::record(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn reverse(
+        &self,
+        command: ReversePortfolioTransaction,
+        hash: [u8; 32],
+    ) -> Result<PortfolioCommandResult, PortfolioFacadeError> {
+        PgPortfolioStore::reverse(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn positions(
+        &self,
+        user: UserId,
+        account: PortfolioAccountId,
+    ) -> Result<Vec<PositionView>, PortfolioFacadeError> {
+        PgPortfolioStore::positions(self, user, account)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn activity(
+        &self,
+        user: UserId,
+        account: PortfolioAccountId,
+    ) -> Result<Vec<PortfolioTransactionView>, PortfolioFacadeError> {
+        PgPortfolioStore::activity(self, user, account)
+            .await
+            .map_err(facade_error)
+    }
+}
+
+#[async_trait]
+impl crate::contexts::portfolio::application::ports::PortfolioValuationRepository
+    for PgPortfolioStore
+{
+    async fn record_valuation(
+        &self,
+        command: RecordValuationSnapshot,
+        hash: [u8; 32],
+    ) -> Result<PortfolioCommandResult, PortfolioFacadeError> {
+        PgPortfolioStore::record_valuation(self, command, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn valuations(
+        &self,
+        user: UserId,
+        account: PortfolioAccountId,
+        instrument: InstrumentId,
+    ) -> Result<Vec<ValuationView>, PortfolioFacadeError> {
+        PgPortfolioStore::valuations(self, user, account, instrument)
+            .await
+            .map_err(facade_error)
     }
 }
 

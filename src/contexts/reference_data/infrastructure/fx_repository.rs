@@ -1,7 +1,9 @@
+use super::super::application::FxObservationRepository;
 use super::super::public::{
     CurrencyError, FxDerivation, FxObservationResult, FxRateLookup, RecordFxObservation,
 };
 use crate::shared_kernel::CurrencyCode;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::{PgPool, Row};
@@ -13,22 +15,21 @@ impl PgFxRepository {
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
     }
-    pub(crate) async fn rate_as_of(
+}
+
+#[async_trait]
+impl FxObservationRepository for PgFxRepository {
+    async fn rate_as_of(
         &self,
         base: CurrencyCode,
         quote: CurrencyCode,
         as_of: DateTime<Utc>,
     ) -> Result<FxRateLookup, CurrencyError> {
-        if base == quote {
-            return Err(CurrencyError::persistence(
-                "base and quote currencies must differ",
-            ));
-        }
-        let direct=sqlx::query("SELECT id,source,source_revision,base_currency::text,quote_currency::text,rate,effective_at,observed_at,recorded_at FROM reference_data.fx_observations WHERE base_currency=$1 AND quote_currency=$2 AND effective_at<=$3 ORDER BY effective_at DESC,source_priority,observed_at DESC,sequence DESC,id DESC LIMIT 1").bind(base.as_str()).bind(quote.as_str()).bind(as_of).fetch_optional(&self.pool).await.map_err(CurrencyError::database)?;
+        let direct=sqlx::query("SELECT id,source,source_revision,base_currency::text,quote_currency::text,rate,effective_at,observed_at,recorded_at FROM reference_data.fx_observations WHERE base_currency=$1 AND quote_currency=$2 AND effective_at<=$3 ORDER BY effective_at DESC,source_priority,observed_at DESC,sequence DESC,id DESC LIMIT 1").bind(base.as_str()).bind(quote.as_str()).bind(as_of).fetch_optional(&self.pool).await.map_err(CurrencyError::storage)?;
         if let Some(r) = direct {
             return row_lookup(r, FxDerivation::Direct);
         }
-        let inverse=sqlx::query("SELECT id,source,source_revision,base_currency::text,quote_currency::text,rate,effective_at,observed_at,recorded_at FROM reference_data.fx_observations WHERE base_currency=$2 AND quote_currency=$1 AND effective_at<=$3 ORDER BY effective_at DESC,source_priority,observed_at DESC,sequence DESC,id DESC LIMIT 1").bind(base.as_str()).bind(quote.as_str()).bind(as_of).fetch_optional(&self.pool).await.map_err(CurrencyError::database)?;
+        let inverse=sqlx::query("SELECT id,source,source_revision,base_currency::text,quote_currency::text,rate,effective_at,observed_at,recorded_at FROM reference_data.fx_observations WHERE base_currency=$2 AND quote_currency=$1 AND effective_at<=$3 ORDER BY effective_at DESC,source_priority,observed_at DESC,sequence DESC,id DESC LIMIT 1").bind(base.as_str()).bind(quote.as_str()).bind(as_of).fetch_optional(&self.pool).await.map_err(CurrencyError::storage)?;
         let Some(r) = inverse else {
             let pivot = CurrencyCode::new("UAH")
                 .map_err(|_| CurrencyError::persistence("FX pivot currency is invalid"))?;
@@ -70,44 +71,32 @@ impl PgFxRepository {
         Ok(value)
     }
 
-    pub(crate) async fn record_observation(
+    async fn record_observation(
         &self,
         command: RecordFxObservation,
     ) -> Result<FxObservationResult, CurrencyError> {
-        if command.source.trim() != command.source
-            || command.source.is_empty()
-            || command.source_revision.trim() != command.source_revision
-            || command.source_revision.is_empty()
-        {
-            return Err(CurrencyError::persistence("invalid FX source identity"));
-        }
-        if command.effective_at > command.observed_at || command.observed_at > command.recorded_at {
-            return Err(CurrencyError::persistence(
-                "invalid FX observation time order",
-            ));
-        }
-        let mut tx = self.pool.begin().await.map_err(CurrencyError::database)?;
+        let mut tx = self.pool.begin().await.map_err(CurrencyError::storage)?;
         let id = uuid::Uuid::new_v4();
-        let inserted=sqlx::query("INSERT INTO reference_data.fx_observations(id,source,source_revision,base_currency,quote_currency,rate,effective_at,observed_at,recorded_at,content_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source,source_revision,base_currency,quote_currency) DO NOTHING").bind(id).bind(&command.source).bind(&command.source_revision).bind(command.rate.base().as_str()).bind(command.rate.quote().as_str()).bind(command.rate.rate()).bind(command.effective_at).bind(command.observed_at).bind(command.recorded_at).bind(command.content_digest.as_slice()).execute(&mut *tx).await.map_err(CurrencyError::database)?;
+        let inserted=sqlx::query("INSERT INTO reference_data.fx_observations(id,source,source_revision,base_currency,quote_currency,rate,effective_at,observed_at,recorded_at,content_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source,source_revision,base_currency,quote_currency) DO NOTHING").bind(id).bind(&command.source).bind(&command.source_revision).bind(command.rate.base().as_str()).bind(command.rate.quote().as_str()).bind(command.rate.rate()).bind(command.effective_at).bind(command.observed_at).bind(command.recorded_at).bind(command.content_digest.as_slice()).execute(&mut *tx).await.map_err(CurrencyError::storage)?;
         if inserted.rows_affected() == 0 {
-            let row=sqlx::query("SELECT id,content_digest FROM reference_data.fx_observations WHERE source=$1 AND source_revision=$2 AND base_currency=$3 AND quote_currency=$4").bind(&command.source).bind(&command.source_revision).bind(command.rate.base().as_str()).bind(command.rate.quote().as_str()).fetch_one(&mut *tx).await.map_err(CurrencyError::database)?;
+            let row=sqlx::query("SELECT id,content_digest FROM reference_data.fx_observations WHERE source=$1 AND source_revision=$2 AND base_currency=$3 AND quote_currency=$4").bind(&command.source).bind(&command.source_revision).bind(command.rate.base().as_str()).bind(command.rate.quote().as_str()).fetch_one(&mut *tx).await.map_err(CurrencyError::storage)?;
             if row.get::<Vec<u8>, _>("content_digest") != command.content_digest {
-                sqlx::query("INSERT INTO reference_data.fx_conflicts(id,source,source_revision,conflicting_digest,reason,recorded_at) VALUES($1,$2,$3,$4,'same source revision has different content',$5) ON CONFLICT DO NOTHING").bind(uuid::Uuid::new_v4()).bind(&command.source).bind(&command.source_revision).bind(command.content_digest.as_slice()).bind(command.recorded_at).execute(&mut *tx).await.map_err(CurrencyError::database)?;
-                tx.commit().await.map_err(CurrencyError::database)?;
+                sqlx::query("INSERT INTO reference_data.fx_conflicts(id,source,source_revision,conflicting_digest,reason,recorded_at) VALUES($1,$2,$3,$4,'same source revision has different content',$5) ON CONFLICT DO NOTHING").bind(uuid::Uuid::new_v4()).bind(&command.source).bind(&command.source_revision).bind(command.content_digest.as_slice()).bind(command.recorded_at).execute(&mut *tx).await.map_err(CurrencyError::storage)?;
+                tx.commit().await.map_err(CurrencyError::storage)?;
                 return Err(CurrencyError::conflict(
                     "FX source revision conflicts with recorded content",
                 ));
             }
             let existing = row.get("id");
-            tx.commit().await.map_err(CurrencyError::database)?;
+            tx.commit().await.map_err(CurrencyError::storage)?;
             return Ok(FxObservationResult {
                 observation_id: existing,
                 replayed: true,
             });
         }
         let payload = serde_json::json!({"observation_id":id,"source":command.source,"source_revision":command.source_revision,"base_currency":command.rate.base(),"quote_currency":command.rate.quote(),"rate":command.rate.rate().to_string(),"effective_at":command.effective_at,"observed_at":command.observed_at,"recorded_at":command.recorded_at});
-        sqlx::query("INSERT INTO integration.outbox_messages(message_id,event_id,message_schema_version,context_name,aggregate_id,aggregate_version,event_type,user_id,occurred_at,correlation_id,payload) VALUES($1,$2,1,'reference-data',$3,1,'reference-data.fx-observed.v1',$4,$5,$6,$7)").bind(uuid::Uuid::new_v4()).bind(uuid::Uuid::new_v4()).bind(id.to_string()).bind(uuid::Uuid::nil()).bind(command.recorded_at).bind(id).bind(payload).execute(&mut *tx).await.map_err(CurrencyError::database)?;
-        tx.commit().await.map_err(CurrencyError::database)?;
+        sqlx::query("INSERT INTO integration.outbox_messages(message_id,event_id,message_schema_version,context_name,aggregate_id,aggregate_version,event_type,user_id,occurred_at,correlation_id,payload) VALUES($1,$2,1,'reference-data',$3,1,'reference-data.fx-observed.v1',$4,$5,$6,$7)").bind(uuid::Uuid::new_v4()).bind(uuid::Uuid::new_v4()).bind(id.to_string()).bind(uuid::Uuid::nil()).bind(command.recorded_at).bind(id).bind(payload).execute(&mut *tx).await.map_err(CurrencyError::storage)?;
+        tx.commit().await.map_err(CurrencyError::storage)?;
         Ok(FxObservationResult {
             observation_id: id,
             replayed: false,
@@ -122,7 +111,7 @@ async fn latest_direct(
     as_of: DateTime<Utc>,
 ) -> Result<Option<sqlx::postgres::PgRow>, CurrencyError> {
     sqlx::query("SELECT id,source,source_revision,base_currency::text,quote_currency::text,rate,effective_at,observed_at,recorded_at FROM reference_data.fx_observations WHERE base_currency=$1 AND quote_currency=$2 AND effective_at<=$3 ORDER BY effective_at DESC,source_priority,observed_at DESC,sequence DESC,id DESC LIMIT 1")
-        .bind(base.as_str()).bind(quote.as_str()).bind(as_of).fetch_optional(pool).await.map_err(CurrencyError::database)
+        .bind(base.as_str()).bind(quote.as_str()).bind(as_of).fetch_optional(pool).await.map_err(CurrencyError::storage)
 }
 fn row_lookup(
     r: sqlx::postgres::PgRow,

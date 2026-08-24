@@ -8,10 +8,11 @@ use super::super::{
         ValidateProviderAccountBinding,
     },
 };
-use super::accounts::LedgerFacade;
+use super::accounts::LedgerApplication;
+use super::ports::{LedgerQueryPort, ProjectionRebuildPort};
 use crate::shared_kernel::UserId;
 
-impl LedgerFacade {
+impl<U, Q: LedgerQueryPort, P: ProjectionRebuildPort> LedgerApplication<U, Q, P> {
     /// Validates a provider mapping without revealing a cross-tenant account.
     pub async fn validate_provider_account_binding(
         &self,

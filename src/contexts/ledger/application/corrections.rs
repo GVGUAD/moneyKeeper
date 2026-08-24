@@ -22,7 +22,7 @@ use super::super::{
     },
 };
 use super::{
-    accounts::LedgerFacade,
+    accounts::LedgerApplication,
     commit::commit_journal,
     ports::{
         CommandReceiptStore, CorrectionDetail, CorrectionStore, JournalStore, LedgerAccountStore,
@@ -30,7 +30,7 @@ use super::{
     },
 };
 
-impl LedgerFacade {
+impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
     /// Posts the exact delta from current to target display balance.
     pub async fn correct_balance(
         &self,

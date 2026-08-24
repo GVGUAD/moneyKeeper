@@ -1,8 +1,11 @@
 use std::collections::BTreeMap;
 
-use moneykeeper::contexts::banking::public::{
-    Aes256CredentialCipher, CredentialBinding, CredentialCipher, FundingModel, MonobankAdapter,
-    ProviderCredential, ProviderFailureClass, ResourceKind,
+use moneykeeper::contexts::banking::{
+    adapters::{Aes256CredentialCipher, MonobankAdapter},
+    public::{
+        CredentialBinding, CredentialCipher, FundingModel, ProviderCredential,
+        ProviderFailureClass, ResourceKind,
+    },
 };
 use moneykeeper::shared_kernel::{CurrencyCode, UserId};
 use uuid::Uuid;

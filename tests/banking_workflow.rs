@@ -1,4 +1,4 @@
-mod v2_test_support;
+mod test_support;
 
 use std::sync::{
     Arc,
@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use axum::body::Bytes;
 use axum_test::TestServer;
 use chrono::{Duration, TimeZone, Utc};
+use moneykeeper::contexts::banking::adapters::Aes256CredentialCipher;
 use moneykeeper::{
     contexts::{
         banking::{self, public::*},
@@ -83,15 +84,15 @@ fn provider_event(
 }
 
 #[tokio::test]
-async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let supporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+async fn banking_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let supporting = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = supporting.ledger;
     let provider = Arc::new(RestartableProvider::default());
     let build_banking = || {
         banking::build_with_ledger(
             &verified,
-            Arc::new(Aes256CredentialCipher::new("phase3-key", [0x33; 32]).unwrap()),
+            Arc::new(Aes256CredentialCipher::new("banking-key", [0x33; 32]).unwrap()),
             provider.clone(),
             ledger.clone(),
             supporting.currencies.clone(),
@@ -110,7 +111,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             user_id,
             provider: "monobank".to_owned(),
             credential: ProviderCredential::new("workflow-x-token").unwrap(),
-            idempotency_key: IdempotencyKey::new("phase3-connect").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-connect").unwrap(),
             correlation_id: CorrelationId::generate(),
             requested_at: now,
         })
@@ -162,7 +163,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             nature: AccountNature::Asset,
             opening_balance: Money::new(Decimal::ZERO, CurrencyCode::new("UAH").unwrap(), 2)
                 .unwrap(),
-            idempotency_key: IdempotencyKey::new("phase3-open-card").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-open-card").unwrap(),
             correlation_id: CorrelationId::generate(),
             causation_id: None,
             occurred_at: now,
@@ -176,7 +177,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             resource_id: card.id,
             ledger_account_id: account.id,
             expected_resource_version: card.version,
-            idempotency_key: IdempotencyKey::new("phase3-bind-card").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-bind-card").unwrap(),
             correlation_id: CorrelationId::generate(),
             requested_at: now,
         })
@@ -188,7 +189,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             resource_id: jar.id,
             account_name: "Workflow reserve".to_owned(),
             expected_resource_version: jar.version,
-            idempotency_key: IdempotencyKey::new("phase3-map-jar").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-map-jar").unwrap(),
             correlation_id: CorrelationId::generate(),
             requested_at: now,
         })
@@ -200,7 +201,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             resource_id: jar.id,
             account_name: "Workflow reserve".to_owned(),
             expected_resource_version: jar.version,
-            idempotency_key: IdempotencyKey::new("phase3-map-jar").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-map-jar").unwrap(),
             correlation_id: CorrelationId::generate(),
             requested_at: now,
         })
@@ -216,7 +217,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             resource_id: unsupported.id,
             account_name: "Must not be created".to_owned(),
             expected_resource_version: unsupported.version,
-            idempotency_key: IdempotencyKey::new("phase3-map-unsupported").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-map-unsupported").unwrap(),
             correlation_id: CorrelationId::generate(),
             requested_at: now,
         })
@@ -230,7 +231,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             requested_from: now - Duration::days(1),
             requested_to: now,
             overlap_seconds: 3_600,
-            idempotency_key: IdempotencyKey::new("phase3-sync").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-sync").unwrap(),
             correlation_id: CorrelationId::generate(),
         })
         .await
@@ -242,7 +243,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             requested_from: now - Duration::days(1),
             requested_to: now,
             overlap_seconds: 3_600,
-            idempotency_key: IdempotencyKey::new("phase3-sync").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-sync").unwrap(),
             correlation_id: CorrelationId::generate(),
         })
         .await
@@ -256,7 +257,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             requested_from: now - Duration::days(1),
             requested_to: now,
             overlap_seconds: 60,
-            idempotency_key: IdempotencyKey::new("phase3-sync").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-sync").unwrap(),
             correlation_id: CorrelationId::generate(),
         })
         .await;
@@ -265,8 +266,8 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
         Err(BankingError::IdempotencyConflict)
     ));
     let (claim_a, claim_b) = tokio::join!(
-        banking.claim_due_sync_job("phase3-worker-a", now, 60),
-        banking.claim_due_sync_job("phase3-worker-b", now, 60),
+        banking.claim_due_sync_job("banking-worker-a", now, 60),
+        banking.claim_due_sync_job("banking-worker-b", now, 60),
     );
     let claim = claim_a
         .unwrap()
@@ -428,7 +429,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
             expected_version: case.version,
             expected_balance_version: case.captured_balance_version,
             reason: "verified against provider statement".to_owned(),
-            idempotency_key: IdempotencyKey::new("phase3-approve").unwrap(),
+            idempotency_key: IdempotencyKey::new("banking-approve").unwrap(),
             correlation_id: CorrelationId::generate(),
             causation_id: None,
             occurred_at: now + Duration::minutes(2),
@@ -471,7 +472,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
     assert_eq!(
         callbacks
             .post(&format!("/webhooks/monobank/{webhook_credential}"))
-            .bytes(Bytes::from_static(b"phase3-notification"))
+            .bytes(Bytes::from_static(b"banking-notification"))
             .await
             .status_code(),
         200
@@ -479,7 +480,7 @@ async fn phase3_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
     assert_eq!(
         callbacks
             .post(&format!("/webhooks/monobank/{webhook_credential}"))
-            .bytes(Bytes::from_static(b"phase3-notification"))
+            .bytes(Bytes::from_static(b"banking-notification"))
             .await
             .status_code(),
         200

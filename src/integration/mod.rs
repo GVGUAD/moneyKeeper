@@ -1,9 +1,10 @@
-//! Reliable, provider-neutral integration primitives for Finance V2.
+//! Reliable, provider-neutral integration primitives for Moneykeeper.
 //!
 //! Producers append events to the outbox in their own database transaction.
 //! Dispatch is at least once, so consumers use the inbox to make local effects
 //! exactly once within the PostgreSQL transaction that owns those effects.
 
+pub(crate) mod event_consumers;
 pub mod inbox;
 pub mod outbox;
 pub mod postgres;

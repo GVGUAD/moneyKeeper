@@ -6,8 +6,8 @@ use testcontainers::{ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use tokio::sync::Mutex;
 
-use moneykeeper::infrastructure::test_db::{FreshV2Database, create_fresh_database};
-use moneykeeper::infrastructure::v2_db::VerifiedV2Pool;
+use moneykeeper::infrastructure::database::VerifiedDatabase;
+use moneykeeper::infrastructure::test_db::{FreshDatabase, create_fresh_database};
 
 static CONTAINER: Mutex<Option<Weak<SharedPostgres>>> = Mutex::const_new(None);
 
@@ -40,21 +40,21 @@ async fn postgres() -> Arc<SharedPostgres> {
 }
 
 #[allow(dead_code)]
-pub async fn fresh_v2_pool() -> VerifiedV2Pool {
-    let database = fresh_v2_database().await;
+pub async fn fresh_pool() -> VerifiedDatabase {
+    let database = fresh_database().await;
     database
         .initialize()
         .await
-        .expect("initialize Finance V2 database")
+        .expect("initialize Moneykeeper database")
 }
 
 #[allow(dead_code)]
-pub async fn fresh_v2_runtime() -> (VerifiedV2Pool, PgPool) {
-    let database = fresh_v2_database().await;
+pub async fn fresh_runtime() -> (VerifiedDatabase, PgPool) {
+    let database = fresh_database().await;
     let verified = database
         .initialize()
         .await
-        .expect("initialize Finance V2 database");
+        .expect("initialize Moneykeeper database");
     let pool = database
         .connect()
         .await
@@ -62,10 +62,10 @@ pub async fn fresh_v2_runtime() -> (VerifiedV2Pool, PgPool) {
     (verified, pool)
 }
 
-pub async fn fresh_v2_database() -> FreshV2Database {
+pub async fn fresh_database() -> FreshDatabase {
     let postgres = postgres().await;
     create_fresh_database(&postgres.admin_url)
         .await
-        .expect("create isolated Finance V2 database")
+        .expect("create isolated Moneykeeper database")
         .with_lifetime_guard(postgres)
 }

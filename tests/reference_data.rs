@@ -1,14 +1,14 @@
-use moneykeeper::bootstrap::v2::supporting_contexts;
+use moneykeeper::bootstrap::build_contexts;
 use moneykeeper::contexts::reference_data::public::CurrencyCatalog;
 use moneykeeper::shared_kernel::CurrencyCode;
 
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 #[tokio::test]
 async fn enabled_currency_lookup_and_ordering_are_public_contracts() {
-    let verified = v2_test_support::fresh_v2_pool().await;
-    let catalog = supporting_contexts(&verified).currencies;
+    let verified = test_support::fresh_pool().await;
+    let catalog = build_contexts(&verified).currencies;
 
     let uah = catalog
         .require_enabled(CurrencyCode::new("UAH").unwrap())
@@ -30,14 +30,14 @@ async fn enabled_currency_lookup_and_ordering_are_public_contracts() {
 
 #[tokio::test]
 async fn disabled_and_missing_currencies_have_distinct_public_errors() {
-    let verified = v2_test_support::fresh_v2_pool().await;
+    let verified = test_support::fresh_pool().await;
     let mut connection = verified.acquire().await.unwrap();
     sqlx::query("UPDATE reference_data.currencies SET enabled = false WHERE code = 'USD'")
         .execute(&mut *connection)
         .await
         .unwrap();
     drop(connection);
-    let catalog = supporting_contexts(&verified).currencies;
+    let catalog = build_contexts(&verified).currencies;
 
     let disabled = catalog
         .require_enabled(CurrencyCode::new("USD").unwrap())
@@ -54,8 +54,8 @@ async fn disabled_and_missing_currencies_have_distinct_public_errors() {
 
 #[tokio::test]
 async fn database_errors_do_not_expose_sql() {
-    let verified = v2_test_support::fresh_v2_pool().await;
-    let catalog = supporting_contexts(&verified).currencies;
+    let verified = test_support::fresh_pool().await;
+    let catalog = build_contexts(&verified).currencies;
     let mut connection = verified.acquire().await.unwrap();
     sqlx::query("DROP SCHEMA reference_data CASCADE")
         .execute(&mut *connection)

@@ -26,7 +26,7 @@ use super::super::{
     },
 };
 use super::{
-    accounts::LedgerFacade,
+    accounts::LedgerApplication,
     commit::commit_journal,
     ports::{
         CommandReceiptStore, JournalStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
@@ -34,7 +34,7 @@ use super::{
     },
 };
 
-impl LedgerFacade {
+impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
     /// Deterministically ensures one hidden control account for a typed role and subject.
     pub async fn ensure_typed_control_account(
         &self,
@@ -729,8 +729,8 @@ async fn record_expense_controls<U: LedgerUnitOfWork>(
     Ok(result)
 }
 
-async fn import_provider(
-    facade: &LedgerFacade,
+async fn import_provider<U: LedgerUnitOfWork, Q, P>(
+    facade: &LedgerApplication<U, Q, P>,
     command: ImportProviderTransaction,
 ) -> Result<InternalAccountingResult, LedgerError> {
     if command.state != ProviderTransactionState::Posted {

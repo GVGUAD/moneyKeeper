@@ -1,4 +1,4 @@
-//! PostgreSQL adapters for the Finance V2 integration runtime.
+//! PostgreSQL adapters for the Moneykeeper integration runtime.
 
 use std::time::Duration;
 
@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Acquire, PgConnection, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
 use crate::shared_kernel::{CausationId, CorrelationId, EventEnvelope, EventId, UserId};
 
 use super::{
@@ -102,7 +102,7 @@ pub struct PgOutboxStore {
 
 impl PgOutboxStore {
     /// Creates a dispatcher store. This type does not publish events itself.
-    pub fn new(pool: &VerifiedV2Pool) -> Self {
+    pub fn new(pool: &VerifiedDatabase) -> Self {
         Self {
             pool: pool.pool().clone(),
         }

@@ -2,8 +2,8 @@ use moneykeeper::{
     contexts::recurring::domain::{MatchId, RecurringError},
     integration::process_managers::recurring_match::{CategorizationState, RecurringMatchProcess},
 };
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 #[test]
 fn unmatch_is_fenced_until_categorization_is_resolved() {
     let mut process = RecurringMatchProcess::start(MatchId::generate(), None, 0);
@@ -38,8 +38,8 @@ async fn mail_evidence_is_consumed_once_with_version_zero_matching() {
         shared_kernel::{CurrencyCode, Money, UserId},
     };
     use rust_decimal_macros::dec;
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let recurring = moneykeeper::bootstrap::v2::supporting_contexts(&verified).recurring;
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let recurring = moneykeeper::bootstrap::build_contexts(&verified).recurring;
     let user = UserId::generate();
     let event = ReceiptEvidenceRecordedV1 {
         evidence_id: ReceiptEvidenceId::generate(),

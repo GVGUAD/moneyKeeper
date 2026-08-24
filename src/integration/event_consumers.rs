@@ -1,9 +1,9 @@
-//! In-process Phase 4 event router over the durable integration outbox.
+//! Independent cross-context policies over the durable integration outbox.
 //!
-//! It owns an independent inbox receipt and does not acknowledge or claim the
-//! transport-level outbox record, so it cannot steal events from a later
-//! external publisher. Downstream consumers also deduplicate by event ID,
-//! making a crash before the router receipt harmless.
+//! Recurring and Reporting own separate receipts and therefore make progress
+//! independently. They do not acknowledge the transport-level outbox record;
+//! each target context deduplicates by event identity before the feed receipt
+//! is recorded.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -14,17 +14,27 @@ use uuid::Uuid;
 use crate::{
     contexts::{
         ledger::public::{
-            JournalEntryId, LedgerEventFactV1, LedgerEventMetadataV1, LedgerEventV1, LedgerFacade,
-            LedgerMoneyV1,
+            JOURNAL_POSTED_V1, JOURNAL_REPLACED_V1, JOURNAL_REVERSED_V1, JournalEntryId,
+            LedgerEventFactV1, LedgerEventMetadataV1, LedgerEventV1, LedgerFacade, LedgerMoneyV1,
+            RECONCILIATION_APPROVED_V1, RECONCILIATION_DISMISSED_V1,
+            RECONCILIATION_IGNORED_OLDER_V1, RECONCILIATION_MATCHED_V1, RECONCILIATION_OBSERVED_V1,
+            RECONCILIATION_STALE_V1, RECONCILIATION_SUPERSEDED_V1,
+        },
+        loans::public::{
+            ACCOUNTING_REQUESTED_V1, AGREEMENT_CLOSED_V1, AGREEMENT_OPENED_V1, MOVEMENT_FAILED_V1,
+            MOVEMENT_POSTED_V1, MOVEMENT_REVERSED_V1, TERMS_REVISED_V1,
         },
         mail::public::{
             RECEIPT_EVIDENCE_RECORDED_V1, ReceiptEvidenceId, ReceiptEvidenceKind,
             ReceiptEvidenceRecordedV1, SourceMessageId,
         },
         portfolio::public::{
-            AccountLifecycle as PortfolioAccountLifecycle, InstrumentId, PortfolioAccountId,
+            ACCOUNT_CHANGED_V1, AccountLifecycle as PortfolioAccountLifecycle,
+            CASH_SETTLEMENT_CANCELLED_V1, CASH_SETTLEMENT_POSTED_V1, CASH_SETTLEMENT_REVERSED_V1,
+            INSTRUMENT_CREATED_V1, InstrumentId, POSITION_CHANGED_V1, PortfolioAccountId,
             PortfolioEventFactV1, PortfolioEventMetadataV1, PortfolioEventV1,
-            PortfolioTransactionId, PortfolioTransactionKind, ValuationSnapshotId,
+            PortfolioTransactionId, PortfolioTransactionKind, TRANSACTION_POSTED_V1,
+            TRANSACTION_REVERSED_V1, VALUATION_RECORDED_V1, ValuationSnapshotId,
         },
         recurring::public::{
             CHARGE_EVIDENCE_RECORDED_V1, ChargeEvidenceId, ChargeEvidenceRecordedV1,
@@ -40,69 +50,50 @@ use crate::{
     shared_kernel::{CausationId, CorrelationId, CurrencyCode, EventId, Money, UserId},
 };
 
+const RECURRING_CONSUMER_NAME: &str = "recurring-event-policy-v1";
+const REPORTING_CONSUMER_NAME: &str = "reporting-projections-v1";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RouteReport {
-    pub routed: bool,
+pub struct ConsumerRunReport {
+    pub applied: bool,
     pub ignored: bool,
 }
 
+impl ConsumerRunReport {
+    pub const fn claimed(self) -> bool {
+        self.applied || self.ignored
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum RouteError {
-    #[error("Phase 4 event routing persistence failed")]
+pub(crate) enum ConsumerError {
+    #[error("event-consumer persistence failed")]
     Database(#[from] sqlx::Error),
-    #[error("Phase 4 event payload is invalid")]
+    #[error("published event payload is invalid")]
     InvalidPayload,
-    #[error("Phase 4 event major version is unsupported")]
+    #[error("published event schema version is unsupported")]
     UnsupportedVersion,
-    #[error("Phase 4 downstream consumer failed")]
+    #[error("downstream context rejected the published event")]
     Consumer,
+    #[error("Reporting rejected the published event")]
+    Reporting(#[from] crate::contexts::reporting::public::ReportingError),
 }
 
 #[derive(Clone)]
-pub(crate) struct Phase4EventRouter {
+struct EventFeed {
     pool: PgPool,
-    ledger: LedgerFacade,
-    recurring: RecurringFacade,
-    reporting: ReportingFacade,
+    consumer_name: &'static str,
 }
 
-impl Phase4EventRouter {
-    pub(crate) fn new(
-        pool: PgPool,
-        ledger: LedgerFacade,
-        recurring: RecurringFacade,
-        reporting: ReportingFacade,
-    ) -> Self {
+impl EventFeed {
+    fn new(pool: PgPool, consumer_name: &'static str) -> Self {
         Self {
             pool,
-            ledger,
-            recurring,
-            reporting,
+            consumer_name,
         }
     }
 
-    pub(crate) async fn run_once(&self) -> Result<RouteReport, RouteError> {
-        let Some(event) = self.next_event().await? else {
-            return Ok(RouteReport::default());
-        };
-        if event.schema_version != 1 && is_phase4_event(&event.event_type) {
-            return Err(RouteError::UnsupportedVersion);
-        }
-        let routed = self.route(&event).await?;
-        sqlx::query(
-            "INSERT INTO integration.inbox_receipts(consumer_name,message_id,event_type,received_at,processed_at) VALUES('finance-v2-phase4-router',$1,$2,clock_timestamp(),clock_timestamp()) ON CONFLICT(consumer_name,message_id) DO UPDATE SET processed_at=EXCLUDED.processed_at",
-        )
-        .bind(event.event_id)
-        .bind(&event.event_type)
-        .execute(&self.pool)
-        .await?;
-        Ok(RouteReport {
-            routed,
-            ignored: !routed,
-        })
-    }
-
-    async fn next_event(&self) -> Result<Option<RoutedEvent>, sqlx::Error> {
+    async fn next_event(&self) -> Result<Option<PersistedEvent>, sqlx::Error> {
         let row = sqlx::query(
             r#"
             SELECT o.sequence,o.event_id,o.message_schema_version,o.context_name,o.aggregate_id,
@@ -111,18 +102,19 @@ impl Phase4EventRouter {
             FROM integration.outbox_messages o
             WHERE NOT EXISTS(
                 SELECT 1 FROM integration.inbox_receipts i
-                WHERE i.consumer_name='finance-v2-phase4-router' AND i.message_id=o.event_id
+                WHERE i.consumer_name=$1 AND i.message_id=o.event_id
             )
             ORDER BY o.sequence,o.event_id LIMIT 1
             "#,
         )
+        .bind(self.consumer_name)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {
             let aggregate_version: i64 = row.get("aggregate_version");
             let schema_version: i32 = row.get("message_schema_version");
             let sequence: i64 = row.get("sequence");
-            Ok(RoutedEvent {
+            Ok(PersistedEvent {
                 sequence: u64::try_from(sequence)
                     .map_err(|_| sqlx::Error::Protocol("negative outbox sequence".into()))?,
                 event_id: row.get("event_id"),
@@ -143,59 +135,83 @@ impl Phase4EventRouter {
         .transpose()
     }
 
-    async fn route(&self, event: &RoutedEvent) -> Result<bool, RouteError> {
+    async fn acknowledge(&self, event: &PersistedEvent) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO integration.inbox_receipts(consumer_name,message_id,event_type,received_at,processed_at) VALUES($1,$2,$3,clock_timestamp(),clock_timestamp()) ON CONFLICT(consumer_name,message_id) DO UPDATE SET processed_at=EXCLUDED.processed_at",
+        )
+        .bind(self.consumer_name)
+        .bind(event.event_id)
+        .bind(&event.event_type)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RecurringEventConsumer {
+    feed: EventFeed,
+    ledger: LedgerFacade,
+    recurring: RecurringFacade,
+}
+
+impl RecurringEventConsumer {
+    pub(crate) fn new(pool: PgPool, ledger: LedgerFacade, recurring: RecurringFacade) -> Self {
+        Self {
+            feed: EventFeed::new(pool, RECURRING_CONSUMER_NAME),
+            ledger,
+            recurring,
+        }
+    }
+
+    pub(crate) async fn run_once(&self) -> Result<ConsumerRunReport, ConsumerError> {
+        let Some(event) = self.feed.next_event().await? else {
+            return Ok(ConsumerRunReport::default());
+        };
+        if event.schema_version != 1 && is_recurring_event(&event.event_type) {
+            return Err(ConsumerError::UnsupportedVersion);
+        }
+        let applied = self.consume(&event).await?;
+        self.feed.acknowledge(&event).await?;
+        Ok(ConsumerRunReport {
+            applied,
+            ignored: !applied,
+        })
+    }
+
+    async fn consume(&self, event: &PersistedEvent) -> Result<bool, ConsumerError> {
         match event.event_type.as_str() {
             RECEIPT_EVIDENCE_RECORDED_V1 => {
                 let evidence = mail_evidence(event)?;
                 self.recurring
                     .consume_mail_evidence(event.event_id, event.sequence, evidence)
                     .await
-                    .map_err(|_| RouteError::Consumer)?;
+                    .map_err(|_| ConsumerError::Consumer)?;
                 Ok(true)
             }
-            FX_OBSERVED_V1 => {
-                self.reporting
-                    .apply_fx_event(fx_event(event)?, event.sequence)
-                    .await
-                    .map_err(RouteError::Database)?;
-                Ok(true)
-            }
-            CHARGE_EVIDENCE_RECORDED_V1 => {
-                self.reporting
-                    .apply_recurring_charge(
-                        EventId::new(event.event_id),
-                        event.sequence,
-                        recurring_charge(event)?,
-                    )
-                    .await
-                    .map_err(RouteError::Database)?;
-                Ok(true)
-            }
-            "ledger.journal-posted.v1"
-            | "ledger.journal-reversed.v1"
-            | "ledger.journal-replaced.v1" => {
-                let journal_id =
-                    Uuid::parse_str(&event.aggregate_id).map_err(|_| RouteError::InvalidPayload)?;
+            JOURNAL_POSTED_V1 | JOURNAL_REVERSED_V1 | JOURNAL_REPLACED_V1 => {
+                let journal_id = Uuid::parse_str(&event.aggregate_id)
+                    .map_err(|_| ConsumerError::InvalidPayload)?;
                 let journal = self
                     .ledger
                     .get_journal(UserId::new(event.user_id), JournalEntryId::new(journal_id))
                     .await
-                    .map_err(|_| RouteError::Consumer)?;
-                let fact = if event.event_type == "ledger.journal-reversed.v1" {
+                    .map_err(|_| ConsumerError::Consumer)?;
+                let fact = if event.event_type == JOURNAL_REVERSED_V1 {
                     LedgerEventFactV1::EntryReversed {
                         journal_entry_id: journal.id,
                         original_journal_entry_id: journal
                             .relations
                             .reverses()
-                            .ok_or(RouteError::InvalidPayload)?,
+                            .ok_or(ConsumerError::InvalidPayload)?,
                     }
-                } else if event.event_type == "ledger.journal-replaced.v1" {
+                } else if event.event_type == JOURNAL_REPLACED_V1 {
                     LedgerEventFactV1::EntryReplaced {
                         replacement_journal_entry_id: journal.id,
                         original_journal_entry_id: journal
                             .relations
                             .replaces()
-                            .ok_or(RouteError::InvalidPayload)?,
+                            .ok_or(ConsumerError::InvalidPayload)?,
                     }
                 } else {
                     LedgerEventFactV1::EntryPosted {
@@ -217,61 +233,130 @@ impl Phase4EventRouter {
                 self.recurring
                     .consume_ledger_event(ledger_event(event, journal.recorded_at, fact))
                     .await
-                    .map_err(|_| RouteError::Consumer)?;
+                    .map_err(|_| ConsumerError::Consumer)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ReportingEventConsumer {
+    feed: EventFeed,
+    ledger: LedgerFacade,
+    reporting: ReportingFacade,
+}
+
+impl ReportingEventConsumer {
+    pub(crate) fn new(pool: PgPool, ledger: LedgerFacade, reporting: ReportingFacade) -> Self {
+        Self {
+            feed: EventFeed::new(pool, REPORTING_CONSUMER_NAME),
+            ledger,
+            reporting,
+        }
+    }
+
+    pub(crate) async fn run_once(&self) -> Result<ConsumerRunReport, ConsumerError> {
+        let Some(event) = self.feed.next_event().await? else {
+            return Ok(ConsumerRunReport::default());
+        };
+        if event.schema_version != 1 && is_reporting_event(&event.event_type) {
+            return Err(ConsumerError::UnsupportedVersion);
+        }
+        let applied = self.consume(&event).await?;
+        self.feed.acknowledge(&event).await?;
+        Ok(ConsumerRunReport {
+            applied,
+            ignored: !applied,
+        })
+    }
+
+    async fn consume(&self, event: &PersistedEvent) -> Result<bool, ConsumerError> {
+        match event.event_type.as_str() {
+            FX_OBSERVED_V1 => {
+                self.reporting
+                    .apply_fx_event(fx_event(event)?, event.sequence)
+                    .await
+                    .map_err(ConsumerError::Reporting)?;
+                Ok(true)
+            }
+            CHARGE_EVIDENCE_RECORDED_V1 => {
+                self.reporting
+                    .apply_recurring_charge(
+                        EventId::new(event.event_id),
+                        event.sequence,
+                        recurring_charge(event)?,
+                    )
+                    .await
+                    .map_err(ConsumerError::Reporting)?;
+                Ok(true)
+            }
+            JOURNAL_POSTED_V1 | JOURNAL_REVERSED_V1 | JOURNAL_REPLACED_V1 => {
+                let journal_id = Uuid::parse_str(&event.aggregate_id)
+                    .map_err(|_| ConsumerError::InvalidPayload)?;
+                let journal = self
+                    .ledger
+                    .get_journal(UserId::new(event.user_id), JournalEntryId::new(journal_id))
+                    .await
+                    .map_err(|_| ConsumerError::Consumer)?;
                 self.reporting
                     .apply_journal_export(EventId::new(event.event_id), event.sequence, journal)
                     .await
-                    .map_err(RouteError::Database)?;
+                    .map_err(ConsumerError::Reporting)?;
                 Ok(true)
             }
-            event_type if event_type.starts_with("ledger.reconciliation-") => {
+            RECONCILIATION_OBSERVED_V1
+            | RECONCILIATION_MATCHED_V1
+            | RECONCILIATION_SUPERSEDED_V1
+            | RECONCILIATION_IGNORED_OLDER_V1
+            | RECONCILIATION_APPROVED_V1
+            | RECONCILIATION_DISMISSED_V1
+            | RECONCILIATION_STALE_V1 => {
+                let event_type = event.event_type.as_str();
                 let case_id = payload_uuid(&event.payload, "case_id")?;
                 let case_id = crate::contexts::ledger::public::ReconciliationCaseId::new(case_id);
                 let fact = match event_type {
-                    "ledger.reconciliation-observed.v1" => {
+                    RECONCILIATION_OBSERVED_V1 => {
                         LedgerEventFactV1::ReconciliationObserved { case_id }
                     }
-                    "ledger.reconciliation-matched.v1" => {
+                    RECONCILIATION_MATCHED_V1 => {
                         LedgerEventFactV1::ReconciliationMatched { case_id }
                     }
-                    "ledger.reconciliation-superseded.v1" => {
+                    RECONCILIATION_SUPERSEDED_V1 => {
                         LedgerEventFactV1::ReconciliationSuperseded { case_id }
                     }
-                    "ledger.reconciliation-ignored-older.v1" => {
+                    RECONCILIATION_IGNORED_OLDER_V1 => {
                         LedgerEventFactV1::ReconciliationIgnoredOlder { case_id }
                     }
-                    "ledger.reconciliation-approved.v1" => {
-                        LedgerEventFactV1::ReconciliationApproved {
-                            case_id,
-                            journal_entry_id: JournalEntryId::new(
-                                payload_uuid(&event.payload, "journal_entry_id")
-                                    .unwrap_or_else(|_| Uuid::nil()),
-                            ),
-                        }
-                    }
-                    "ledger.reconciliation-dismissed.v1" => {
+                    RECONCILIATION_APPROVED_V1 => LedgerEventFactV1::ReconciliationApproved {
+                        case_id,
+                        journal_entry_id: JournalEntryId::new(
+                            payload_uuid(&event.payload, "journal_entry_id")
+                                .unwrap_or_else(|_| Uuid::nil()),
+                        ),
+                    },
+                    RECONCILIATION_DISMISSED_V1 => {
                         LedgerEventFactV1::ReconciliationDismissed { case_id }
                     }
-                    "ledger.reconciliation-stale.v1" => {
-                        LedgerEventFactV1::ReconciliationStale { case_id }
-                    }
+                    RECONCILIATION_STALE_V1 => LedgerEventFactV1::ReconciliationStale { case_id },
                     _ => return Ok(false),
                 };
                 self.reporting
                     .apply_ledger_event(ledger_event(event, event.occurred_at, fact))
                     .await
-                    .map_err(RouteError::Database)?;
+                    .map_err(ConsumerError::Reporting)?;
                 Ok(true)
             }
-            event_type if event_type.starts_with("loans.") => {
+            event_type if is_loan_event(event_type) => {
                 let mut loan_event: crate::contexts::loans::public::LoanEventV1 =
                     serde_json::from_value(event.payload.clone())
-                        .map_err(|_| RouteError::InvalidPayload)?;
+                        .map_err(|_| ConsumerError::InvalidPayload)?;
                 loan_event.metadata.sequence = event.sequence;
                 self.reporting
                     .apply_loan_event(loan_event)
                     .await
-                    .map_err(RouteError::Database)?;
+                    .map_err(ConsumerError::Reporting)?;
                 Ok(true)
             }
             BILL_POSITION_CHANGED_V1 => {
@@ -280,7 +365,7 @@ impl Phase4EventRouter {
                     position: BillPositionV1,
                 }
                 let payload: Payload = serde_json::from_value(event.payload.clone())
-                    .map_err(|_| RouteError::InvalidPayload)?;
+                    .map_err(|_| ConsumerError::InvalidPayload)?;
                 self.reporting
                     .apply_sharing_event(sharing_event(
                         event,
@@ -289,24 +374,24 @@ impl Phase4EventRouter {
                         },
                     ))
                     .await
-                    .map_err(RouteError::Database)?;
+                    .map_err(ConsumerError::Reporting)?;
                 Ok(true)
             }
             BILL_CANCELLED_V1 => {
                 let fact: SharingEventFactV1 =
                     serde_json::from_value(json_to_tagged_fact("bill_cancelled", &event.payload))
-                        .map_err(|_| RouteError::InvalidPayload)?;
+                        .map_err(|_| ConsumerError::InvalidPayload)?;
                 self.reporting
                     .apply_sharing_event(sharing_event(event, fact))
                     .await
-                    .map_err(RouteError::Database)?;
+                    .map_err(ConsumerError::Reporting)?;
                 Ok(true)
             }
-            event_type if event_type.starts_with("portfolio.") => {
+            event_type if is_portfolio_event(event_type) => {
                 self.reporting
                     .apply_portfolio_event(portfolio_event(event)?)
                     .await
-                    .map_err(RouteError::Database)?;
+                    .map_err(ConsumerError::Reporting)?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -314,7 +399,7 @@ impl Phase4EventRouter {
     }
 }
 
-fn sharing_event(event: &RoutedEvent, fact: SharingEventFactV1) -> SharingEventV1 {
+fn sharing_event(event: &PersistedEvent, fact: SharingEventFactV1) -> SharingEventV1 {
     SharingEventV1 {
         metadata: SharingEventMetadataV1 {
             schema_version: event.schema_version,
@@ -330,28 +415,28 @@ fn sharing_event(event: &RoutedEvent, fact: SharingEventFactV1) -> SharingEventV
     }
 }
 
-fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> {
+fn portfolio_event(event: &PersistedEvent) -> Result<PortfolioEventV1, ConsumerError> {
     let text = |key: &str| {
         event
             .payload
             .get(key)
             .and_then(serde_json::Value::as_str)
-            .ok_or(RouteError::InvalidPayload)
+            .ok_or(ConsumerError::InvalidPayload)
     };
     let decimal = |key: &str| {
         text(key)?
             .parse::<Decimal>()
-            .map_err(|_| RouteError::InvalidPayload)
+            .map_err(|_| ConsumerError::InvalidPayload)
     };
     let account = || payload_uuid(&event.payload, "account_id").map(PortfolioAccountId::new);
     let instrument = || payload_uuid(&event.payload, "instrument_id").map(InstrumentId::new);
     let transaction =
         || payload_uuid(&event.payload, "transaction_id").map(PortfolioTransactionId::new);
     let fact = match event.event_type.as_str() {
-        "portfolio.instrument-created.v1" => PortfolioEventFactV1::InstrumentCreated {
+        INSTRUMENT_CREATED_V1 => PortfolioEventFactV1::InstrumentCreated {
             instrument_id: instrument()?,
         },
-        "portfolio.account-changed.v1" => PortfolioEventFactV1::AccountChanged {
+        ACCOUNT_CHANGED_V1 => PortfolioEventFactV1::AccountChanged {
             account_id: account()?,
             lifecycle: if text("lifecycle")? == "active" {
                 PortfolioAccountLifecycle::Active
@@ -359,7 +444,7 @@ fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> 
                 PortfolioAccountLifecycle::Archived
             },
         },
-        "portfolio.transaction-posted.v1" => PortfolioEventFactV1::TransactionPosted {
+        TRANSACTION_POSTED_V1 => PortfolioEventFactV1::TransactionPosted {
             transaction_id: transaction()?,
             account_id: account()?,
             instrument_id: instrument()?,
@@ -367,12 +452,12 @@ fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> 
             quantity: decimal("quantity")?,
             currency: text("currency")?.to_owned(),
         },
-        "portfolio.transaction-reversed.v1" => PortfolioEventFactV1::TransactionReversed {
+        TRANSACTION_REVERSED_V1 => PortfolioEventFactV1::TransactionReversed {
             transaction_id: transaction()?,
             original_transaction_id: payload_uuid(&event.payload, "original_transaction_id")
                 .map(PortfolioTransactionId::new)?,
         },
-        "portfolio.position-changed.v1" => PortfolioEventFactV1::PositionChanged {
+        POSITION_CHANGED_V1 => PortfolioEventFactV1::PositionChanged {
             account_id: account()?,
             instrument_id: instrument()?,
             quantity: decimal("quantity")?,
@@ -385,15 +470,15 @@ fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> 
                 .and_then(serde_json::Value::as_str)
                 .map(str::parse)
                 .transpose()
-                .map_err(|_| RouteError::InvalidPayload)?,
+                .map_err(|_| ConsumerError::InvalidPayload)?,
             currency: text("currency")?.to_owned(),
             position_version: event
                 .payload
                 .get("position_version")
                 .and_then(serde_json::Value::as_u64)
-                .ok_or(RouteError::InvalidPayload)?,
+                .ok_or(ConsumerError::InvalidPayload)?,
         },
-        "portfolio.valuation-recorded.v1" => PortfolioEventFactV1::ValuationRecorded {
+        VALUATION_RECORDED_V1 => PortfolioEventFactV1::ValuationRecorded {
             snapshot_id: payload_uuid(&event.payload, "snapshot_id")
                 .map(ValuationSnapshotId::new)?,
             account_id: account()?,
@@ -408,27 +493,27 @@ fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> 
                     .payload
                     .get("quoted_at")
                     .cloned()
-                    .ok_or(RouteError::InvalidPayload)?,
+                    .ok_or(ConsumerError::InvalidPayload)?,
             )
-            .map_err(|_| RouteError::InvalidPayload)?,
+            .map_err(|_| ConsumerError::InvalidPayload)?,
             source: text("source")?.to_owned(),
         },
-        "portfolio.cash-settlement-posted.v1" => PortfolioEventFactV1::CashSettlementPosted {
+        CASH_SETTLEMENT_POSTED_V1 => PortfolioEventFactV1::CashSettlementPosted {
             transaction_id: transaction()?,
             journal_id: payload_uuid(&event.payload, "journal_id").map(JournalEntryId::new)?,
         },
-        "portfolio.cash-settlement-reversed.v1" => PortfolioEventFactV1::CashSettlementReversed {
+        CASH_SETTLEMENT_REVERSED_V1 => PortfolioEventFactV1::CashSettlementReversed {
             transaction_id: transaction()?,
             journal_id: payload_uuid(&event.payload, "journal_id").map(JournalEntryId::new)?,
             reversal_journal_id: payload_uuid(&event.payload, "reversal_journal_id")
                 .map(JournalEntryId::new)?,
         },
-        "portfolio.cash-settlement-cancelled-without-effect.v1" => {
+        CASH_SETTLEMENT_CANCELLED_V1 => {
             PortfolioEventFactV1::CashSettlementCancelledWithoutEffect {
                 transaction_id: transaction()?,
             }
         }
-        _ => return Err(RouteError::InvalidPayload),
+        _ => return Err(ConsumerError::InvalidPayload),
     };
     Ok(PortfolioEventV1 {
         metadata: PortfolioEventMetadataV1 {
@@ -443,7 +528,7 @@ fn portfolio_event(event: &RoutedEvent) -> Result<PortfolioEventV1, RouteError> 
         fact,
     })
 }
-fn transaction_kind(value: &str) -> Result<PortfolioTransactionKind, RouteError> {
+fn transaction_kind(value: &str) -> Result<PortfolioTransactionKind, ConsumerError> {
     Ok(match value {
         "opening_position" => PortfolioTransactionKind::OpeningPosition,
         "buy" => PortfolioTransactionKind::Buy,
@@ -452,7 +537,7 @@ fn transaction_kind(value: &str) -> Result<PortfolioTransactionKind, RouteError>
         "redemption" => PortfolioTransactionKind::Redemption,
         "position_correction" => PortfolioTransactionKind::PositionCorrection,
         "reversal" => PortfolioTransactionKind::Reversal,
-        _ => return Err(RouteError::InvalidPayload),
+        _ => return Err(ConsumerError::InvalidPayload),
     })
 }
 
@@ -466,7 +551,7 @@ fn json_to_tagged_fact(kind: &str, payload: &serde_json::Value) -> serde_json::V
 }
 
 fn ledger_event(
-    event: &RoutedEvent,
+    event: &PersistedEvent,
     recorded_at: DateTime<Utc>,
     fact: LedgerEventFactV1,
 ) -> LedgerEventV1 {
@@ -485,7 +570,7 @@ fn ledger_event(
     }
 }
 
-fn mail_evidence(event: &RoutedEvent) -> Result<ReceiptEvidenceRecordedV1, RouteError> {
+fn mail_evidence(event: &PersistedEvent) -> Result<ReceiptEvidenceRecordedV1, ConsumerError> {
     #[derive(Deserialize)]
     struct Wire {
         evidence_id: Uuid,
@@ -501,7 +586,7 @@ fn mail_evidence(event: &RoutedEvent) -> Result<ReceiptEvidenceRecordedV1, Route
         recorded_at: DateTime<Utc>,
     }
     let wire: Wire =
-        serde_json::from_value(event.payload.clone()).map_err(|_| RouteError::InvalidPayload)?;
+        serde_json::from_value(event.payload.clone()).map_err(|_| ConsumerError::InvalidPayload)?;
     Ok(ReceiptEvidenceRecordedV1 {
         evidence_id: ReceiptEvidenceId::new(wire.evidence_id),
         user_id: UserId::new(wire.user_id),
@@ -512,7 +597,7 @@ fn mail_evidence(event: &RoutedEvent) -> Result<ReceiptEvidenceRecordedV1, Route
             "one_time" => ReceiptEvidenceKind::OneTime,
             "refund" => ReceiptEvidenceKind::Refund,
             "cancellation" => ReceiptEvidenceKind::Cancellation,
-            _ => return Err(RouteError::InvalidPayload),
+            _ => return Err(ConsumerError::InvalidPayload),
         },
         money: wire.money.map(money).transpose()?,
         charged_at: wire.charged_at,
@@ -523,7 +608,7 @@ fn mail_evidence(event: &RoutedEvent) -> Result<ReceiptEvidenceRecordedV1, Route
     })
 }
 
-fn fx_event(event: &RoutedEvent) -> Result<FxObservedV1, RouteError> {
+fn fx_event(event: &PersistedEvent) -> Result<FxObservedV1, ConsumerError> {
     #[derive(Deserialize)]
     struct Wire {
         observation_id: Uuid,
@@ -537,26 +622,26 @@ fn fx_event(event: &RoutedEvent) -> Result<FxObservedV1, RouteError> {
         recorded_at: DateTime<Utc>,
     }
     let wire: Wire =
-        serde_json::from_value(event.payload.clone()).map_err(|_| RouteError::InvalidPayload)?;
+        serde_json::from_value(event.payload.clone()).map_err(|_| ConsumerError::InvalidPayload)?;
     Ok(FxObservedV1 {
         observation_id: wire.observation_id,
         source: wire.source,
         source_revision: wire.source_revision,
         base_currency: CurrencyCode::new(wire.base_currency)
-            .map_err(|_| RouteError::InvalidPayload)?,
+            .map_err(|_| ConsumerError::InvalidPayload)?,
         quote_currency: CurrencyCode::new(wire.quote_currency)
-            .map_err(|_| RouteError::InvalidPayload)?,
+            .map_err(|_| ConsumerError::InvalidPayload)?,
         rate: wire
             .rate
             .parse::<Decimal>()
-            .map_err(|_| RouteError::InvalidPayload)?,
+            .map_err(|_| ConsumerError::InvalidPayload)?,
         effective_at: wire.effective_at,
         observed_at: wire.observed_at,
         recorded_at: wire.recorded_at,
     })
 }
 
-fn recurring_charge(event: &RoutedEvent) -> Result<ChargeEvidenceRecordedV1, RouteError> {
+fn recurring_charge(event: &PersistedEvent) -> Result<ChargeEvidenceRecordedV1, ConsumerError> {
     #[derive(Deserialize)]
     struct Wire {
         user_id: Uuid,
@@ -568,7 +653,7 @@ fn recurring_charge(event: &RoutedEvent) -> Result<ChargeEvidenceRecordedV1, Rou
         recorded_at: DateTime<Utc>,
     }
     let wire: Wire =
-        serde_json::from_value(event.payload.clone()).map_err(|_| RouteError::InvalidPayload)?;
+        serde_json::from_value(event.payload.clone()).map_err(|_| ConsumerError::InvalidPayload)?;
     Ok(ChargeEvidenceRecordedV1 {
         user_id: UserId::new(wire.user_id),
         charge_evidence_id: ChargeEvidenceId::new(wire.charge_evidence_id),
@@ -586,37 +671,87 @@ struct WireMoney {
     currency: String,
 }
 
-fn money(wire: WireMoney) -> Result<Money, RouteError> {
+fn money(wire: WireMoney) -> Result<Money, ConsumerError> {
     let amount = wire
         .amount
         .parse::<Decimal>()
-        .map_err(|_| RouteError::InvalidPayload)?;
+        .map_err(|_| ConsumerError::InvalidPayload)?;
     Money::new(
         amount,
-        CurrencyCode::new(wire.currency).map_err(|_| RouteError::InvalidPayload)?,
+        CurrencyCode::new(wire.currency).map_err(|_| ConsumerError::InvalidPayload)?,
         amount.scale(),
     )
-    .map_err(|_| RouteError::InvalidPayload)
+    .map_err(|_| ConsumerError::InvalidPayload)
 }
 
-fn payload_uuid(payload: &serde_json::Value, key: &str) -> Result<Uuid, RouteError> {
+fn payload_uuid(payload: &serde_json::Value, key: &str) -> Result<Uuid, ConsumerError> {
     payload
         .get(key)
         .and_then(serde_json::Value::as_str)
-        .ok_or(RouteError::InvalidPayload)
-        .and_then(|value| Uuid::parse_str(value).map_err(|_| RouteError::InvalidPayload))
+        .ok_or(ConsumerError::InvalidPayload)
+        .and_then(|value| Uuid::parse_str(value).map_err(|_| ConsumerError::InvalidPayload))
 }
 
-fn is_phase4_event(event_type: &str) -> bool {
-    event_type.starts_with("ledger.")
-        || event_type.starts_with("mail.")
-        || event_type.starts_with("recurring.")
-        || event_type.starts_with("loans.")
-        || event_type.starts_with("portfolio.")
-        || event_type == FX_OBSERVED_V1
+fn is_recurring_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        RECEIPT_EVIDENCE_RECORDED_V1
+            | JOURNAL_POSTED_V1
+            | JOURNAL_REVERSED_V1
+            | JOURNAL_REPLACED_V1
+    )
 }
 
-struct RoutedEvent {
+fn is_loan_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        AGREEMENT_OPENED_V1
+            | TERMS_REVISED_V1
+            | MOVEMENT_POSTED_V1
+            | MOVEMENT_FAILED_V1
+            | MOVEMENT_REVERSED_V1
+            | AGREEMENT_CLOSED_V1
+            | ACCOUNTING_REQUESTED_V1
+    )
+}
+
+fn is_portfolio_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        INSTRUMENT_CREATED_V1
+            | ACCOUNT_CHANGED_V1
+            | TRANSACTION_POSTED_V1
+            | TRANSACTION_REVERSED_V1
+            | POSITION_CHANGED_V1
+            | VALUATION_RECORDED_V1
+            | CASH_SETTLEMENT_POSTED_V1
+            | CASH_SETTLEMENT_REVERSED_V1
+            | CASH_SETTLEMENT_CANCELLED_V1
+    )
+}
+
+fn is_reporting_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        FX_OBSERVED_V1
+            | CHARGE_EVIDENCE_RECORDED_V1
+            | JOURNAL_POSTED_V1
+            | JOURNAL_REVERSED_V1
+            | JOURNAL_REPLACED_V1
+            | RECONCILIATION_OBSERVED_V1
+            | RECONCILIATION_MATCHED_V1
+            | RECONCILIATION_SUPERSEDED_V1
+            | RECONCILIATION_IGNORED_OLDER_V1
+            | RECONCILIATION_APPROVED_V1
+            | RECONCILIATION_DISMISSED_V1
+            | RECONCILIATION_STALE_V1
+            | BILL_POSITION_CHANGED_V1
+            | BILL_CANCELLED_V1
+    ) || is_loan_event(event_type)
+        || is_portfolio_event(event_type)
+}
+
+struct PersistedEvent {
     sequence: u64,
     event_id: Uuid,
     schema_version: u32,

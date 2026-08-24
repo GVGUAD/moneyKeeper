@@ -4,8 +4,8 @@ use moneykeeper::{
     shared_kernel::CurrencyCode,
 };
 use rust_decimal_macros::dec;
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 #[test]
 fn exchange_rates_are_positive_directional_and_exact() {
     let usd = CurrencyCode::new("USD").unwrap();
@@ -36,8 +36,8 @@ fn triangulation_requires_a_currency_chain() {
 #[tokio::test]
 async fn immutable_observations_replay_and_cross_through_uah() {
     use moneykeeper::contexts::reference_data::public::RecordFxObservation;
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
-    let currencies = moneykeeper::bootstrap::v2::supporting_contexts(&verified).currencies;
+    let (verified, _pool) = test_support::fresh_runtime().await;
+    let currencies = moneykeeper::bootstrap::build_contexts(&verified).currencies;
     let now = Utc::now();
     for (code, rate) in [("USD", dec!(40)), ("EUR", dec!(50))] {
         let command = RecordFxObservation {

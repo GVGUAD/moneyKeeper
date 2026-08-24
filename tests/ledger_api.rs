@@ -11,8 +11,8 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 const TEST_KID: &str = "test-key-1";
 const TEST_EC_PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----
@@ -58,9 +58,9 @@ fn jwt(user_id: Uuid) -> String {
 }
 
 async fn app(user_id: Uuid) -> TestServer {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let mut server = TestServer::new(moneykeeper::bootstrap::v2::router(
+    let mut server = TestServer::new(moneykeeper::bootstrap::router(
         &verified,
         Arc::new(test_jwks()),
     ))
@@ -169,6 +169,13 @@ async fn account_transaction_annotation_and_correction_routes_preserve_history()
     assert_eq!(detail["postings"].as_array().unwrap().len(), 2);
     assert_eq!(detail["source"], "manual");
     assert_eq!(detail["actor"]["kind"], "user");
+    assert_eq!(detail["annotation"]["version"], 1);
+    assert_eq!(detail["annotation"]["description"], "Lunch");
+    assert_eq!(detail["annotation"]["note"], Value::Null);
+    assert_eq!(detail["annotation"]["tags"], json!(["food"]));
+    assert_eq!(detail["annotation"]["budget_visibility"], "included");
+    assert_eq!(detail["reversed_by_journal_id"], Value::Null);
+    assert_eq!(detail["replaced_by_journal_id"], Value::Null);
     let activity = server
         .get(&format!("/accounts/{account_id}/activity?limit=10"))
         .await;
@@ -188,6 +195,13 @@ async fn account_transaction_annotation_and_correction_routes_preserve_history()
         .await;
     assert_eq!(annotated.status_code(), StatusCode::OK);
     assert_eq!(annotated.json::<Value>()["version"], 2);
+    let annotated_detail: Value = server
+        .get(&format!("/transactions/{journal_id}"))
+        .await
+        .json();
+    assert_eq!(annotated_detail["description"], "Lunch");
+    assert_eq!(annotated_detail["annotation"]["description"], "Dinner");
+    assert_eq!(annotated_detail["annotation"]["version"], 2);
 
     let stale = server
         .post(&format!("/accounts/{account_id}/balance-corrections"))
@@ -209,9 +223,9 @@ async fn account_transaction_annotation_and_correction_routes_preserve_history()
 
 #[tokio::test]
 async fn ledger_queries_hide_other_tenants() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let router = moneykeeper::bootstrap::v2::router(&verified, Arc::new(test_jwks()));
+    let router = moneykeeper::bootstrap::router(&verified, Arc::new(test_jwks()));
     let owner = Uuid::new_v4();
     let mut owner_server = TestServer::new(router.clone()).unwrap();
     owner_server.add_header(AUTHORIZATION, format!("Bearer {}", jwt(owner)));
@@ -244,9 +258,9 @@ async fn ledger_queries_hide_other_tenants() {
 
 #[tokio::test]
 async fn reconciliation_routes_require_versions_and_expose_only_tenant_cases() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let user_uuid = Uuid::new_v4();
     let user = UserId::new(user_uuid);
     let currency = CurrencyCode::new("UAH").unwrap();
@@ -284,7 +298,7 @@ async fn reconciliation_routes_require_versions_and_expose_only_tenant_cases() {
         })
         .await
         .unwrap();
-    let router = moneykeeper::bootstrap::v2::router(&verified, Arc::new(test_jwks()));
+    let router = moneykeeper::bootstrap::router(&verified, Arc::new(test_jwks()));
     let mut server = TestServer::new(router.clone()).unwrap();
     server.add_header(AUTHORIZATION, format!("Bearer {}", jwt(user_uuid)));
 
@@ -338,11 +352,11 @@ async fn reconciliation_routes_require_versions_and_expose_only_tenant_cases() {
 
 #[tokio::test]
 async fn complete_visible_money_lifecycle_and_tamper_recovery() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let user_uuid = Uuid::new_v4();
     let user = UserId::new(user_uuid);
-    let mut server = TestServer::new(moneykeeper::bootstrap::v2::router(
+    let mut server = TestServer::new(moneykeeper::bootstrap::router(
         &verified,
         Arc::new(test_jwks()),
     ))
@@ -396,27 +410,72 @@ async fn complete_visible_money_lifecycle_and_tamper_recovery() {
         .await
         .json();
     assert_eq!(correction["effects"][0]["display_balance"], "25");
+    let reversal = server
+        .post(&format!("/transactions/{first_id}/reversals"))
+        .add_header("Idempotency-Key", "life-reverse")
+        .json(&json!({"reason":"Duplicate","occurred_at":at}))
+        .await;
+    assert_eq!(reversal.status_code(), StatusCode::CREATED);
+    let reversal: Value = reversal.json();
+    let reversed_detail: Value = server
+        .get(&format!("/transactions/{first_id}"))
+        .await
+        .json();
+    assert_eq!(
+        reversed_detail["reversed_by_journal_id"],
+        reversal["journal_entry_id"]
+    );
     assert_eq!(
         server
             .post(&format!("/transactions/{first_id}/reversals"))
-            .add_header("Idempotency-Key", "life-reverse")
-            .json(&json!({"reason":"Duplicate","occurred_at":at}))
+            .add_header("Idempotency-Key", "life-reverse-again")
+            .json(&json!({"reason":"Again","occurred_at":at}))
             .await
             .status_code(),
-        StatusCode::CREATED
+        StatusCode::CONFLICT
     );
     let replacement: Value = server
         .post(&format!("/transactions/{second_id}/replacements"))
         .add_header("Idempotency-Key", "life-replace")
         .json(&json!({
             "account_id":cash_id,"kind":"expense","amount":{"amount":"7","currency":"UAH"},
-            "description":"Corrected second","occurred_at":at
+            "description":"Corrected second","note":"keep this","tags":["final"],
+            "budget_visibility":"excluded","occurred_at":at
         }))
         .await
         .json();
     let replacement_id = replacement["replacement_journal_entry_id"]
         .as_str()
         .unwrap();
+    let replaced_detail: Value = server
+        .get(&format!("/transactions/{second_id}"))
+        .await
+        .json();
+    assert_eq!(replaced_detail["replaced_by_journal_id"], replacement_id);
+    assert!(replaced_detail["reversed_by_journal_id"].is_string());
+    let replacement_detail: Value = server
+        .get(&format!("/transactions/{replacement_id}"))
+        .await
+        .json();
+    assert_eq!(replacement_detail["annotation"]["note"], "keep this");
+    assert_eq!(replacement_detail["annotation"]["tags"], json!(["final"]));
+    assert_eq!(
+        replacement_detail["annotation"]["budget_visibility"],
+        "excluded"
+    );
+    assert_eq!(
+        server
+            .post(&format!("/transactions/{second_id}/replacements"))
+            .add_header("Idempotency-Key", "life-replace-again")
+            .json(&json!({
+                "account_id":cash_id,"kind":"expense",
+                "amount":{"amount":"8","currency":"UAH"},
+                "description":"Another replacement","occurred_at":at
+            }))
+            .await
+            .status_code(),
+        StatusCode::CONFLICT
+    );
     assert_eq!(
         server
             .patch(&format!("/transactions/{replacement_id}/annotation"))

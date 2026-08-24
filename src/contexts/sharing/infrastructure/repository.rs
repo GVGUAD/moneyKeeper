@@ -1,5 +1,6 @@
 //! PostgreSQL aggregate repositories and atomic Sharing unit of work.
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Serialize, de::DeserializeOwned};
@@ -838,6 +839,115 @@ impl PgSharingStore {
         };
         tx.commit().await.map_err(database)?;
         Ok(view)
+    }
+}
+
+#[async_trait]
+impl crate::contexts::sharing::application::ports::ContactRepository for PgSharingStore {
+    async fn create_contact(&self, command: CreateContact) -> Result<ContactResult, SharingError> {
+        PgSharingStore::create_contact(self, command).await
+    }
+
+    async fn update_contact(&self, command: UpdateContact) -> Result<ContactResult, SharingError> {
+        PgSharingStore::update_contact(self, command).await
+    }
+
+    async fn archive_contact(
+        &self,
+        command: ArchiveContact,
+    ) -> Result<ContactResult, SharingError> {
+        PgSharingStore::archive_contact(self, command).await
+    }
+
+    async fn contact(
+        &self,
+        user_id: UserId,
+        id: ContactId,
+    ) -> Result<Option<ContactView>, SharingError> {
+        PgSharingStore::contact(self, user_id, id).await
+    }
+
+    async fn contacts(
+        &self,
+        user_id: UserId,
+        include_archived: bool,
+    ) -> Result<Vec<ContactView>, SharingError> {
+        PgSharingStore::contacts(self, user_id, include_archived).await
+    }
+}
+
+#[async_trait]
+impl crate::contexts::sharing::application::ports::BillRepository for PgSharingStore {
+    async fn create_bill(&self, command: CreateBillSplit) -> Result<BillResult, SharingError> {
+        PgSharingStore::create_bill(self, command).await
+    }
+
+    async fn revise_bill(&self, command: ReviseBillSplit) -> Result<BillResult, SharingError> {
+        PgSharingStore::revise_bill(self, command).await
+    }
+
+    async fn cancel_bill(&self, command: CancelBillSplit) -> Result<BillResult, SharingError> {
+        PgSharingStore::cancel_bill(self, command).await
+    }
+
+    async fn bill(
+        &self,
+        user_id: UserId,
+        id: BillSplitId,
+    ) -> Result<Option<BillView>, SharingError> {
+        PgSharingStore::bill(self, user_id, id).await
+    }
+
+    async fn bills(&self, user_id: UserId) -> Result<Vec<BillView>, SharingError> {
+        PgSharingStore::bills(self, user_id).await
+    }
+}
+
+#[async_trait]
+impl crate::contexts::sharing::application::ports::SettlementRepository for PgSharingStore {
+    async fn create_settlement(
+        &self,
+        command: CreateSettlement,
+    ) -> Result<SettlementResult, SharingError> {
+        PgSharingStore::create_settlement(self, command).await
+    }
+
+    async fn reverse_settlement(
+        &self,
+        command: ReverseSettlement,
+    ) -> Result<SettlementResult, SharingError> {
+        PgSharingStore::reverse_settlement(self, command).await
+    }
+}
+
+#[async_trait]
+impl crate::contexts::sharing::application::ports::AccountingWorkflowRepository for PgSharingStore {
+    async fn complete_bill_accounting(
+        &self,
+        command: CompleteBillAccounting,
+    ) -> Result<BillView, SharingError> {
+        PgSharingStore::complete_bill_accounting(self, command).await
+    }
+
+    async fn complete_bill_cancellation(
+        &self,
+        command: CompleteBillCancellation,
+    ) -> Result<BillView, SharingError> {
+        PgSharingStore::complete_bill_cancellation(self, command).await
+    }
+
+    async fn complete_settlement_accounting(
+        &self,
+        command: CompleteSettlementAccounting,
+    ) -> Result<SettlementView, SharingError> {
+        PgSharingStore::complete_settlement_accounting(self, command).await
+    }
+
+    async fn complete_settlement_reversal(
+        &self,
+        command: CompleteSettlementReversal,
+    ) -> Result<SettlementView, SharingError> {
+        PgSharingStore::complete_settlement_reversal(self, command).await
     }
 }
 

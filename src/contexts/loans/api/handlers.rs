@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 
 use super::dto::*;
 use super::routes::LoansApiState;
-use crate::api::v2::{AuthenticatedUser, V2ApiError, V2Json};
+use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::loans::public::{
     LoanAgreementId, LoanDirection, LoanMovementId, MovementAmounts, MovementKind, OpenLoan,
     RecordLoanMovement, ReviseLoanTerms,
@@ -23,7 +23,7 @@ use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey};
 pub(crate) async fn list(
     State(state): State<LoansApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let loans = state.loans.list(user).await.map_err(map_error)?;
     Ok(Json(serde_json::json!({"loans":loans})))
 }
@@ -31,22 +31,22 @@ pub(crate) async fn get(
     State(state): State<LoansApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let loan = state
         .loans
         .get(user, LoanAgreementId::new(id))
         .await
         .map_err(map_error)?
-        .ok_or_else(|| V2ApiError::not_found("loan was not found"))?;
+        .ok_or_else(|| ApiError::not_found("loan was not found"))?;
     Ok(Json(
-        serde_json::to_value(loan).map_err(|_| V2ApiError::internal())?,
+        serde_json::to_value(loan).map_err(|_| ApiError::internal())?,
     ))
 }
 pub(crate) async fn terms(
     State(state): State<LoansApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let rows = state
         .loans
         .term_revisions(user, LoanAgreementId::new(id))
@@ -58,7 +58,7 @@ pub(crate) async fn movements(
     State(state): State<LoansApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let rows = state
         .loans
         .movements(user, LoanAgreementId::new(id))
@@ -70,7 +70,7 @@ pub(crate) async fn movement(
     State(state): State<LoansApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path((id, movement)): Path<(uuid::Uuid, uuid::Uuid)>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let row = state
         .loans
         .movement(
@@ -80,9 +80,9 @@ pub(crate) async fn movement(
         )
         .await
         .map_err(map_error)?
-        .ok_or_else(|| V2ApiError::not_found("loan movement was not found"))?;
+        .ok_or_else(|| ApiError::not_found("loan movement was not found"))?;
     Ok(Json(
-        serde_json::to_value(row).map_err(|_| V2ApiError::internal())?,
+        serde_json::to_value(row).map_err(|_| ApiError::internal())?,
     ))
 }
 
@@ -90,14 +90,14 @@ pub(crate) async fn open(
     State(state): State<LoansApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(body): V2Json<OpenLoanBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    ApiJson(body): ApiJson<OpenLoanBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let key = idempotency(&headers)?;
     let (currency, minor_unit) = currency(&state, &body.currency).await?;
     let direction = match body.direction.as_str() {
         "borrowed" => LoanDirection::Borrowed,
         "lent" => LoanDirection::Lent,
-        _ => return Err(V2ApiError::bad_request("invalid loan direction")),
+        _ => return Err(ApiError::bad_request("invalid loan direction")),
     };
     let result = state
         .loans
@@ -118,7 +118,7 @@ pub(crate) async fn open(
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| V2ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
     ))
 }
 
@@ -127,8 +127,8 @@ pub(crate) async fn revise(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ReviseTermsBody>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+    ApiJson(body): ApiJson<ReviseTermsBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let key = idempotency(&headers)?;
     let (currency, minor_unit) = currency(&state, &body.currency).await?;
     let result = state
@@ -151,7 +151,7 @@ pub(crate) async fn revise(
         .await
         .map_err(map_error)?;
     Ok(Json(
-        serde_json::to_value(result).map_err(|_| V2ApiError::internal())?,
+        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
     ))
 }
 
@@ -160,8 +160,8 @@ pub(crate) async fn disburse(
     u: AuthenticatedUser,
     p: Path<uuid::Uuid>,
     h: HeaderMap,
-    b: V2Json<MovementBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    b: ApiJson<MovementBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     record(s, u, p, h, b, MovementKind::Disbursement, None).await
 }
 pub(crate) async fn repay(
@@ -169,8 +169,8 @@ pub(crate) async fn repay(
     u: AuthenticatedUser,
     p: Path<uuid::Uuid>,
     h: HeaderMap,
-    b: V2Json<MovementBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    b: ApiJson<MovementBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     record(s, u, p, h, b, MovementKind::Repayment, None).await
 }
 pub(crate) async fn accrue(
@@ -178,8 +178,8 @@ pub(crate) async fn accrue(
     u: AuthenticatedUser,
     p: Path<uuid::Uuid>,
     h: HeaderMap,
-    b: V2Json<MovementBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    b: ApiJson<MovementBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     record(s, u, p, h, b, MovementKind::Accrual, None).await
 }
 pub(crate) async fn write_off(
@@ -187,8 +187,8 @@ pub(crate) async fn write_off(
     u: AuthenticatedUser,
     p: Path<uuid::Uuid>,
     h: HeaderMap,
-    b: V2Json<MovementBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    b: ApiJson<MovementBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     record(s, u, p, h, b, MovementKind::WriteOff, None).await
 }
 
@@ -197,10 +197,10 @@ async fn record(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<MovementBody>,
+    ApiJson(body): ApiJson<MovementBody>,
     kind: MovementKind,
     replaces: Option<LoanMovementId>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let key = idempotency(&headers)?;
     let (currency, minor_unit) = currency(&state, &body.currency).await?;
     let amounts = MovementAmounts {
@@ -232,7 +232,7 @@ async fn record(
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| V2ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
     ))
 }
 
@@ -241,8 +241,8 @@ pub(crate) async fn close(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ClosureBody>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+    ApiJson(body): ApiJson<ClosureBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let result = state
         .loans
         .close(
@@ -256,7 +256,7 @@ pub(crate) async fn close(
         .await
         .map_err(map_error)?;
     Ok(Json(
-        serde_json::to_value(result).map_err(|_| V2ApiError::internal())?,
+        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
     ))
 }
 
@@ -265,11 +265,11 @@ pub(crate) async fn reverse(
     AuthenticatedUser(user): AuthenticatedUser,
     Path((id, movement)): Path<(uuid::Uuid, uuid::Uuid)>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ReversalBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    ApiJson(body): ApiJson<ReversalBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let key = idempotency(&headers)?;
     if body.reason.is_empty() || body.reason.trim() != body.reason {
-        return Err(V2ApiError::bad_request("reason is required"));
+        return Err(ApiError::bad_request("reason is required"));
     }
     let result = state
         .loans
@@ -287,7 +287,7 @@ pub(crate) async fn reverse(
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| V2ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
     ))
 }
 pub(crate) async fn replace(
@@ -295,8 +295,8 @@ pub(crate) async fn replace(
     AuthenticatedUser(user): AuthenticatedUser,
     Path((id, original)): Path<(uuid::Uuid, uuid::Uuid)>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ReplacementBody>,
-) -> Result<(StatusCode, Json<serde_json::Value>), V2ApiError> {
+    ApiJson(body): ApiJson<ReplacementBody>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let key = idempotency(&headers)?;
     let (currency, minor_unit) = currency(&state, &body.currency).await?;
     let kind = match body.kind.as_str() {
@@ -304,7 +304,7 @@ pub(crate) async fn replace(
         "repayment" => MovementKind::Repayment,
         "accrual" => MovementKind::Accrual,
         "write_off" => MovementKind::WriteOff,
-        _ => return Err(V2ApiError::bad_request("invalid movement kind")),
+        _ => return Err(ApiError::bad_request("invalid movement kind")),
     };
     let amounts = MovementAmounts {
         principal: money_decimal(&body.principal, minor_unit)?,
@@ -338,58 +338,58 @@ pub(crate) async fn replace(
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| V2ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
     ))
 }
 
-async fn currency(state: &LoansApiState, value: &str) -> Result<(CurrencyCode, u32), V2ApiError> {
-    let code = CurrencyCode::new(value).map_err(|_| V2ApiError::bad_request("invalid currency"))?;
+async fn currency(state: &LoansApiState, value: &str) -> Result<(CurrencyCode, u32), ApiError> {
+    let code = CurrencyCode::new(value).map_err(|_| ApiError::bad_request("invalid currency"))?;
     let definition = state
         .currencies
         .require_enabled(code.clone())
         .await
-        .map_err(|_| V2ApiError::bad_request("currency is not enabled"))?;
+        .map_err(|_| ApiError::bad_request("currency is not enabled"))?;
     Ok((code, u32::from(definition.minor_unit)))
 }
-fn money_decimal(value: &str, minor_unit: u32) -> Result<Decimal, V2ApiError> {
+fn money_decimal(value: &str, minor_unit: u32) -> Result<Decimal, ApiError> {
     if value.is_empty() || value.contains(['e', 'E']) {
-        return Err(V2ApiError::bad_request("invalid decimal string"));
+        return Err(ApiError::bad_request("invalid decimal string"));
     }
     let parsed =
-        Decimal::from_str(value).map_err(|_| V2ApiError::bad_request("invalid decimal string"))?;
+        Decimal::from_str(value).map_err(|_| ApiError::bad_request("invalid decimal string"))?;
     if parsed.scale() > minor_unit {
-        return Err(V2ApiError::bad_request(
+        return Err(ApiError::bad_request(
             "decimal scale exceeds currency minor unit",
         ));
     }
     Ok(parsed)
 }
-fn rate_decimal(value: &str) -> Result<Decimal, V2ApiError> {
+fn rate_decimal(value: &str) -> Result<Decimal, ApiError> {
     if value.is_empty() || value.contains(['e', 'E']) {
-        return Err(V2ApiError::bad_request("invalid decimal string"));
+        return Err(ApiError::bad_request("invalid decimal string"));
     }
     let parsed =
-        Decimal::from_str(value).map_err(|_| V2ApiError::bad_request("invalid decimal string"))?;
+        Decimal::from_str(value).map_err(|_| ApiError::bad_request("invalid decimal string"))?;
     if parsed.scale() > 10 {
-        return Err(V2ApiError::bad_request("annual rate scale exceeds limit"));
+        return Err(ApiError::bad_request("annual rate scale exceeds limit"));
     }
     Ok(parsed)
 }
-fn idempotency(headers: &HeaderMap) -> Result<IdempotencyKey, V2ApiError> {
+fn idempotency(headers: &HeaderMap) -> Result<IdempotencyKey, ApiError> {
     let raw = headers
         .get("Idempotency-Key")
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| V2ApiError::bad_request("Idempotency-Key is required"))?;
-    IdempotencyKey::new(raw).map_err(|_| V2ApiError::bad_request("invalid Idempotency-Key"))
+        .ok_or_else(|| ApiError::bad_request("Idempotency-Key is required"))?;
+    IdempotencyKey::new(raw).map_err(|_| ApiError::bad_request("invalid Idempotency-Key"))
 }
-fn map_error(error: crate::contexts::loans::public::LoansError) -> V2ApiError {
+fn map_error(error: crate::contexts::loans::public::LoansError) -> ApiError {
     if error.is_not_found() {
-        V2ApiError::not_found("loan was not found")
+        ApiError::not_found("loan was not found")
     } else if error.is_conflict() {
-        V2ApiError::conflict("loan command conflict")
+        ApiError::conflict("loan command conflict")
     } else if error.is_invalid() {
-        V2ApiError::bad_request("invalid loan command")
+        ApiError::bad_request("invalid loan command")
     } else {
-        V2ApiError::internal()
+        ApiError::internal()
     }
 }

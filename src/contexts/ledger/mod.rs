@@ -7,26 +7,29 @@ mod infrastructure;
 
 pub mod public;
 
-use crate::infrastructure::v2_db::VerifiedV2Pool;
+use crate::infrastructure::database::VerifiedDatabase;
+use std::sync::Arc;
 
-/// Builds the Ledger facade only from a verified Finance V2 pool.
-pub fn build(pool: &VerifiedV2Pool) -> public::LedgerFacade {
-    public::LedgerFacade::new(
+/// Builds the Ledger facade only from a verified Moneykeeper pool.
+pub fn build(pool: &VerifiedDatabase) -> public::LedgerFacade {
+    let application = application::accounts::LedgerApplication::new(
         infrastructure::PgLedgerUnitOfWork::new(pool),
         infrastructure::PgLedgerQueries::new(pool),
         infrastructure::PgLedgerProjection::new(pool),
-    )
+    );
+    public::LedgerFacade::new(Arc::new(application))
 }
 
 /// Builds Ledger with Classification's public validation contract.
 pub fn build_with_categories(
-    pool: &VerifiedV2Pool,
+    pool: &VerifiedDatabase,
     categories: crate::contexts::classification::public::CategoryCatalogFacade,
 ) -> public::LedgerFacade {
-    public::LedgerFacade::new_with_categories(
+    let application = application::accounts::LedgerApplication::new_with_categories(
         infrastructure::PgLedgerUnitOfWork::new(pool),
         infrastructure::PgLedgerQueries::new(pool),
         infrastructure::PgLedgerProjection::new(pool),
         categories,
-    )
+    );
+    public::LedgerFacade::new(Arc::new(application))
 }

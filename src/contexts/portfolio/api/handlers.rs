@@ -1,9 +1,8 @@
 use super::dto::*;
-use crate::{
-    api::v2::{AuthenticatedUser, V2ApiError, V2Json},
-    contexts::{ledger::public::LedgerAccountId, portfolio::public::*},
-    shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey},
-};
+use crate::api::{ApiError, ApiJson, AuthenticatedUser};
+use crate::contexts::ledger::public::LedgerAccountId;
+use crate::contexts::portfolio::public::*;
+use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -18,19 +17,19 @@ pub(crate) async fn create_ovdp(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(b): V2Json<OvdpBody>,
-) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), V2ApiError> {
+    ApiJson(b): ApiJson<OvdpBody>,
+) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), ApiError> {
     let coupon_terms = match b.coupon_kind.as_str() {
         "fixed" => CouponTerms::Fixed {
             annual_rate: decimal(
                 b.coupon_rate
                     .as_deref()
-                    .ok_or_else(|| V2ApiError::bad_request("coupon_rate required"))?,
+                    .ok_or_else(|| ApiError::bad_request("coupon_rate required"))?,
             )?,
         },
         "zero_coupon" => CouponTerms::ZeroCoupon,
         "unknown" => CouponTerms::Unknown,
-        _ => return Err(V2ApiError::bad_request("invalid coupon_kind")),
+        _ => return Err(ApiError::bad_request("invalid coupon_kind")),
     };
     let c = CreateManualOvdpInstrument {
         user_id: user,
@@ -42,7 +41,7 @@ pub(crate) async fn create_ovdp(
             },
             b.identifier,
         )
-        .map_err(|_| V2ApiError::bad_request("invalid identifier"))?,
+        .map_err(|_| ApiError::bad_request("invalid identifier"))?,
         display_name: b.display_name,
         currency: currency(&b.currency)?,
         face_value: decimal(&b.face_value)?,
@@ -62,8 +61,8 @@ pub(crate) async fn open_account(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(b): V2Json<AccountBody>,
-) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), V2ApiError> {
+    ApiJson(b): ApiJson<AccountBody>,
+) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), ApiError> {
     let c = OpenPortfolioAccount {
         user_id: user,
         name: b.name,
@@ -81,13 +80,13 @@ pub(crate) async fn rename_account(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(b): V2Json<AccountBody>,
-) -> Result<Json<PortfolioCommandResult>, V2ApiError> {
+    ApiJson(b): ApiJson<AccountBody>,
+) -> Result<Json<PortfolioCommandResult>, ApiError> {
     let c = change(
         user,
         id,
         b.expected_version
-            .ok_or_else(|| V2ApiError::bad_request("expected_version required"))?,
+            .ok_or_else(|| ApiError::bad_request("expected_version required"))?,
         Some(b.name),
         &headers,
     )?;
@@ -98,8 +97,8 @@ pub(crate) async fn archive_account(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(b): V2Json<VersionBody>,
-) -> Result<Json<PortfolioCommandResult>, V2ApiError> {
+    ApiJson(b): ApiJson<VersionBody>,
+) -> Result<Json<PortfolioCommandResult>, ApiError> {
     Ok(Json(
         f.archive_account(change(user, id, b.expected_version, None, &headers)?)
             .await
@@ -111,8 +110,8 @@ pub(crate) async fn restore_account(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(b): V2Json<VersionBody>,
-) -> Result<Json<PortfolioCommandResult>, V2ApiError> {
+    ApiJson(b): ApiJson<VersionBody>,
+) -> Result<Json<PortfolioCommandResult>, ApiError> {
     Ok(Json(
         f.restore_account(change(user, id, b.expected_version, None, &headers)?)
             .await
@@ -122,42 +121,42 @@ pub(crate) async fn restore_account(
 pub(crate) async fn accounts(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Vec<PortfolioAccountView>>, V2ApiError> {
+) -> Result<Json<Vec<PortfolioAccountView>>, ApiError> {
     Ok(Json(f.accounts(user).await.map_err(map)?))
 }
 pub(crate) async fn account(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<PortfolioAccountView>, V2ApiError> {
+) -> Result<Json<PortfolioAccountView>, ApiError> {
     f.account(user, PortfolioAccountId::new(id))
         .await
         .map_err(map)?
         .map(Json)
-        .ok_or_else(|| V2ApiError::not_found("portfolio account not found"))
+        .ok_or_else(|| ApiError::not_found("portfolio account not found"))
 }
 pub(crate) async fn instruments(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<Vec<InstrumentView>>, V2ApiError> {
+) -> Result<Json<Vec<InstrumentView>>, ApiError> {
     Ok(Json(f.instruments(user).await.map_err(map)?))
 }
 pub(crate) async fn instrument(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<InstrumentView>, V2ApiError> {
+) -> Result<Json<InstrumentView>, ApiError> {
     f.instrument(user, InstrumentId::new(id))
         .await
         .map_err(map)?
         .map(Json)
-        .ok_or_else(|| V2ApiError::not_found("instrument not found"))
+        .ok_or_else(|| ApiError::not_found("instrument not found"))
 }
 pub(crate) async fn activity(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<PortfolioTransactionView>>, V2ApiError> {
+) -> Result<Json<Vec<PortfolioTransactionView>>, ApiError> {
     Ok(Json(
         f.activity(user, PortfolioAccountId::new(id))
             .await
@@ -168,7 +167,7 @@ pub(crate) async fn positions(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(q): Query<PositionParams>,
-) -> Result<Json<Vec<PositionView>>, V2ApiError> {
+) -> Result<Json<Vec<PositionView>>, ApiError> {
     Ok(Json(
         f.positions(user, PortfolioAccountId::new(q.portfolio_account_id))
             .await
@@ -179,7 +178,7 @@ pub(crate) async fn valuations(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(q): Query<ValuationParams>,
-) -> Result<Json<Vec<ValuationView>>, V2ApiError> {
+) -> Result<Json<Vec<ValuationView>>, ApiError> {
     Ok(Json(
         f.valuations(
             user,
@@ -194,8 +193,8 @@ pub(crate) async fn record_valuation(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(b): V2Json<ValuationBody>,
-) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), V2ApiError> {
+    ApiJson(b): ApiJson<ValuationBody>,
+) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), ApiError> {
     let c = RecordValuationSnapshot {
         user_id: user,
         account_id: PortfolioAccountId::new(b.portfolio_account_id),
@@ -218,12 +217,12 @@ pub(crate) async fn record_transaction(
     State(f): State<PortfolioFacade>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(b): V2Json<TransactionBody>,
-) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), V2ApiError> {
+    ApiJson(b): ApiJson<TransactionBody>,
+) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), ApiError> {
     let quantity = || {
         b.quantity
             .as_deref()
-            .ok_or_else(|| V2ApiError::bad_request("quantity required"))
+            .ok_or_else(|| ApiError::bad_request("quantity required"))
             .and_then(decimal)
     };
     let date = b.effective_date.unwrap_or_else(|| Utc::now().date_naive());
@@ -238,7 +237,7 @@ pub(crate) async fn record_transaction(
                         quantity: decimal(&a.quantity)?,
                     })
                 })
-                .collect::<Result<Vec<_>, V2ApiError>>()
+                .collect::<Result<Vec<_>, ApiError>>()
         })
         .transpose()?;
     let activity = match b.kind.as_str() {
@@ -253,7 +252,7 @@ pub(crate) async fn record_transaction(
             total_acquisition_cost: decimal(
                 b.acquisition_cost
                     .as_deref()
-                    .ok_or_else(|| V2ApiError::bad_request("acquisition_cost required"))?,
+                    .ok_or_else(|| ApiError::bad_request("acquisition_cost required"))?,
             )?,
             fee: b.fee.as_deref().map(decimal).transpose()?,
             accrued_interest: b.accrued_interest.as_deref().map(decimal).transpose()?,
@@ -264,7 +263,7 @@ pub(crate) async fn record_transaction(
             proceeds: decimal(
                 b.proceeds
                     .as_deref()
-                    .ok_or_else(|| V2ApiError::bad_request("proceeds required"))?,
+                    .ok_or_else(|| ApiError::bad_request("proceeds required"))?,
             )?,
             fee: b.fee.as_deref().map(decimal).transpose()?,
             trade_at: at,
@@ -274,7 +273,7 @@ pub(crate) async fn record_transaction(
             amount: decimal(
                 b.amount
                     .as_deref()
-                    .ok_or_else(|| V2ApiError::bad_request("amount required"))?,
+                    .ok_or_else(|| ApiError::bad_request("amount required"))?,
             )?,
             ex_date: None,
             payment_date: date,
@@ -284,7 +283,7 @@ pub(crate) async fn record_transaction(
             proceeds: decimal(
                 b.proceeds
                     .as_deref()
-                    .ok_or_else(|| V2ApiError::bad_request("proceeds required"))?,
+                    .ok_or_else(|| ApiError::bad_request("proceeds required"))?,
             )?,
             maturity_date: date,
             reference: b.reason.unwrap_or_else(|| "Maturity".into()),
@@ -295,10 +294,10 @@ pub(crate) async fn record_transaction(
             cost_delta: b.acquisition_cost.as_deref().map(decimal).transpose()?,
             reason: b
                 .reason
-                .ok_or_else(|| V2ApiError::bad_request("reason required"))?,
+                .ok_or_else(|| ApiError::bad_request("reason required"))?,
             effective_at: at,
         },
-        _ => return Err(V2ApiError::bad_request("invalid transaction kind")),
+        _ => return Err(ApiError::bad_request("invalid transaction kind")),
     };
     let cash = match (b.cash_account_id, b.cash_amount) {
         (Some(id), Some(amount)) => Some(OptionalCashSettlement {
@@ -307,7 +306,7 @@ pub(crate) async fn record_transaction(
         }),
         (None, None) => None,
         _ => {
-            return Err(V2ApiError::bad_request(
+            return Err(ApiError::bad_request(
                 "cash account and amount must be provided together",
             ));
         }
@@ -335,8 +334,8 @@ pub(crate) async fn reverse_transaction(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(b): V2Json<ReversalBody>,
-) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), V2ApiError> {
+    ApiJson(b): ApiJson<ReversalBody>,
+) -> Result<(axum::http::StatusCode, Json<PortfolioCommandResult>), ApiError> {
     let c = ReversePortfolioTransaction {
         user_id: user,
         transaction_id: PortfolioTransactionId::new(id),
@@ -359,7 +358,7 @@ fn change(
     expected: u64,
     name: Option<String>,
     h: &HeaderMap,
-) -> Result<ChangePortfolioAccount, V2ApiError> {
+) -> Result<ChangePortfolioAccount, ApiError> {
     Ok(ChangePortfolioAccount {
         user_id: user,
         account_id: PortfolioAccountId::new(id),
@@ -370,26 +369,26 @@ fn change(
         occurred_at: Utc::now(),
     })
 }
-fn key(h: &HeaderMap) -> Result<IdempotencyKey, V2ApiError> {
+fn key(h: &HeaderMap) -> Result<IdempotencyKey, ApiError> {
     h.get("Idempotency-Key")
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| V2ApiError::bad_request("Idempotency-Key required"))
+        .ok_or_else(|| ApiError::bad_request("Idempotency-Key required"))
         .and_then(|v| {
-            IdempotencyKey::new(v).map_err(|_| V2ApiError::bad_request("invalid Idempotency-Key"))
+            IdempotencyKey::new(v).map_err(|_| ApiError::bad_request("invalid Idempotency-Key"))
         })
 }
-fn decimal(v: &str) -> Result<Decimal, V2ApiError> {
-    Decimal::from_str(v).map_err(|_| V2ApiError::bad_request("invalid decimal string"))
+fn decimal(v: &str) -> Result<Decimal, ApiError> {
+    Decimal::from_str(v).map_err(|_| ApiError::bad_request("invalid decimal string"))
 }
-fn currency(v: &str) -> Result<CurrencyCode, V2ApiError> {
-    CurrencyCode::new(v).map_err(|_| V2ApiError::bad_request("invalid currency"))
+fn currency(v: &str) -> Result<CurrencyCode, ApiError> {
+    CurrencyCode::new(v).map_err(|_| ApiError::bad_request("invalid currency"))
 }
-fn map(e: PortfolioFacadeError) -> V2ApiError {
+fn map(e: PortfolioFacadeError) -> ApiError {
     if e.is_not_found() {
-        V2ApiError::not_found("portfolio fact not found")
+        ApiError::not_found("portfolio fact not found")
     } else if e.is_conflict() {
-        V2ApiError::conflict("portfolio command conflict")
+        ApiError::conflict("portfolio command conflict")
     } else {
-        V2ApiError::bad_request("invalid portfolio command")
+        ApiError::bad_request("invalid portfolio command")
     }
 }

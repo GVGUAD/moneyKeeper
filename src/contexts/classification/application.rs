@@ -1,13 +1,29 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::shared_kernel::UserId;
 
 use super::domain::Category;
-use super::infrastructure::PgCategoryCatalog;
 use super::public::{CategoryCommand, CategoryId, CategoryView, ClassificationError};
 
-pub(crate) async fn create(
-    categories: &PgCategoryCatalog,
+#[async_trait]
+pub(crate) trait CategoryRepository: Send + Sync {
+    async fn insert(&self, category: &Category) -> Result<(), ClassificationError>;
+    async fn find(
+        &self,
+        user_id: UserId,
+        id: CategoryId,
+    ) -> Result<Option<Category>, ClassificationError>;
+    async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Category>, ClassificationError>;
+    async fn update(
+        &self,
+        category: &Category,
+        expected_version: i64,
+    ) -> Result<(), ClassificationError>;
+}
+
+pub(crate) async fn create<R: CategoryRepository + ?Sized>(
+    categories: &R,
     command: CategoryCommand,
     now: DateTime<Utc>,
 ) -> Result<CategoryView, ClassificationError> {
@@ -22,8 +38,8 @@ pub(crate) async fn create(
     Ok(category.into())
 }
 
-pub(crate) async fn get(
-    categories: &PgCategoryCatalog,
+pub(crate) async fn get<R: CategoryRepository + ?Sized>(
+    categories: &R,
     user_id: UserId,
     id: CategoryId,
 ) -> Result<CategoryView, ClassificationError> {
@@ -34,8 +50,8 @@ pub(crate) async fn get(
         .ok_or_else(ClassificationError::not_found)
 }
 
-pub(crate) async fn list(
-    categories: &PgCategoryCatalog,
+pub(crate) async fn list<R: CategoryRepository + ?Sized>(
+    categories: &R,
     user_id: UserId,
 ) -> Result<Vec<CategoryView>, ClassificationError> {
     categories
@@ -44,8 +60,8 @@ pub(crate) async fn list(
         .map(|values| values.into_iter().map(Into::into).collect())
 }
 
-pub(crate) async fn rename(
-    categories: &PgCategoryCatalog,
+pub(crate) async fn rename<R: CategoryRepository + ?Sized>(
+    categories: &R,
     user_id: UserId,
     id: CategoryId,
     name: String,
@@ -65,8 +81,8 @@ pub(crate) async fn rename(
     Ok(category.into())
 }
 
-pub(crate) async fn archive(
-    categories: &PgCategoryCatalog,
+pub(crate) async fn archive<R: CategoryRepository + ?Sized>(
+    categories: &R,
     user_id: UserId,
     id: CategoryId,
     expected_version: i64,
@@ -81,8 +97,8 @@ pub(crate) async fn archive(
     Ok(category.into())
 }
 
-pub(crate) async fn restore(
-    categories: &PgCategoryCatalog,
+pub(crate) async fn restore<R: CategoryRepository + ?Sized>(
+    categories: &R,
     user_id: UserId,
     id: CategoryId,
     expected_version: i64,
@@ -97,8 +113,8 @@ pub(crate) async fn restore(
     Ok(category.into())
 }
 
-pub(crate) async fn require_active(
-    categories: &PgCategoryCatalog,
+pub(crate) async fn require_active<R: CategoryRepository + ?Sized>(
+    categories: &R,
     user_id: UserId,
     id: CategoryId,
 ) -> Result<CategoryView, ClassificationError> {

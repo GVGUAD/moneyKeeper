@@ -9,6 +9,7 @@ use super::public::{
 use crate::contexts::ledger::public::{LedgerEventFactV1, LedgerEventV1};
 use crate::contexts::reference_data::public::{FX_OBSERVED_V1, FxObservedV1};
 use crate::shared_kernel::UserId;
+use async_trait::async_trait;
 use chrono::Utc;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
@@ -331,7 +332,7 @@ impl PgReportingStore {
             for ((flow_kind, currency), amount) in flows {
                 sqlx::query("INSERT INTO reporting.cashflows(user_id,journal_entry_id,flow_kind,amount,currency,category_id,effective_at,reversed,source_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8) ON CONFLICT(user_id,journal_entry_id,flow_kind) DO UPDATE SET amount=EXCLUDED.amount,currency=EXCLUDED.currency,category_id=EXCLUDED.category_id,effective_at=EXCLUDED.effective_at,source_sequence=EXCLUDED.source_sequence WHERE reporting.cashflows.source_sequence<EXCLUDED.source_sequence")
                     .bind(user_id).bind(journal_id).bind(flow_kind).bind(amount).bind(currency)
-                    .bind(journal.category_id.map(|id|id.into_uuid())).bind(journal.occurred_at)
+                    .bind(journal.annotation.as_ref().and_then(|annotation| annotation.category_id).map(|id|id.into_uuid())).bind(journal.occurred_at)
                     .bind(sequence).execute(&mut *transaction).await?;
             }
         }
@@ -562,6 +563,152 @@ fn reconciliation_state(fact: &LedgerEventFactV1) -> Option<(uuid::Uuid, &'stati
         _ => return None,
     };
     Some((case_id.into_uuid(), state))
+}
+
+fn reporting_error(error: sqlx::Error) -> super::public::ReportingError {
+    if matches!(error, sqlx::Error::Protocol(_)) {
+        super::public::ReportingError::invalid(error)
+    } else {
+        super::public::ReportingError::persistence(error)
+    }
+}
+
+#[async_trait]
+impl super::application::ports::ProjectionWriter for PgReportingStore {
+    async fn apply_ledger_event(
+        &self,
+        event: crate::contexts::ledger::public::LedgerEventV1,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_ledger_event(self, event)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn apply_fx_event(
+        &self,
+        event: crate::contexts::reference_data::public::FxObservedV1,
+        source_sequence: u64,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_fx_event(self, event, source_sequence)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn apply_journal_export(
+        &self,
+        event_id: crate::shared_kernel::EventId,
+        source_sequence: u64,
+        journal: crate::contexts::ledger::public::JournalView,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_journal_export(self, event_id, source_sequence, journal)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn apply_recurring_charge(
+        &self,
+        event_id: crate::shared_kernel::EventId,
+        source_sequence: u64,
+        event: crate::contexts::recurring::public::ChargeEvidenceRecordedV1,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_recurring_charge(self, event_id, source_sequence, event)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn apply_loan_event(
+        &self,
+        event: crate::contexts::loans::public::LoanEventV1,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_loan_event(self, event)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn apply_portfolio_event(
+        &self,
+        event: crate::contexts::portfolio::public::PortfolioEventV1,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_portfolio_event(self, event)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn apply_sharing_event(
+        &self,
+        event: crate::contexts::sharing::public::SharingEventV1,
+    ) -> Result<super::public::ProjectionApplyResult, super::public::ReportingError> {
+        PgReportingStore::apply_sharing_event(self, event)
+            .await
+            .map_err(reporting_error)
+    }
+}
+
+#[async_trait]
+impl super::application::ports::ReportQuery for PgReportingStore {
+    async fn read(
+        &self,
+        user: UserId,
+        range: super::public::ReportRange,
+        kind: &'static str,
+    ) -> Result<super::public::ReportResponse, super::public::ReportingError> {
+        PgReportingStore::read(self, user, range, kind)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn portfolio_summary(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<super::public::PortfolioSummary>, super::public::ReportingError> {
+        PgReportingStore::portfolio_summary(self, user)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn loan_summary(
+        &self,
+        user: UserId,
+        id: crate::contexts::loans::public::LoanAgreementId,
+    ) -> Result<Option<super::public::LoanSummary>, super::public::ReportingError> {
+        PgReportingStore::loan_summary(self, user, id)
+            .await
+            .map_err(reporting_error)
+    }
+}
+
+#[async_trait]
+impl super::application::ports::ProjectionRebuild for PgReportingStore {
+    async fn rebuild_portfolio(
+        &self,
+        events: Vec<crate::contexts::portfolio::public::PortfolioEventV1>,
+    ) -> Result<(), super::public::ReportingError> {
+        PgReportingStore::rebuild_portfolio(self, events)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn rebuild_sharing(
+        &self,
+        events: Vec<crate::contexts::sharing::public::SharingEventV1>,
+    ) -> Result<(), super::public::ReportingError> {
+        PgReportingStore::rebuild_sharing(self, events)
+            .await
+            .map_err(reporting_error)
+    }
+
+    async fn rebuild_journals(
+        &self,
+        journals: Vec<(
+            crate::shared_kernel::EventId,
+            u64,
+            crate::contexts::ledger::public::JournalView,
+        )>,
+    ) -> Result<(), super::public::ReportingError> {
+        PgReportingStore::rebuild_journals(self, journals)
+            .await
+            .map_err(reporting_error)
+    }
 }
 
 async fn convert_rows(

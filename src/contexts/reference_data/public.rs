@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
@@ -9,20 +10,24 @@ use crate::shared_kernel::CurrencyCode;
 
 use super::application;
 pub use super::domain::{ExchangeRate, FxError};
-use super::infrastructure::PgCurrencyCatalog;
-use super::infrastructure::fx_repository::PgFxRepository;
 
 /// Public Reference Data facade with an unforgeable, privately constructed
 /// PostgreSQL adapter.
 #[derive(Clone)]
 pub struct CurrencyCatalogFacade {
-    adapter: PgCurrencyCatalog,
-    fx: PgFxRepository,
+    currencies: Arc<dyn application::CurrencyRepository>,
+    observations: Arc<dyn application::FxObservationRepository>,
 }
 
 impl CurrencyCatalogFacade {
-    pub(crate) fn new(adapter: PgCurrencyCatalog, fx: PgFxRepository) -> Self {
-        Self { adapter, fx }
+    pub(crate) fn new(
+        currencies: Arc<dyn application::CurrencyRepository>,
+        observations: Arc<dyn application::FxObservationRepository>,
+    ) -> Self {
+        Self {
+            currencies,
+            observations,
+        }
     }
     pub async fn rate_as_of(
         &self,
@@ -30,13 +35,13 @@ impl CurrencyCatalogFacade {
         quote: CurrencyCode,
         as_of: DateTime<Utc>,
     ) -> Result<FxRateLookup, CurrencyError> {
-        application::rate_as_of(&self.fx, base, quote, as_of).await
+        application::rate_as_of(self.observations.as_ref(), base, quote, as_of).await
     }
     pub async fn record_fx_observation(
         &self,
         command: RecordFxObservation,
     ) -> Result<FxObservationResult, CurrencyError> {
-        application::record_fx_observation(&self.fx, command).await
+        application::record_fx_observation(self.observations.as_ref(), command).await
     }
 }
 
@@ -122,11 +127,11 @@ impl CurrencyCatalog for CurrencyCatalogFacade {
         &self,
         code: CurrencyCode,
     ) -> Result<CurrencyDefinition, CurrencyError> {
-        application::require_enabled(&self.adapter, code).await
+        application::require_enabled(self.currencies.as_ref(), code).await
     }
 
     async fn list_enabled(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError> {
-        application::list_enabled(&self.adapter).await
+        application::list_enabled(self.currencies.as_ref()).await
     }
 }
 
@@ -134,6 +139,7 @@ impl CurrencyCatalog for CurrencyCatalogFacade {
 enum CurrencyErrorKind {
     NotFound,
     Disabled,
+    Invalid,
     Persistence,
     Conflict,
 }
@@ -163,7 +169,7 @@ impl CurrencyError {
         }
     }
 
-    pub(crate) fn database(source: sqlx::Error) -> Self {
+    pub(crate) fn storage(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::persistence("currency catalog is unavailable").with_source(source)
     }
 
@@ -177,6 +183,14 @@ impl CurrencyError {
     pub(crate) fn conflict(message: &'static str) -> Self {
         Self {
             kind: CurrencyErrorKind::Conflict,
+            message,
+            cause: None,
+        }
+    }
+
+    pub(crate) fn invalid(message: &'static str) -> Self {
+        Self {
+            kind: CurrencyErrorKind::Invalid,
             message,
             cause: None,
         }
@@ -196,6 +210,10 @@ impl CurrencyError {
     }
     pub fn is_conflict(&self) -> bool {
         self.kind == CurrencyErrorKind::Conflict
+    }
+
+    pub fn is_invalid(&self) -> bool {
+        self.kind == CurrencyErrorKind::Invalid
     }
 }
 

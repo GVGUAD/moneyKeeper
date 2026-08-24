@@ -11,12 +11,12 @@ use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Mo
 use rust_decimal::Decimal;
 use tokio::time::timeout;
 
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 #[tokio::test]
 async fn opposing_transfers_complete_without_deadlock_or_projection_drift() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let currency = CurrencyCode::new("UAH").unwrap();
@@ -74,7 +74,7 @@ async fn opposing_transfers_complete_without_deadlock_or_projection_drift() {
 
 #[tokio::test]
 async fn concurrent_balance_observations_cannot_regress_the_active_stream() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, _pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let currency = CurrencyCode::new("UAH").unwrap();
@@ -133,7 +133,7 @@ async fn concurrent_balance_observations_cannot_regress_the_active_stream() {
 
 #[tokio::test]
 async fn projection_never_drifts_after_concurrent_posts_transfers_and_correction() {
-    let (verified, _pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, _pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let currency = CurrencyCode::new("UAH").unwrap();
@@ -194,7 +194,7 @@ async fn projection_never_drifts_after_concurrent_posts_transfers_and_correction
 
 #[tokio::test]
 async fn concurrent_cash_control_cancellations_create_exactly_one_reversal() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let ledger = moneykeeper::contexts::ledger::build(&verified);
     let user = UserId::generate();
     let currency = CurrencyCode::new("UAH").unwrap();

@@ -7,7 +7,7 @@ on:
       - main
 jobs:
   quality:
-    name: Finance V2 quality gates
+    name: Moneykeeper quality gates
     runs-on: ubuntu-latest
     env:
       SQLX_OFFLINE: "true"

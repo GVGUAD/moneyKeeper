@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
@@ -9,17 +10,16 @@ use crate::contexts::reference_data::public::{CurrencyCatalog, CurrencyError};
 use crate::shared_kernel::{CurrencyCode, UserId};
 
 use super::application;
-use super::infrastructure::PgPreferences;
 
 /// Public Preferences facade with privately assembled persistence.
 #[derive(Clone)]
 pub struct PreferencesFacade {
-    adapter: PgPreferences,
+    repository: Arc<dyn application::PreferencesRepository>,
 }
 
 impl PreferencesFacade {
-    pub(crate) fn new(adapter: PgPreferences) -> Self {
-        Self { adapter }
+    pub(crate) fn new(repository: Arc<dyn application::PreferencesRepository>) -> Self {
+        Self { repository }
     }
 }
 
@@ -55,7 +55,7 @@ impl Preferences for PreferencesFacade {
         user_id: UserId,
         now: DateTime<Utc>,
     ) -> Result<PreferencesView, PreferencesError> {
-        application::get(&self.adapter, user_id, now).await
+        application::get(self.repository.as_ref(), user_id, now).await
     }
 
     async fn set_base_currency<C: CurrencyCatalog>(
@@ -67,7 +67,7 @@ impl Preferences for PreferencesFacade {
         now: DateTime<Utc>,
     ) -> Result<PreferencesView, PreferencesError> {
         application::set_base_currency(
-            &self.adapter,
+            self.repository.as_ref(),
             currencies,
             user_id,
             base_currency,
@@ -112,7 +112,7 @@ impl PreferencesError {
         Self::new(PreferencesErrorKind::Persistence, message)
     }
 
-    pub(crate) fn database(source: sqlx::Error) -> Self {
+    pub(crate) fn storage(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::persistence("preferences storage is unavailable").with_source(source)
     }
 

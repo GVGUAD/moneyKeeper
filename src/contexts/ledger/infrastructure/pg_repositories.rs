@@ -1,5 +1,6 @@
 //! Transaction-bound PostgreSQL aggregate stores.
 
+use async_trait::async_trait;
 use rust_decimal::Decimal;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -108,6 +109,7 @@ impl ReconciliationRow {
     }
 }
 
+#[async_trait]
 impl LedgerAccountStore for PgLedgerTransaction<'_> {
     async fn find_account(
         &mut self,
@@ -129,7 +131,7 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
             .bind(user_id.into_uuid())
             .fetch_optional(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?
+            .map_err(LedgerError::storage)?
             .map(AccountRow::into_domain)
             .transpose()
     }
@@ -153,7 +155,7 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         .bind(&ids)
         .fetch_all(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         rows.into_iter().map(AccountRow::into_domain).collect()
     }
 
@@ -179,7 +181,7 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         .bind(account.updated_at())
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
 
         sqlx::query(
             "INSERT INTO ledger.account_balances \
@@ -192,7 +194,7 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         .bind(account.created_at())
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         Ok(())
     }
 
@@ -223,11 +225,11 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         .bind(account.updated_at())
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         sqlx::query("INSERT INTO ledger.account_balances (account_id,user_id,currency,signed_balance,version,as_of) VALUES ($1,$2,$3,0,1,$4)")
             .bind(account.id().into_uuid()).bind(account.user_id().into_uuid())
             .bind(account.currency().as_str()).bind(account.created_at())
-            .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+            .execute(&mut *self.transaction).await.map_err(LedgerError::storage)?;
         Ok(())
     }
 
@@ -251,7 +253,7 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         .bind(previous_version)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         if result.rows_affected() != 1 {
             return Err(LedgerError::version_conflict());
         }
@@ -276,7 +278,7 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
             .bind(lock_identity)
             .execute(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
         let row = sqlx::query_as::<_, AccountRow>(&format!(
             "SELECT {ACCOUNT_COLUMNS} FROM ledger.accounts \
              WHERE user_id = $1 AND currency = $2 AND system_role = $3 \
@@ -289,11 +291,12 @@ impl LedgerAccountStore for PgLedgerTransaction<'_> {
         .bind(subject_reference)
         .fetch_optional(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         row.map(AccountRow::into_domain).transpose()
     }
 }
 
+#[async_trait]
 impl JournalStore for PgLedgerTransaction<'_> {
     async fn find_journal(
         &mut self,
@@ -311,7 +314,7 @@ impl JournalStore for PgLedgerTransaction<'_> {
             .bind(user_id.into_uuid())
             .fetch_optional(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?
+            .map_err(LedgerError::storage)?
         else {
             return Ok(None);
         };
@@ -333,7 +336,7 @@ impl JournalStore for PgLedgerTransaction<'_> {
         .bind(user_id.into_uuid())
         .fetch_all(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         let postings = rows
             .into_iter()
             .map(|row| {
@@ -388,7 +391,17 @@ impl JournalStore for PgLedgerTransaction<'_> {
         .bind(journal.fx_rate())
         .fetch_one(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(|error| {
+            if error
+                .as_database_error()
+                .and_then(|database| database.constraint())
+                == Some("journal_one_reversal_per_original")
+            {
+                LedgerError::version_conflict()
+            } else {
+                LedgerError::storage(error)
+            }
+        })?;
 
         for posting in journal.postings() {
             sqlx::query(
@@ -406,12 +419,13 @@ impl JournalStore for PgLedgerTransaction<'_> {
             .bind(posting.signed_amount())
             .execute(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
         }
         Ok(sequence)
     }
 }
 
+#[async_trait]
 impl AnnotationStore for PgLedgerTransaction<'_> {
     async fn find_annotation(
         &mut self,
@@ -448,7 +462,7 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
             .bind(user_id.into_uuid())
             .fetch_optional(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
         row.map(|row| {
             TransactionAnnotation::rehydrate(
                 AnnotationId::new(row.id),
@@ -504,7 +518,7 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
         .bind(annotation.updated_at())
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         Ok(())
     }
 
@@ -527,7 +541,7 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
          .bind(annotation.note()).bind(&tags).bind(annotation.budget_visibility().as_str())
          .bind(annotation.version().get()).bind(annotation.updated_at())
          .bind(annotation.version().get() - 1)
-         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+         .execute(&mut *self.transaction).await.map_err(LedgerError::storage)?;
         if result.rows_affected() != 1 {
             return Err(LedgerError::version_conflict());
         }
@@ -535,6 +549,7 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
     }
 }
 
+#[async_trait]
 impl CorrectionStore for PgLedgerTransaction<'_> {
     async fn insert_correction_detail(
         &mut self,
@@ -560,11 +575,12 @@ impl CorrectionStore for PgLedgerTransaction<'_> {
         .bind(detail.recorded_at)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         Ok(())
     }
 }
 
+#[async_trait]
 impl ProjectionStore for PgLedgerTransaction<'_> {
     async fn apply_postings(&mut self, journal: &JournalEntry) -> Result<(), LedgerError> {
         let mut account_ids: Vec<Uuid> = journal
@@ -582,7 +598,7 @@ impl ProjectionStore for PgLedgerTransaction<'_> {
         .bind(&account_ids)
         .fetch_all(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
 
         for posting in journal.postings() {
             let updated = sqlx::query(
@@ -596,7 +612,7 @@ impl ProjectionStore for PgLedgerTransaction<'_> {
             .bind(journal.recorded_at())
             .execute(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
             if updated.rows_affected() != 1 {
                 return Err(LedgerError::not_found());
             }
@@ -622,7 +638,7 @@ impl ProjectionStore for PgLedgerTransaction<'_> {
             .bind(user_id.into_uuid())
             .fetch_optional(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)
+            .map_err(LedgerError::storage)
     }
 }
 
@@ -631,6 +647,7 @@ const RECONCILIATION_COLUMNS: &str = "id, user_id, account_id, observation_id, s
      currency, captured_ledger_balance, captured_balance_version, delta, status, version, \
      approval_journal_id, reason, decision_actor_kind, decision_actor_reference, created_at, updated_at";
 
+#[async_trait]
 impl ReconciliationStore for PgLedgerTransaction<'_> {
     async fn lock_reconciliation_stream(
         &mut self,
@@ -649,7 +666,7 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
             .bind(identity)
             .execute(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
         #[derive(FromRow)]
         struct Row {
             latest_observed_at: chrono::DateTime<chrono::Utc>,
@@ -663,7 +680,7 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
              AND source_kind = $3 AND source_stream_id = $4 FOR UPDATE",
         ).bind(user_id.into_uuid()).bind(account_id.into_uuid()).bind(source.source_kind())
          .bind(source.stream_id()).fetch_optional(&mut *self.transaction).await
-         .map_err(LedgerError::database).map(|row| row.map(|row| ReconciliationStream {
+         .map_err(LedgerError::storage).map(|row| row.map(|row| ReconciliationStream {
              latest_observed_at: row.latest_observed_at, latest_source_sequence: row.latest_source_sequence,
              latest_observation_id: ObservationId::new(row.latest_observation_id),
              active_case_id: row.active_case_id.map(ReconciliationCaseId::new),
@@ -683,7 +700,7 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
         .bind(observation_id.into_uuid())
         .fetch_optional(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?
+        .map_err(LedgerError::storage)?
         .map(ReconciliationRow::into_domain)
         .transpose()
     }
@@ -703,7 +720,7 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
         .bind(case_id.into_uuid())
         .fetch_optional(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?
+        .map_err(LedgerError::storage)?
         .map(ReconciliationRow::into_domain)
         .transpose()
     }
@@ -733,7 +750,7 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
          .bind(case.captured_balance_version().get()).bind(case.delta().amount()).bind(case.status().as_str())
          .bind(case.version().get()).bind(case.approval_journal_id().map(JournalEntryId::into_uuid))
          .bind(case.reason()).bind(actor_kind).bind(actor_reference).bind(case.created_at()).bind(case.updated_at())
-         .execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+         .execute(&mut *self.transaction).await.map_err(LedgerError::storage)?;
         Ok(())
     }
 
@@ -762,7 +779,7 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
         .bind(case.version().get() - 1)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         if updated.rows_affected() != 1 {
             return Err(LedgerError::version_conflict());
         }
@@ -788,11 +805,12 @@ impl ReconciliationStore for PgLedgerTransaction<'_> {
         ).bind(user_id.into_uuid()).bind(account_id.into_uuid()).bind(source.source_kind()).bind(source.stream_id())
          .bind(stream.latest_observed_at).bind(stream.latest_source_sequence)
          .bind(stream.latest_observation_id.into_uuid()).bind(stream.active_case_id.map(ReconciliationCaseId::into_uuid))
-         .bind(now).execute(&mut *self.transaction).await.map_err(LedgerError::database)?;
+         .bind(now).execute(&mut *self.transaction).await.map_err(LedgerError::storage)?;
         Ok(())
     }
 }
 
+#[async_trait]
 impl CommandReceiptStore for PgLedgerTransaction<'_> {
     async fn find_receipt(
         &mut self,
@@ -807,7 +825,7 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
                 .bind(lock_identity)
                 .execute(&mut *self.transaction)
                 .await
-                .map_err(LedgerError::database)?;
+                .map_err(LedgerError::storage)?;
         }
         #[derive(FromRow)]
         struct ReceiptRow {
@@ -828,7 +846,7 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
             .bind(key.as_str())
             .fetch_optional(&mut *self.transaction)
             .await
-            .map_err(LedgerError::database)?;
+            .map_err(LedgerError::storage)?;
         row.map(|row| {
             let request_hash = <[u8; 32]>::try_from(row.request_hash)
                 .map_err(|_| LedgerError::persistence("stored receipt hash is invalid"))?;
@@ -863,7 +881,7 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         .bind(completed_at)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         Ok(())
     }
 
@@ -889,7 +907,7 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         .bind(completed_at)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         Ok(())
     }
 
@@ -912,7 +930,7 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
         .bind(completed_at)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         if updated.rows_affected() != 1 {
             return Err(LedgerError::not_found());
         }
@@ -920,6 +938,7 @@ impl CommandReceiptStore for PgLedgerTransaction<'_> {
     }
 }
 
+#[async_trait]
 impl AuditStore for PgLedgerTransaction<'_> {
     async fn append_audit(&mut self, record: &AuditRecord) -> Result<(), LedgerError> {
         sqlx::query(
@@ -941,11 +960,12 @@ impl AuditStore for PgLedgerTransaction<'_> {
         .bind(record.recorded_at)
         .execute(&mut *self.transaction)
         .await
-        .map_err(LedgerError::database)?;
+        .map_err(LedgerError::storage)?;
         Ok(())
     }
 }
 
+#[async_trait]
 impl LedgerOutboxStore for PgLedgerTransaction<'_> {
     async fn append_outbox(&mut self, event: &IntegrationEvent) -> Result<(), LedgerError> {
         PgOutboxWriter::from_transaction(&mut self.transaction)

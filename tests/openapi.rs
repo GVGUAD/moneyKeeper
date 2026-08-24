@@ -5,7 +5,7 @@ use serde_json::Value;
 const OPENAPI: &str = include_str!("../static/openapi.json");
 
 fn contract() -> Value {
-    serde_json::from_str(OPENAPI).expect("Finance V2 OpenAPI must be valid JSON")
+    serde_json::from_str(OPENAPI).expect("Moneykeeper OpenAPI must be valid JSON")
 }
 
 #[test]
@@ -213,4 +213,112 @@ fn optimistic_concurrency_fields_are_required() {
             .keys()
             .all(|name| !name.to_ascii_lowercase().contains("delete"))
     );
+}
+
+#[test]
+fn android_contract_is_fully_typed_and_cursor_paged() {
+    let document = contract();
+    let schemas = document["components"]["schemas"].as_object().unwrap();
+    for schema in [
+        "LedgerAccount",
+        "AccountResult",
+        "Posting",
+        "JournalAnnotation",
+        "JournalRelations",
+        "Journal",
+        "ProviderConnection",
+        "ProviderResource",
+        "ResourceMapping",
+        "SyncJob",
+        "ConnectMonobank",
+        "CreateResourceMapping",
+        "ChangeResourceMapping",
+        "RequestSync",
+        "ReverseTransaction",
+        "ReplaceTransaction",
+    ] {
+        assert!(schemas.contains_key(schema), "missing {schema} schema");
+    }
+
+    let journal_required = schemas["Journal"]["required"].as_array().unwrap();
+    for field in [
+        "annotation",
+        "postings",
+        "reversed_by_journal_id",
+        "replaced_by_journal_id",
+    ] {
+        assert!(journal_required.iter().any(|value| value == field));
+    }
+    let annotation_required = schemas["JournalAnnotation"]["required"].as_array().unwrap();
+    for field in [
+        "version",
+        "description",
+        "category_id",
+        "note",
+        "tags",
+        "budget_visibility",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(annotation_required.iter().any(|value| value == field));
+    }
+    assert!(
+        schemas["ProviderResource"]["properties"]
+            .get("current_mapping")
+            .is_some()
+    );
+
+    for path in ["/transactions", "/accounts/{id}/activity"] {
+        let parameters = document["paths"][path]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        for parameter in ["AfterOccurredAt", "AfterSequence", "ActivityLimit"] {
+            assert!(
+                parameters.iter().any(|value| {
+                    value["$ref"] == format!("#/components/parameters/{parameter}")
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn every_android_financial_command_requires_an_idempotency_key() {
+    let document = contract();
+    for (method, path) in [
+        ("post", "/accounts"),
+        ("patch", "/accounts/{id}"),
+        ("post", "/accounts/{id}/archive"),
+        ("post", "/accounts/{id}/restore"),
+        ("post", "/transactions"),
+        ("patch", "/transactions/{id}/annotation"),
+        ("post", "/transactions/{id}/reversals"),
+        ("post", "/transactions/{id}/replacements"),
+        ("post", "/provider-connections/monobank"),
+        ("post", "/provider-connections/{id}/disconnect"),
+        ("post", "/provider-connections/{id}/resource-mappings"),
+        (
+            "post",
+            "/provider-connections/{id}/resource-mappings/{mapping_id}/deactivations",
+        ),
+        (
+            "post",
+            "/provider-connections/{id}/resource-mappings/{mapping_id}/replacements",
+        ),
+        ("post", "/provider-connections/{id}/sync-jobs"),
+    ] {
+        let parameters = document["paths"][path][method]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(
+            parameters
+                .iter()
+                .any(|value| { value["$ref"] == "#/components/parameters/IdempotencyKey" }),
+            "{method} {path} must require Idempotency-Key"
+        );
+        assert!(
+            document["paths"][path][method].get("requestBody").is_some(),
+            "{method} {path} must declare its request body"
+        );
+    }
 }

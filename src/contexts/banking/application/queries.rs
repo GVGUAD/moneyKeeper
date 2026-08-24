@@ -175,7 +175,7 @@ pub struct BalanceObservedV1 {
 #[derive(Debug)]
 pub struct WebhookRotationResult {
     pub connection_id: ProviderConnectionId,
-    pub credential: super::super::infrastructure::WebhookCredential,
+    pub credential: super::ports::WebhookCredential,
     pub desired_version: i64,
     pub connection_version: ConnectionVersion,
 }
@@ -197,6 +197,7 @@ pub struct ExternalResourceView {
     pub masked_label: String,
     pub discovery_state: String,
     pub version: i64,
+    pub current_mapping: Option<ResourceMappingView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

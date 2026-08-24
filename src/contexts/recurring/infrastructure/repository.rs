@@ -6,10 +6,12 @@ use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 use super::super::{
+    application::ports::MatchAllocation,
     domain::{SubscriptionId, SubscriptionStatus},
     public::SubscriptionView,
 };
 use crate::shared_kernel::UserId;
+use async_trait::async_trait;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StoreError {
@@ -27,11 +29,163 @@ pub(crate) enum StoreError {
     Database(#[from] sqlx::Error),
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct MatchAllocation {
-    pub journal_entry_id: Uuid,
-    pub amount: Decimal,
-    pub currency: String,
+fn facade_error(error: StoreError) -> super::super::public::RecurringFacadeError {
+    use super::super::public::RecurringFacadeError;
+
+    match error {
+        StoreError::NotFound => RecurringFacadeError::not_found(StoreError::NotFound),
+        StoreError::VersionConflict => {
+            RecurringFacadeError::version_conflict(StoreError::VersionConflict)
+        }
+        StoreError::IdempotencyConflict => {
+            RecurringFacadeError::idempotency_conflict(StoreError::IdempotencyConflict)
+        }
+        StoreError::CategorizationPending => {
+            RecurringFacadeError::categorization_pending(StoreError::CategorizationPending)
+        }
+        StoreError::Invalid(message) => {
+            RecurringFacadeError::invalid_with_message(message, StoreError::Invalid(message))
+        }
+        StoreError::Database(error) => RecurringFacadeError::storage(error),
+    }
+}
+
+fn consumer_error(error: StoreError) -> super::super::public::RecurringConsumerError {
+    use super::super::public::RecurringConsumerError;
+
+    match error {
+        StoreError::Invalid(message) => {
+            RecurringConsumerError::rejected(message, StoreError::Invalid(message))
+        }
+        StoreError::IdempotencyConflict => RecurringConsumerError::rejected(
+            "recurring event conflicts with an earlier payload",
+            StoreError::IdempotencyConflict,
+        ),
+        error => RecurringConsumerError::persistence(error),
+    }
+}
+
+#[async_trait]
+impl super::super::application::ports::RecurringRepository for PgRecurringStore {
+    async fn list_subscriptions(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<SubscriptionView>, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::list_subscriptions(self, user)
+            .await
+            .map_err(super::super::public::RecurringFacadeError::storage)
+    }
+
+    async fn get_subscription(
+        &self,
+        user: UserId,
+        id: Uuid,
+    ) -> Result<Option<SubscriptionView>, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::get_subscription(self, user, id)
+            .await
+            .map_err(super::super::public::RecurringFacadeError::storage)
+    }
+
+    async fn update_subscription(
+        &self,
+        record: super::super::application::ports::UpdateSubscriptionRecord<'_>,
+    ) -> Result<Value, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::update_subscription(
+            self,
+            record.user,
+            record.id,
+            record.expected,
+            record.status,
+            record.category_id,
+            record.key,
+            record.hash,
+        )
+        .await
+        .map_err(facade_error)
+    }
+
+    async fn charges(
+        &self,
+        user: UserId,
+        subscription_id: Uuid,
+    ) -> Result<Vec<Value>, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::charges(self, user, subscription_id)
+            .await
+            .map_err(super::super::public::RecurringFacadeError::storage)
+    }
+
+    async fn forecast(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<Value>, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::forecast(self, user)
+            .await
+            .map_err(super::super::public::RecurringFacadeError::storage)
+    }
+
+    async fn create_match(
+        &self,
+        user: UserId,
+        evidence_id: Uuid,
+        expected: u64,
+        allocations: Vec<MatchAllocation>,
+        key: &str,
+        hash: [u8; 32],
+    ) -> Result<Value, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::create_match(self, user, evidence_id, expected, allocations, key, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn reject(
+        &self,
+        user: UserId,
+        evidence_id: Uuid,
+        expected: u64,
+        reason: &str,
+        key: &str,
+        hash: [u8; 32],
+    ) -> Result<Value, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::reject(self, user, evidence_id, expected, reason, key, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn unmatch(
+        &self,
+        user: UserId,
+        evidence_id: Uuid,
+        match_id: Uuid,
+        expected: u64,
+        key: &str,
+        hash: [u8; 32],
+    ) -> Result<Value, super::super::public::RecurringFacadeError> {
+        PgRecurringStore::unmatch(self, user, evidence_id, match_id, expected, key, hash)
+            .await
+            .map_err(facade_error)
+    }
+
+    async fn consume_mail_evidence(
+        &self,
+        event_id: Uuid,
+        sequence: u64,
+        event: crate::contexts::mail::public::ReceiptEvidenceRecordedV1,
+    ) -> Result<super::super::public::ConsumeResult, super::super::public::RecurringConsumerError>
+    {
+        PgRecurringStore::consume_mail_evidence(self, event_id, sequence, event)
+            .await
+            .map_err(consumer_error)
+    }
+
+    async fn consume_ledger_event(
+        &self,
+        event: crate::contexts::ledger::public::LedgerEventV1,
+    ) -> Result<super::super::public::ConsumeResult, super::super::public::RecurringConsumerError>
+    {
+        PgRecurringStore::consume_ledger_event(self, event)
+            .await
+            .map_err(consumer_error)
+    }
 }
 
 #[derive(Clone)]

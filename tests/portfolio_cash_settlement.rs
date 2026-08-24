@@ -1,120 +1,15 @@
 use chrono::Utc;
 use moneykeeper::{
     contexts::{ledger::public::*, portfolio::public::*},
-    integration::process_managers::portfolio_cash_settlement::*,
     shared_kernel::{CorrelationId, CurrencyCode, UserId},
 };
 use rust_decimal_macros::dec;
-mod v2_test_support;
-use std::{
-    future::Future,
-    sync::{Arc, Mutex},
-};
-
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("fake failure")]
-struct FakeError;
-#[derive(Clone, Default)]
-struct FakeLedger {
-    calls: Arc<Mutex<Vec<String>>>,
-    cancelled: Arc<Mutex<bool>>,
-}
-impl PortfolioLedger for FakeLedger {
-    type Error = FakeError;
-    fn record_cash_control_settlement(
-        &self,
-        c: RecordCashControlSettlement,
-    ) -> impl Future<Output = Result<InternalAccountingResult, Self::Error>> + Send {
-        let this = self.clone();
-        async move {
-            this.calls.lock().unwrap().push(c.source_operation_id);
-            let cancelled = *this.cancelled.lock().unwrap();
-            Ok(output(
-                if cancelled {
-                    None
-                } else {
-                    Some(JournalEntryId::generate())
-                },
-                cancelled,
-                c.metadata.correlation_id,
-            ))
-        }
-    }
-    fn cancel_or_reverse_cash_control_settlement(
-        &self,
-        c: CancelOrReverseCashControlSettlement,
-    ) -> impl Future<Output = Result<InternalAccountingResult, Self::Error>> + Send {
-        let this = self.clone();
-        async move {
-            this.calls.lock().unwrap().push(c.source_operation_id);
-            *this.cancelled.lock().unwrap() = true;
-            Ok(output(None, true, c.metadata.correlation_id))
-        }
-    }
-}
-fn output(
-    journal: Option<JournalEntryId>,
-    cancelled: bool,
-    correlation: CorrelationId,
-) -> InternalAccountingResult {
-    InternalAccountingResult {
-        journal_entry_id: journal,
-        effects: vec![],
-        projection_versions: vec![],
-        replayed: false,
-        cancelled,
-        outbox_correlation_id: correlation,
-    }
-}
-fn process() -> PortfolioCashSettlementProcess {
-    PortfolioCashSettlementProcess {
-        transaction_id: PortfolioTransactionId::generate(),
-        user_id: UserId::generate(),
-        cash_account_id: LedgerAccountId::generate(),
-        control_account_id: LedgerAccountId::generate(),
-        amount: dec!(1000),
-        currency: CurrencyCode::new("UAH").unwrap(),
-        cash_flow: CashFlowDirection::Outgoing,
-        state: PortfolioCashProcessState::Pending,
-        correlation_id: CorrelationId::generate(),
-        journal_id: None,
-        reversal_journal_id: None,
-        last_error: None,
-    }
-}
-
-#[tokio::test]
-async fn posting_uses_stable_source_operation_and_is_idempotent() {
-    let ledger = FakeLedger::default();
-    let coordinator = PortfolioCashSettlementCoordinator::new(ledger.clone());
-    let mut p = process();
-    let key = p.source_operation_id();
-    coordinator.post(&mut p, Utc::now()).await.unwrap();
-    coordinator.post(&mut p, Utc::now()).await.unwrap();
-    assert_eq!(p.state, PortfolioCashProcessState::Posted);
-    assert_eq!(ledger.calls.lock().unwrap().as_slice(), [key]);
-}
-#[tokio::test]
-async fn reversal_before_post_cancels_without_fabricating_a_journal() {
-    let ledger = FakeLedger::default();
-    let coordinator = PortfolioCashSettlementCoordinator::new(ledger);
-    let mut p = process();
-    coordinator
-        .cancel_or_reverse(&mut p, "cancel".into(), Utc::now())
-        .await
-        .unwrap();
-    coordinator.post(&mut p, Utc::now()).await.unwrap();
-    assert_eq!(
-        p.state,
-        PortfolioCashProcessState::CancelledNoFinancialEffect
-    );
-    assert!(p.journal_id.is_none());
-}
+mod test_support;
 
 #[tokio::test]
 async fn durable_worker_posts_and_reverses_one_correlated_ledger_effect() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let user = UserId::generate();
     let now = Utc::now();
     let currency = CurrencyCode::new("UAH").unwrap();
@@ -202,8 +97,8 @@ async fn durable_worker_posts_and_reverses_one_correlated_ledger_effect() {
         })
         .await
         .unwrap();
-    let workers = moneykeeper::bootstrap::v2::phase7_workers(&verified);
-    assert!(workers.run_cash_once().await.unwrap().records == 1);
+    let workers = moneykeeper::bootstrap::portfolio_settlement_runner(&verified);
+    assert!(workers.run_once().await.unwrap().records == 1);
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             "SELECT state FROM portfolio.cash_settlement_processes WHERE transaction_id=$1"
@@ -230,7 +125,7 @@ async fn durable_worker_posts_and_reverses_one_correlated_ledger_effect() {
         })
         .await
         .unwrap();
-    workers.run_cash_once().await.unwrap();
+    workers.run_once().await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, String>(
             "SELECT state FROM portfolio.cash_settlement_processes WHERE transaction_id=$1"

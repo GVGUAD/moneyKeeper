@@ -1,4 +1,4 @@
-mod v2_test_support;
+mod test_support;
 
 use std::sync::Arc;
 
@@ -6,10 +6,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use moneykeeper::contexts::banking::{
     self,
-    public::{
-        Aes256CredentialCipher, ConnectProvider, ProviderClient, ProviderCredential,
-        ProviderFailure,
-    },
+    adapters::Aes256CredentialCipher,
+    public::{ConnectProvider, ProviderClient, ProviderCredential, ProviderFailure},
 };
 use moneykeeper::shared_kernel::{CorrelationId, IdempotencyKey, UserId};
 use sqlx::Row;
@@ -41,8 +39,8 @@ impl ProviderClient for FixtureProvider {
 
 #[tokio::test]
 async fn credential_validation_discovers_distinct_resources_and_activates_connection() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let currencies = moneykeeper::bootstrap::v2::supporting_contexts(&verified).currencies;
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let currencies = moneykeeper::bootstrap::build_contexts(&verified).currencies;
     let facade = banking::build_with_adapters(
         &verified,
         Arc::new(Aes256CredentialCipher::new("test-key", [4_u8; 32]).unwrap()),
@@ -98,8 +96,8 @@ async fn credential_validation_discovers_distinct_resources_and_activates_connec
 
 #[tokio::test]
 async fn credential_is_encrypted_before_connection_commit_and_never_returned() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let currencies = moneykeeper::bootstrap::v2::supporting_contexts(&verified).currencies;
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let currencies = moneykeeper::bootstrap::build_contexts(&verified).currencies;
     let facade = banking::build_with_adapters(
         &verified,
         Arc::new(Aes256CredentialCipher::new("test-key", [9_u8; 32]).unwrap()),
@@ -145,7 +143,7 @@ async fn credential_is_encrypted_before_connection_commit_and_never_returned() {
 
 #[tokio::test]
 async fn schema_creates_banking_owned_tables_and_worker_indexes() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT table_name FROM information_schema.tables \
          WHERE table_schema = 'banking' ORDER BY table_name",
@@ -192,7 +190,7 @@ async fn schema_creates_banking_owned_tables_and_worker_indexes() {
 
 #[tokio::test]
 async fn schema_enforces_tenant_revision_and_encrypted_credential_constraints() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let user_id = Uuid::new_v4();
     let other_user = Uuid::new_v4();
     let connection_id = Uuid::new_v4();
@@ -291,7 +289,7 @@ async fn schema_enforces_tenant_revision_and_encrypted_credential_constraints() 
 
 #[tokio::test]
 async fn schema_uses_timestamptz_and_no_foreign_context_keys() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let wrong_timestamps: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM information_schema.columns \
          WHERE table_schema='banking' AND column_name LIKE '%_at' \

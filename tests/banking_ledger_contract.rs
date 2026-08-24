@@ -1,10 +1,11 @@
-mod v2_test_support;
+mod test_support;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Duration;
 use chrono::Utc;
+use moneykeeper::contexts::banking::adapters::Aes256CredentialCipher;
 use moneykeeper::contexts::{
     banking::{self, public::*},
     ledger::public::{AccountKind, AccountNature, OpenAccount},
@@ -27,8 +28,8 @@ impl ProviderClient for FixtureProvider {
 
 #[tokio::test]
 async fn mapping_existing_account_validates_public_ledger_contract_and_tenant() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let supporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let supporting = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = supporting.ledger;
     let banking = banking::build_with_ledger(
         &verified,
@@ -169,8 +170,8 @@ async fn mapping_existing_account_validates_public_ledger_contract_and_tenant() 
 
 #[tokio::test]
 async fn create_and_map_is_retry_safe_and_opens_provider_observed_account() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let supporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let supporting = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = supporting.ledger;
     let banking = banking::build_with_ledger(
         &verified,
@@ -232,8 +233,8 @@ async fn create_and_map_is_retry_safe_and_opens_provider_observed_account() {
 
 #[tokio::test]
 async fn provider_revisions_post_once_and_corrections_and_reversals_remain_visible() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let supporting = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let supporting = moneykeeper::bootstrap::build_contexts(&verified);
     let ledger = supporting.ledger;
     let banking = banking::build_with_ledger(
         &verified,

@@ -1,9 +1,11 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::shared_kernel::UserId;
 
+use super::application::CategoryRepository;
 use super::domain::Category;
 use super::public::{CategoryId, CategoryKind, CategoryLifecycle, ClassificationError};
 
@@ -41,12 +43,27 @@ pub(crate) struct PgCategoryCatalog {
 }
 
 impl PgCategoryCatalog {
-    /// Creates a category capability backed by a Finance V2 pool.
+    /// Creates a category capability backed by a Moneykeeper pool.
     pub(crate) fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+}
 
-    pub(crate) async fn insert(&self, category: &Category) -> Result<(), ClassificationError> {
+fn database_error(source: sqlx::Error) -> ClassificationError {
+    let duplicate = source.as_database_error().is_some_and(|error| {
+        error.code().as_deref() == Some("23505")
+            && error.constraint() == Some("categories_active_name_unique")
+    });
+    if duplicate {
+        ClassificationError::duplicate_name(source)
+    } else {
+        ClassificationError::storage(source)
+    }
+}
+
+#[async_trait]
+impl CategoryRepository for PgCategoryCatalog {
+    async fn insert(&self, category: &Category) -> Result<(), ClassificationError> {
         sqlx::query(
             "INSERT INTO classification.categories \
              (id, user_id, name, kind, lifecycle, version, created_at, updated_at) \
@@ -62,11 +79,11 @@ impl PgCategoryCatalog {
         .bind(category.updated_at())
         .execute(&self.pool)
         .await
-        .map_err(ClassificationError::database)?;
+        .map_err(database_error)?;
         Ok(())
     }
 
-    pub(crate) async fn find(
+    async fn find(
         &self,
         user_id: UserId,
         id: CategoryId,
@@ -79,15 +96,12 @@ impl PgCategoryCatalog {
         .bind(user_id.into_uuid())
         .fetch_optional(&self.pool)
         .await
-        .map_err(ClassificationError::database)?
+        .map_err(database_error)?
         .map(CategoryRow::into_domain)
         .transpose()
     }
 
-    pub(crate) async fn list_for_user(
-        &self,
-        user_id: UserId,
-    ) -> Result<Vec<Category>, ClassificationError> {
+    async fn list_for_user(&self, user_id: UserId) -> Result<Vec<Category>, ClassificationError> {
         sqlx::query_as::<_, CategoryRow>(
             "SELECT id, user_id, name, kind, lifecycle, version, created_at, updated_at \
              FROM classification.categories WHERE user_id = $1 \
@@ -96,13 +110,13 @@ impl PgCategoryCatalog {
         .bind(user_id.into_uuid())
         .fetch_all(&self.pool)
         .await
-        .map_err(ClassificationError::database)?
+        .map_err(database_error)?
         .into_iter()
         .map(CategoryRow::into_domain)
         .collect()
     }
 
-    pub(crate) async fn update(
+    async fn update(
         &self,
         category: &Category,
         expected_version: i64,
@@ -122,7 +136,7 @@ impl PgCategoryCatalog {
         .bind(expected_version)
         .execute(&self.pool)
         .await
-        .map_err(ClassificationError::database)?;
+        .map_err(database_error)?;
         if result.rows_affected() == 0 {
             return Err(ClassificationError::version_conflict());
         }

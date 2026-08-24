@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 
 use super::super::{
+    application::FxObservationRepository,
     domain::{ExchangeRate, FxError},
     public::{CurrencyError, RecordFxObservation},
 };

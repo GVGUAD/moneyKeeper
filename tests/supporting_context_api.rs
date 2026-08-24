@@ -5,8 +5,8 @@ use axum_test::TestServer;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 const TEST_KID: &str = "test-key-1";
 
@@ -62,9 +62,9 @@ fn test_jwt(user_id: Uuid) -> String {
 }
 
 async fn app(user_id: Uuid) -> TestServer {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let router = moneykeeper::bootstrap::v2::router(&verified, Arc::new(test_jwks()));
+    let router = moneykeeper::bootstrap::router(&verified, Arc::new(test_jwks()));
     let mut server = TestServer::new(router).unwrap();
     server.add_header(AUTHORIZATION, format!("Bearer {}", test_jwt(user_id)));
     server
@@ -72,9 +72,9 @@ async fn app(user_id: Uuid) -> TestServer {
 
 #[tokio::test]
 async fn every_supporting_route_requires_an_authenticated_user() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let server = TestServer::new(moneykeeper::bootstrap::v2::router(
+    let server = TestServer::new(moneykeeper::bootstrap::router(
         &verified,
         Arc::new(test_jwks()),
     ))

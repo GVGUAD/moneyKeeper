@@ -2,23 +2,23 @@
 
 use std::fmt;
 use std::future::Future;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
 use crate::shared_kernel::UserId;
 
 use super::application;
-use super::infrastructure::PgCategoryCatalog;
 
 /// Public Classification facade with privately assembled persistence.
 #[derive(Clone)]
 pub struct CategoryCatalogFacade {
-    adapter: PgCategoryCatalog,
+    repository: Arc<dyn application::CategoryRepository>,
 }
 
 impl CategoryCatalogFacade {
-    pub(crate) fn new(adapter: PgCategoryCatalog) -> Self {
-        Self { adapter }
+    pub(crate) fn new(repository: Arc<dyn application::CategoryRepository>) -> Self {
+        Self { repository }
     }
 }
 
@@ -152,7 +152,7 @@ impl CategoryCatalog for CategoryCatalogFacade {
         command: CategoryCommand,
         now: DateTime<Utc>,
     ) -> Result<CategoryView, ClassificationError> {
-        application::create(&self.adapter, command, now).await
+        application::create(self.repository.as_ref(), command, now).await
     }
 
     async fn get(
@@ -160,11 +160,11 @@ impl CategoryCatalog for CategoryCatalogFacade {
         user_id: UserId,
         id: CategoryId,
     ) -> Result<CategoryView, ClassificationError> {
-        application::get(&self.adapter, user_id, id).await
+        application::get(self.repository.as_ref(), user_id, id).await
     }
 
     async fn list(&self, user_id: UserId) -> Result<Vec<CategoryView>, ClassificationError> {
-        application::list(&self.adapter, user_id).await
+        application::list(self.repository.as_ref(), user_id).await
     }
 
     async fn rename(
@@ -175,7 +175,15 @@ impl CategoryCatalog for CategoryCatalogFacade {
         expected_version: i64,
         now: DateTime<Utc>,
     ) -> Result<CategoryView, ClassificationError> {
-        application::rename(&self.adapter, user_id, id, name, expected_version, now).await
+        application::rename(
+            self.repository.as_ref(),
+            user_id,
+            id,
+            name,
+            expected_version,
+            now,
+        )
+        .await
     }
 
     async fn archive(
@@ -185,7 +193,7 @@ impl CategoryCatalog for CategoryCatalogFacade {
         expected_version: i64,
         now: DateTime<Utc>,
     ) -> Result<CategoryView, ClassificationError> {
-        application::archive(&self.adapter, user_id, id, expected_version, now).await
+        application::archive(self.repository.as_ref(), user_id, id, expected_version, now).await
     }
 
     async fn restore(
@@ -195,7 +203,7 @@ impl CategoryCatalog for CategoryCatalogFacade {
         expected_version: i64,
         now: DateTime<Utc>,
     ) -> Result<CategoryView, ClassificationError> {
-        application::restore(&self.adapter, user_id, id, expected_version, now).await
+        application::restore(self.repository.as_ref(), user_id, id, expected_version, now).await
     }
 
     async fn require_active(
@@ -203,7 +211,7 @@ impl CategoryCatalog for CategoryCatalogFacade {
         user_id: UserId,
         id: CategoryId,
     ) -> Result<CategoryView, ClassificationError> {
-        application::require_active(&self.adapter, user_id, id).await
+        application::require_active(self.repository.as_ref(), user_id, id).await
     }
 }
 
@@ -251,18 +259,15 @@ impl ClassificationError {
         Self::new(ClassificationErrorKind::Persistence, message)
     }
 
-    pub(crate) fn database(source: sqlx::Error) -> Self {
-        let duplicate = source.as_database_error().is_some_and(|error| {
-            error.code().as_deref() == Some("23505")
-                && error.constraint() == Some("categories_active_name_unique")
-        });
-        if duplicate {
-            return Self::new(
-                ClassificationErrorKind::DuplicateName,
-                "an active category with that name already exists",
-            )
-            .with_source(source);
-        }
+    pub(crate) fn duplicate_name(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::new(
+            ClassificationErrorKind::DuplicateName,
+            "an active category with that name already exists",
+        )
+        .with_source(source)
+    }
+
+    pub(crate) fn storage(source: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::persistence("classification storage is unavailable").with_source(source)
     }
 

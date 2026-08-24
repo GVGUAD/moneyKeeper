@@ -2,6 +2,7 @@
 
 pub(crate) mod accounts;
 pub(crate) mod annotations;
+pub(crate) mod capabilities;
 mod commit;
 pub(crate) mod corrections;
 pub(crate) mod internal_commands;

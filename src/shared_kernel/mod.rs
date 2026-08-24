@@ -1,4 +1,4 @@
-//! Business-neutral primitives shared by Finance V2 bounded contexts.
+//! Business-neutral primitives shared by Moneykeeper bounded contexts.
 //!
 //! This module intentionally contains no repositories, provider concepts, or
 //! context-specific aggregate identifiers.

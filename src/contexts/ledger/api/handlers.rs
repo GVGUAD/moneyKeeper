@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::api::state::LedgerApiState;
-use crate::api::v2::{AuthenticatedUser, V2ApiError, V2Json};
+use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::classification::public::CategoryId;
 use crate::contexts::ledger::public::{
     AccountVersion, ActivityCursor, AnnotationChanges, AnnotationVersion, ApproveReconciliation,
@@ -30,13 +30,13 @@ pub(crate) async fn open_account(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     headers: HeaderMap,
-    V2Json(request): V2Json<OpenAccountRequest>,
+    ApiJson(request): ApiJson<OpenAccountRequest>,
 ) -> Result<
     (
         StatusCode,
         Json<crate::contexts::ledger::public::AccountResult>,
     ),
-    V2ApiError,
+    ApiError,
 > {
     let key = idempotency_key(&headers)?;
     let currency = currency(&request.currency)?;
@@ -63,7 +63,7 @@ pub(crate) async fn open_account(
 pub(crate) async fn list_accounts(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
-) -> Result<Json<Vec<crate::contexts::ledger::public::AccountView>>, V2ApiError> {
+) -> Result<Json<Vec<crate::contexts::ledger::public::AccountView>>, ApiError> {
     state
         .ledger
         .list_accounts(user_id)
@@ -76,7 +76,7 @@ pub(crate) async fn get_account(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<crate::contexts::ledger::public::AccountView>, V2ApiError> {
+) -> Result<Json<crate::contexts::ledger::public::AccountView>, ApiError> {
     let mut account = state
         .ledger
         .get_account(user_id, LedgerAccountId::new(id))
@@ -86,7 +86,7 @@ pub(crate) async fn get_account(
         let summary = banking
             .provider_account_summary(user_id, account.id)
             .await
-            .map_err(|_| V2ApiError::internal())?;
+            .map_err(|_| ApiError::internal())?;
         account.provider_reported = summary.provider_reported;
         account.available = summary.available;
         account.reconciliation_difference = summary
@@ -101,8 +101,8 @@ pub(crate) async fn rename_account(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<RenameAccountRequest>,
-) -> Result<Json<crate::contexts::ledger::public::AccountResult>, V2ApiError> {
+    ApiJson(request): ApiJson<RenameAccountRequest>,
+) -> Result<Json<crate::contexts::ledger::public::AccountResult>, ApiError> {
     let command = RenameAccount {
         user_id,
         account_id: LedgerAccountId::new(id),
@@ -125,8 +125,8 @@ pub(crate) async fn archive_account(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<ExpectedAccountVersionRequest>,
-) -> Result<Json<crate::contexts::ledger::public::AccountResult>, V2ApiError> {
+    ApiJson(request): ApiJson<ExpectedAccountVersionRequest>,
+) -> Result<Json<crate::contexts::ledger::public::AccountResult>, ApiError> {
     state
         .ledger
         .archive_account(ArchiveAccount {
@@ -147,8 +147,8 @@ pub(crate) async fn restore_account(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<ExpectedAccountVersionRequest>,
-) -> Result<Json<crate::contexts::ledger::public::AccountResult>, V2ApiError> {
+    ApiJson(request): ApiJson<ExpectedAccountVersionRequest>,
+) -> Result<Json<crate::contexts::ledger::public::AccountResult>, ApiError> {
     state
         .ledger
         .restore_account(RestoreAccount {
@@ -169,7 +169,7 @@ pub(crate) async fn account_activity(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     Query(query): Query<ActivityQuery>,
-) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, V2ApiError> {
+) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
     let after = cursor(&query)?;
     state
         .ledger
@@ -188,13 +188,13 @@ pub(crate) async fn record_transaction(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     headers: HeaderMap,
-    V2Json(request): V2Json<RecordTransactionRequest>,
+    ApiJson(request): ApiJson<RecordTransactionRequest>,
 ) -> Result<
     (
         StatusCode,
         Json<crate::contexts::ledger::public::TransactionResult>,
     ),
-    V2ApiError,
+    ApiError,
 > {
     let amount = money(&state, &request.amount).await?;
     let tags = NormalizedTags::new(request.tags).map_err(map_ledger_error)?;
@@ -224,7 +224,7 @@ pub(crate) async fn list_transactions(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     Query(query): Query<ActivityQuery>,
-) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, V2ApiError> {
+) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
     state
         .ledger
         .list_journals(user_id, cursor(&query)?, query.limit.unwrap_or(50))
@@ -237,7 +237,7 @@ pub(crate) async fn get_transaction(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<crate::contexts::ledger::public::JournalView>, V2ApiError> {
+) -> Result<Json<crate::contexts::ledger::public::JournalView>, ApiError> {
     state
         .ledger
         .get_journal(user_id, JournalEntryId::new(id))
@@ -251,12 +251,12 @@ pub(crate) async fn update_annotation(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<AnnotationRequest>,
-) -> Result<Json<crate::contexts::ledger::public::AnnotationResult>, V2ApiError> {
+    ApiJson(request): ApiJson<AnnotationRequest>,
+) -> Result<Json<crate::contexts::ledger::public::AnnotationResult>, ApiError> {
     if request.clear_category && request.category_id.is_some()
         || request.clear_note && request.note.is_some()
     {
-        return Err(V2ApiError::bad_request(
+        return Err(ApiError::bad_request(
             "clear flags conflict when values are present",
         ));
     }
@@ -305,13 +305,13 @@ pub(crate) async fn reverse_transaction(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<ReverseRequest>,
+    ApiJson(request): ApiJson<ReverseRequest>,
 ) -> Result<
     (
         StatusCode,
         Json<crate::contexts::ledger::public::FinancialChangeResult>,
     ),
-    V2ApiError,
+    ApiError,
 > {
     let result = state
         .ledger
@@ -334,13 +334,13 @@ pub(crate) async fn replace_transaction(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<ReplaceRequest>,
+    ApiJson(request): ApiJson<ReplaceRequest>,
 ) -> Result<
     (
         StatusCode,
         Json<crate::contexts::ledger::public::ReplacementResult>,
     ),
-    V2ApiError,
+    ApiError,
 > {
     let amount = money(&state, &request.amount).await?;
     let tags = NormalizedTags::new(request.tags).map_err(map_ledger_error)?;
@@ -371,13 +371,13 @@ pub(crate) async fn transfer(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     headers: HeaderMap,
-    V2Json(request): V2Json<TransferRequest>,
+    ApiJson(request): ApiJson<TransferRequest>,
 ) -> Result<
     (
         StatusCode,
         Json<crate::contexts::ledger::public::TransferResult>,
     ),
-    V2ApiError,
+    ApiError,
 > {
     let source_amount = money(&state, &request.source_amount).await?;
     let target_amount = money(&state, &request.target_amount).await?;
@@ -391,7 +391,7 @@ pub(crate) async fn transfer(
         .implied_rate
         .map(|value| value.parse::<Decimal>())
         .transpose()
-        .map_err(|_| V2ApiError::bad_request("invalid decimal string"))?
+        .map_err(|_| ApiError::bad_request("invalid decimal string"))?
         .map(|value| value.normalize());
     let result = state
         .ledger
@@ -419,13 +419,13 @@ pub(crate) async fn correct_balance(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<BalanceCorrectionRequest>,
+    ApiJson(request): ApiJson<BalanceCorrectionRequest>,
 ) -> Result<
     (
         StatusCode,
         Json<crate::contexts::ledger::public::FinancialChangeResult>,
     ),
-    V2ApiError,
+    ApiError,
 > {
     let target = money(&state, &request.target_display_balance).await?;
     let result = state
@@ -450,7 +450,7 @@ pub(crate) async fn correct_balance(
 pub(crate) async fn list_reconciliations(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
-) -> Result<Json<Vec<crate::contexts::ledger::public::ReconciliationView>>, V2ApiError> {
+) -> Result<Json<Vec<crate::contexts::ledger::public::ReconciliationView>>, ApiError> {
     state
         .ledger
         .list_reconciliations(user_id)
@@ -463,7 +463,7 @@ pub(crate) async fn get_reconciliation(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<crate::contexts::ledger::public::ReconciliationView>, V2ApiError> {
+) -> Result<Json<crate::contexts::ledger::public::ReconciliationView>, ApiError> {
     state
         .ledger
         .get_reconciliation(user_id, ReconciliationCaseId::new(id))
@@ -477,8 +477,8 @@ pub(crate) async fn approve_reconciliation(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<ApproveReconciliationRequest>,
-) -> Result<Json<crate::contexts::ledger::public::ReconciliationResult>, V2ApiError> {
+    ApiJson(request): ApiJson<ApproveReconciliationRequest>,
+) -> Result<Json<crate::contexts::ledger::public::ReconciliationResult>, ApiError> {
     state
         .ledger
         .approve_reconciliation(ApproveReconciliation {
@@ -504,8 +504,8 @@ pub(crate) async fn dismiss_reconciliation(
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    V2Json(request): V2Json<DismissReconciliationRequest>,
-) -> Result<Json<crate::contexts::ledger::public::ReconciliationResult>, V2ApiError> {
+    ApiJson(request): ApiJson<DismissReconciliationRequest>,
+) -> Result<Json<crate::contexts::ledger::public::ReconciliationResult>, ApiError> {
     state
         .ledger
         .dismiss_reconciliation(DismissReconciliation {
@@ -523,21 +523,20 @@ pub(crate) async fn dismiss_reconciliation(
         .map_err(map_ledger_error)
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, V2ApiError> {
+fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, ApiError> {
     let value = headers
         .get("Idempotency-Key")
-        .ok_or_else(|| V2ApiError::bad_request("missing Idempotency-Key header"))?
+        .ok_or_else(|| ApiError::bad_request("missing Idempotency-Key header"))?
         .to_str()
-        .map_err(|_| V2ApiError::bad_request("invalid Idempotency-Key header"))?;
-    IdempotencyKey::new(value)
-        .map_err(|_| V2ApiError::bad_request("invalid Idempotency-Key header"))
+        .map_err(|_| ApiError::bad_request("invalid Idempotency-Key header"))?;
+    IdempotencyKey::new(value).map_err(|_| ApiError::bad_request("invalid Idempotency-Key header"))
 }
 
-fn currency(value: &str) -> Result<CurrencyCode, V2ApiError> {
-    CurrencyCode::new(value).map_err(|_| V2ApiError::bad_request("invalid currency code"))
+fn currency(value: &str) -> Result<CurrencyCode, ApiError> {
+    CurrencyCode::new(value).map_err(|_| ApiError::bad_request("invalid currency code"))
 }
 
-async fn money(state: &LedgerApiState, request: &MoneyRequest) -> Result<Money, V2ApiError> {
+async fn money(state: &LedgerApiState, request: &MoneyRequest) -> Result<Money, ApiError> {
     let code = currency(&request.currency)?;
     money_for(state, request.amount.clone(), code).await
 }
@@ -546,7 +545,7 @@ async fn money_for(
     state: &LedgerApiState,
     amount: String,
     code: CurrencyCode,
-) -> Result<Money, V2ApiError> {
+) -> Result<Money, ApiError> {
     let definition = state
         .currencies
         .require_enabled(code.clone())
@@ -554,18 +553,18 @@ async fn money_for(
         .map_err(map_currency_error)?;
     let raw = amount
         .parse::<Decimal>()
-        .map_err(|_| V2ApiError::bad_request("invalid decimal string"))?;
+        .map_err(|_| ApiError::bad_request("invalid decimal string"))?;
     Money::new(raw, code.clone(), u32::from(definition.minor_unit))
-        .map_err(|_| V2ApiError::bad_request("invalid money amount"))?;
+        .map_err(|_| ApiError::bad_request("invalid money amount"))?;
     Money::new(raw.normalize(), code, u32::from(definition.minor_unit))
-        .map_err(|_| V2ApiError::bad_request("invalid money amount"))
+        .map_err(|_| ApiError::bad_request("invalid money amount"))
 }
 
-fn account_version(value: i64) -> Result<AccountVersion, V2ApiError> {
+fn account_version(value: i64) -> Result<AccountVersion, ApiError> {
     AccountVersion::new(value).map_err(map_ledger_error)
 }
 
-fn cursor(query: &ActivityQuery) -> Result<Option<ActivityCursor>, V2ApiError> {
+fn cursor(query: &ActivityQuery) -> Result<Option<ActivityCursor>, ApiError> {
     match (query.after_occurred_at, query.after_sequence) {
         (None, None) => Ok(None),
         (Some(occurred_at), Some(ledger_sequence)) if ledger_sequence > 0 => {
@@ -574,32 +573,32 @@ fn cursor(query: &ActivityQuery) -> Result<Option<ActivityCursor>, V2ApiError> {
                 ledger_sequence,
             }))
         }
-        _ => Err(V2ApiError::bad_request(
+        _ => Err(ApiError::bad_request(
             "cursor requires after_occurred_at and positive after_sequence",
         )),
     }
 }
 
-fn map_currency_error(error: CurrencyError) -> V2ApiError {
+fn map_currency_error(error: CurrencyError) -> ApiError {
     if error.is_not_found() || error.is_disabled() {
-        V2ApiError::bad_request("currency is unknown or inactive")
+        ApiError::bad_request("currency is unknown or inactive")
     } else {
-        V2ApiError::internal()
+        ApiError::internal()
     }
 }
 
-fn map_ledger_error(error: LedgerError) -> V2ApiError {
+fn map_ledger_error(error: LedgerError) -> ApiError {
     if error.is_not_found() || error.is_tenant_mismatch() {
-        V2ApiError::not_found("ledger resource was not found")
+        ApiError::not_found("ledger resource was not found")
     } else if error.is_version_conflict()
         || error.is_idempotency_conflict()
         || error.is_account_archived()
         || error.is_stale_observed_balance()
     {
-        V2ApiError::conflict("ledger conflict")
+        ApiError::conflict("ledger conflict")
     } else if error.is_persistence() {
-        V2ApiError::internal()
+        ApiError::internal()
     } else {
-        V2ApiError::bad_request("invalid ledger request")
+        ApiError::bad_request("invalid ledger request")
     }
 }

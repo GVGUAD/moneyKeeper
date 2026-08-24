@@ -5,4 +5,4 @@ mod dto;
 mod normalizer;
 
 pub use client::MonobankClient;
-pub use normalizer::{MonobankAdapter, NormalizedResource, NormalizedSnapshot};
+pub use normalizer::MonobankAdapter;

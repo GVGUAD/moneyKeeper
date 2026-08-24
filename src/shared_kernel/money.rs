@@ -21,10 +21,10 @@ pub struct Money {
 }
 
 impl Money {
-    /// Precision of the Finance V2 bounded PostgreSQL numeric representation.
+    /// Precision of the Moneykeeper bounded PostgreSQL numeric representation.
     pub const DATABASE_PRECISION: u32 = 28;
 
-    /// Scale of the Finance V2 bounded PostgreSQL numeric representation.
+    /// Scale of the Moneykeeper bounded PostgreSQL numeric representation.
     pub const DATABASE_SCALE: u32 = 8;
 
     /// Constructs exact money using a Reference Data-resolved minor-unit scale.
@@ -177,7 +177,7 @@ pub enum MoneyError {
         /// Minor-unit scale allowed by the resolved currency definition.
         allowed: u32,
     },
-    /// The amount cannot be stored in Finance V2's `NUMERIC(28,8)` columns.
+    /// The amount cannot be stored in Moneykeeper's `NUMERIC(28,8)` columns.
     #[error("money amount is outside the NUMERIC(28,8) bound")]
     OutOfBounds,
     /// An operation attempted to mix two currencies.

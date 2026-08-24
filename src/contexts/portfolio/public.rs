@@ -4,19 +4,33 @@ pub use super::application::ports::PortfolioLedger;
 pub use super::application::{commands::*, queries::*};
 pub use super::domain::*;
 
-use super::infrastructure::{PgPortfolioStore, StoreError};
+use super::application::ports::{
+    PortfolioAccountInstrumentRepository, PortfolioTransactionLotRepository,
+    PortfolioValuationRepository,
+};
 use crate::shared_kernel::{CorrelationId, EventId, UserId};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct PortfolioFacade {
-    pub(crate) store: PgPortfolioStore,
+    accounts: Arc<dyn PortfolioAccountInstrumentRepository>,
+    transactions: Arc<dyn PortfolioTransactionLotRepository>,
+    valuations: Arc<dyn PortfolioValuationRepository>,
 }
 impl PortfolioFacade {
-    pub(crate) fn new(store: PgPortfolioStore) -> Self {
-        Self { store }
+    pub(crate) fn new(
+        accounts: Arc<dyn PortfolioAccountInstrumentRepository>,
+        transactions: Arc<dyn PortfolioTransactionLotRepository>,
+        valuations: Arc<dyn PortfolioValuationRepository>,
+    ) -> Self {
+        Self {
+            accounts,
+            transactions,
+            valuations,
+        }
     }
     pub async fn create_manual_ovdp(
         &self,
@@ -28,10 +42,7 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store
-            .create_instrument(c, hash)
-            .await
-            .map_err(Into::into)
+        self.accounts.create_instrument(c, hash).await
     }
     pub async fn open_account(
         &self,
@@ -43,7 +54,7 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store.open_account(c, hash).await.map_err(Into::into)
+        self.accounts.open_account(c, hash).await
     }
     pub async fn rename_account(
         &self,
@@ -55,10 +66,9 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store
+        self.accounts
             .change_account(c, "rename_portfolio_account", None, hash)
             .await
-            .map_err(Into::into)
     }
     pub async fn archive_account(
         &self,
@@ -70,7 +80,7 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store
+        self.accounts
             .change_account(
                 c,
                 "archive_portfolio_account",
@@ -78,7 +88,6 @@ impl PortfolioFacade {
                 hash,
             )
             .await
-            .map_err(Into::into)
     }
     pub async fn restore_account(
         &self,
@@ -90,7 +99,7 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store
+        self.accounts
             .change_account(
                 c,
                 "restore_portfolio_account",
@@ -98,7 +107,6 @@ impl PortfolioFacade {
                 hash,
             )
             .await
-            .map_err(Into::into)
     }
     pub async fn record_transaction(
         &self,
@@ -110,7 +118,7 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store.record(c, hash).await.map_err(Into::into)
+        self.transactions.record(c, hash).await
     }
     pub async fn record_valuation(
         &self,
@@ -119,10 +127,7 @@ impl PortfolioFacade {
         let hash =
             super::application::commands::canonical_request_hash("record_valuation", c.user_id, &c)
                 .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store
-            .record_valuation(c, hash)
-            .await
-            .map_err(Into::into)
+        self.valuations.record_valuation(c, hash).await
     }
     pub async fn reverse_transaction(
         &self,
@@ -134,50 +139,47 @@ impl PortfolioFacade {
             &c,
         )
         .map_err(|_| PortfolioFacadeError::invalid())?;
-        self.store.reverse(c, hash).await.map_err(Into::into)
+        self.transactions.reverse(c, hash).await
     }
     pub async fn accounts(
         &self,
         user: UserId,
     ) -> Result<Vec<PortfolioAccountView>, PortfolioFacadeError> {
-        self.store.accounts(user).await.map_err(Into::into)
+        self.accounts.accounts(user).await
     }
     pub async fn account(
         &self,
         user: UserId,
         id: PortfolioAccountId,
     ) -> Result<Option<PortfolioAccountView>, PortfolioFacadeError> {
-        self.store.account(user, id).await.map_err(Into::into)
+        self.accounts.account(user, id).await
     }
     pub async fn instruments(
         &self,
         user: UserId,
     ) -> Result<Vec<InstrumentView>, PortfolioFacadeError> {
-        self.store.instruments(user).await.map_err(Into::into)
+        self.accounts.instruments(user).await
     }
     pub async fn instrument(
         &self,
         user: UserId,
         id: InstrumentId,
     ) -> Result<Option<InstrumentView>, PortfolioFacadeError> {
-        self.store.instrument(user, id).await.map_err(Into::into)
+        self.accounts.instrument(user, id).await
     }
     pub async fn positions(
         &self,
         user: UserId,
         account: PortfolioAccountId,
     ) -> Result<Vec<PositionView>, PortfolioFacadeError> {
-        self.store
-            .positions(user, account)
-            .await
-            .map_err(Into::into)
+        self.transactions.positions(user, account).await
     }
     pub async fn activity(
         &self,
         user: UserId,
         account: PortfolioAccountId,
     ) -> Result<Vec<PortfolioTransactionView>, PortfolioFacadeError> {
-        self.store.activity(user, account).await.map_err(Into::into)
+        self.transactions.activity(user, account).await
     }
     pub async fn valuations(
         &self,
@@ -185,10 +187,7 @@ impl PortfolioFacade {
         account: PortfolioAccountId,
         instrument: InstrumentId,
     ) -> Result<Vec<ValuationView>, PortfolioFacadeError> {
-        self.store
-            .valuations(user, account, instrument)
-            .await
-            .map_err(Into::into)
+        self.valuations.valuations(user, account, instrument).await
     }
 }
 
@@ -197,6 +196,8 @@ impl PortfolioFacade {
 pub struct PortfolioFacadeError {
     kind: PortfolioFacadeErrorKind,
     message: &'static str,
+    #[source]
+    source: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PortfolioFacadeErrorKind {
@@ -210,6 +211,46 @@ impl PortfolioFacadeError {
         Self {
             kind: PortfolioFacadeErrorKind::Invalid,
             message: "invalid portfolio command",
+            source: None,
+        }
+    }
+    pub(crate) fn not_found(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(
+            PortfolioFacadeErrorKind::NotFound,
+            "portfolio fact was not found",
+            source,
+        )
+    }
+    pub(crate) fn conflict(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(
+            PortfolioFacadeErrorKind::Conflict,
+            "portfolio command conflicts with current state",
+            source,
+        )
+    }
+    pub(crate) fn invalid_source(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(
+            PortfolioFacadeErrorKind::Invalid,
+            "invalid portfolio command",
+            source,
+        )
+    }
+    pub(crate) fn persistence(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::with_source(
+            PortfolioFacadeErrorKind::Persistence,
+            "portfolio persistence failed",
+            source,
+        )
+    }
+    fn with_source(
+        kind: PortfolioFacadeErrorKind,
+        message: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            message,
+            source: Some(Box::new(source)),
         }
     }
     pub fn is_not_found(&self) -> bool {
@@ -220,25 +261,6 @@ impl PortfolioFacadeError {
     }
     pub fn is_invalid(&self) -> bool {
         self.kind == PortfolioFacadeErrorKind::Invalid
-    }
-}
-impl From<StoreError> for PortfolioFacadeError {
-    fn from(v: StoreError) -> Self {
-        match v {
-            StoreError::NotFound => Self {
-                kind: PortfolioFacadeErrorKind::NotFound,
-                message: "portfolio fact was not found",
-            },
-            StoreError::VersionConflict | StoreError::IdempotencyConflict => Self {
-                kind: PortfolioFacadeErrorKind::Conflict,
-                message: "portfolio command conflicts with current state",
-            },
-            StoreError::Invalid(_) => Self::invalid(),
-            StoreError::Database(_) => Self {
-                kind: PortfolioFacadeErrorKind::Persistence,
-                message: "portfolio persistence failed",
-            },
-        }
     }
 }
 

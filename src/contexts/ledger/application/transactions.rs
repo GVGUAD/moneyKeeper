@@ -16,7 +16,7 @@ use super::super::{
     public::{AccountEffect, ManualTransactionKind, RecordManualTransaction, TransactionResult},
 };
 use super::{
-    accounts::LedgerFacade,
+    accounts::LedgerApplication,
     commit::commit_journal,
     ports::{
         CommandReceiptStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
@@ -24,7 +24,7 @@ use super::{
     },
 };
 
-impl LedgerFacade {
+impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
     /// Records manual income or expense through a controlled journal recipe.
     pub async fn record_manual_transaction(
         &self,

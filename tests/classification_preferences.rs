@@ -1,13 +1,13 @@
 use chrono::{Duration, TimeZone, Utc};
-use moneykeeper::bootstrap::v2::supporting_contexts;
+use moneykeeper::bootstrap::build_contexts;
 use moneykeeper::contexts::classification::public::{
     CategoryCatalog, CategoryCommand, CategoryKind, CategoryLifecycle,
 };
 use moneykeeper::contexts::preferences::public::Preferences;
 use moneykeeper::shared_kernel::{CurrencyCode, UserId};
 
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 fn now() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 8, 13, 12, 0, 0)
@@ -17,9 +17,9 @@ fn now() -> chrono::DateTime<Utc> {
 
 #[tokio::test]
 async fn category_lifecycle_is_versioned_and_idempotent() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let categories = supporting_contexts(&verified).categories;
+    let categories = build_contexts(&verified).categories;
     let user_id = UserId::generate();
     let created = categories
         .create(
@@ -75,9 +75,9 @@ async fn category_lifecycle_is_versioned_and_idempotent() {
 
 #[tokio::test]
 async fn category_conflicts_and_tenant_boundary_are_explicit() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let categories = supporting_contexts(&verified).categories;
+    let categories = build_contexts(&verified).categories;
     let owner = UserId::generate();
     let other_user = UserId::generate();
     let category = categories
@@ -118,9 +118,9 @@ async fn category_conflicts_and_tenant_boundary_are_explicit() {
 
 #[tokio::test]
 async fn idempotent_category_command_is_fenced_by_the_stored_version() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let categories = supporting_contexts(&verified).categories;
+    let categories = build_contexts(&verified).categories;
     let user_id = UserId::generate();
     let category = categories
         .create(
@@ -208,9 +208,9 @@ async fn idempotent_category_command_is_fenced_by_the_stored_version() {
 
 #[tokio::test]
 async fn preferences_default_and_compare_and_swap_are_tenant_scoped() {
-    let database = v2_test_support::fresh_v2_database().await;
+    let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
-    let contexts = supporting_contexts(&verified);
+    let contexts = build_contexts(&verified);
     let preferences = contexts.preferences;
     let currencies = contexts.currencies;
     let user_id = UserId::generate();

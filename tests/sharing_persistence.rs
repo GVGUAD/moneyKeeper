@@ -1,9 +1,9 @@
-mod v2_test_support;
+mod test_support;
 use sqlx::Row;
 
 #[tokio::test]
 async fn schema_installs_tenant_safe_append_only_sharing_storage() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     for table in [
         "contacts",
         "bills",
@@ -31,7 +31,7 @@ async fn schema_installs_tenant_safe_append_only_sharing_storage() {
 
 #[tokio::test]
 async fn schema_rejects_mutating_active_allocation_facts() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let user = uuid::Uuid::new_v4();
     let bill = uuid::Uuid::new_v4();
     let correlation = uuid::Uuid::new_v4();

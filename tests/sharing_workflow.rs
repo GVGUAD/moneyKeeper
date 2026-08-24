@@ -53,7 +53,7 @@ fn multiple_payer_workflow_conserves_every_participant_position() {
     );
 }
 
-mod v2_test_support;
+mod test_support;
 
 fn metadata(user_id: UserId, key: &str) -> CommandMetadata {
     CommandMetadata {
@@ -67,8 +67,8 @@ fn metadata(user_id: UserId, key: &str) -> CommandMetadata {
 
 #[tokio::test]
 async fn durable_contact_to_contact_bill_posts_routes_and_cancels_without_ledger_effect() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = moneykeeper::bootstrap::v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
     let sharing = contexts.sharing.clone();
     let user = UserId::generate();
     let alice = sharing
@@ -132,9 +132,9 @@ async fn durable_contact_to_contact_bill_posts_routes_and_cancels_without_ledger
         .await
         .unwrap();
     assert_eq!(active.status, BillStatus::Active);
-    let workers = moneykeeper::bootstrap::v2::phase4_workers(&verified);
-    workers.route_event_once().await.unwrap();
-    workers.route_event_once().await.unwrap();
+    let workers = moneykeeper::bootstrap::event_consumers(&verified);
+    workers.run_reporting_once().await.unwrap();
+    workers.run_reporting_once().await.unwrap();
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM reporting.bill_positions WHERE user_id=$1 AND bill_id=$2",
     )
@@ -166,7 +166,7 @@ async fn durable_contact_to_contact_bill_posts_routes_and_cancels_without_ledger
         .await
         .unwrap();
     assert_eq!(cancelled.status, BillStatus::Cancelled);
-    workers.route_event_once().await.unwrap();
+    workers.run_reporting_once().await.unwrap();
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM reporting.bill_positions WHERE user_id=$1 AND bill_id=$2",
     )

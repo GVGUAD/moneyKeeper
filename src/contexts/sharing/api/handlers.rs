@@ -12,11 +12,9 @@ use serde_json::json;
 use std::str::FromStr;
 
 use super::{dto::*, routes::SharingApiState};
-use crate::api::v2::{AuthenticatedUser, V2ApiError, V2Json};
+use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::reference_data::public::CurrencyCatalog;
-use crate::contexts::sharing::application::commands::*;
-use crate::contexts::sharing::domain::*;
-use crate::contexts::sharing::public::SharingError;
+use crate::contexts::sharing::public::*;
 use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money};
 
 fn metadata(
@@ -24,15 +22,15 @@ fn metadata(
     headers: &HeaderMap,
     hash: [u8; 32],
     occurred_at: chrono::DateTime<Utc>,
-) -> Result<CommandMetadata, V2ApiError> {
+) -> Result<CommandMetadata, ApiError> {
     let value = headers
         .get("Idempotency-Key")
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| V2ApiError::bad_request("missing Idempotency-Key"))?;
+        .ok_or_else(|| ApiError::bad_request("missing Idempotency-Key"))?;
     Ok(CommandMetadata {
         user_id,
         idempotency_key: IdempotencyKey::new(value)
-            .map_err(|_| V2ApiError::bad_request("invalid Idempotency-Key"))?,
+            .map_err(|_| ApiError::bad_request("invalid Idempotency-Key"))?,
         request_hash: hash,
         correlation_id: CorrelationId::generate(),
         occurred_at,
@@ -43,10 +41,10 @@ pub(crate) async fn create_contact(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(body): V2Json<ContactBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<ContactBody>,
+) -> Result<Response, ApiError> {
     let hash =
-        canonical_request_hash(&body).map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        canonical_request_hash(&body).map_err(|_| ApiError::bad_request("invalid request"))?;
     let command = CreateContact {
         metadata: metadata(user, &headers, hash, Utc::now())?,
         name: ContactName::new(body.display_name).map_err(map_domain)?,
@@ -64,13 +62,13 @@ pub(crate) async fn update_contact(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ContactBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<ContactBody>,
+) -> Result<Response, ApiError> {
     let expected = body
         .expected_version
-        .ok_or_else(|| V2ApiError::bad_request("missing expected_version"))?;
+        .ok_or_else(|| ApiError::bad_request("missing expected_version"))?;
     let hash = canonical_request_hash(&(id, &body))
-        .map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        .map_err(|_| ApiError::bad_request("invalid request"))?;
     let command = UpdateContact {
         metadata: metadata(user, &headers, hash, Utc::now())?,
         contact_id: ContactId::new(id),
@@ -92,10 +90,10 @@ pub(crate) async fn archive_contact(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ArchiveBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<ArchiveBody>,
+) -> Result<Response, ApiError> {
     let hash = canonical_request_hash(&(id, &body))
-        .map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        .map_err(|_| ApiError::bad_request("invalid request"))?;
     let command = ArchiveContact {
         metadata: metadata(user, &headers, hash, Utc::now())?,
         contact_id: ContactId::new(id),
@@ -120,7 +118,7 @@ pub(crate) async fn list_contacts(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Query(query): Query<ContactQuery>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     state
         .sharing
         .contacts(user, query.include_archived)
@@ -132,24 +130,24 @@ pub(crate) async fn get_contact(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     state
         .sharing
         .contact(user, ContactId::new(id))
         .await
         .map_err(map_domain)?
         .map(|contact| Json(json!(contact)))
-        .ok_or_else(|| V2ApiError::not_found("contact not found"))
+        .ok_or_else(|| ApiError::not_found("contact not found"))
 }
 
 pub(crate) async fn create_bill(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     headers: HeaderMap,
-    V2Json(body): V2Json<BillBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<BillBody>,
+) -> Result<Response, ApiError> {
     let hash =
-        canonical_request_hash(&body).map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        canonical_request_hash(&body).map_err(|_| ApiError::bad_request("invalid request"))?;
     let occurred_at = body.occurred_at;
     let draft = draft(&state, &body).await?;
     let command = CreateBillSplit {
@@ -168,10 +166,10 @@ pub(crate) async fn revise_bill(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<RevisionBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<RevisionBody>,
+) -> Result<Response, ApiError> {
     let hash = canonical_request_hash(&(id, &body))
-        .map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        .map_err(|_| ApiError::bad_request("invalid request"))?;
     let occurred_at = body.bill.occurred_at;
     let draft = draft(&state, &body.bill).await?;
     let command = ReviseBillSplit {
@@ -197,10 +195,10 @@ pub(crate) async fn cancel_bill(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<CancellationBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<CancellationBody>,
+) -> Result<Response, ApiError> {
     let hash = canonical_request_hash(&(id, &body))
-        .map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        .map_err(|_| ApiError::bad_request("invalid request"))?;
     let command = CancelBillSplit {
         metadata: metadata(user, &headers, hash, Utc::now())?,
         bill_id: BillSplitId::new(id),
@@ -222,7 +220,7 @@ pub(crate) async fn cancel_bill(
 pub(crate) async fn list_bills(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     state
         .sharing
         .bills(user)
@@ -234,14 +232,14 @@ pub(crate) async fn get_bill(
     State(state): State<SharingApiState>,
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
-) -> Result<Json<serde_json::Value>, V2ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     state
         .sharing
         .bill(user, BillSplitId::new(id))
         .await
         .map_err(map_domain)?
         .map(|bill| Json(json!(bill)))
-        .ok_or_else(|| V2ApiError::not_found("bill split not found"))
+        .ok_or_else(|| ApiError::not_found("bill split not found"))
 }
 
 pub(crate) async fn create_settlement(
@@ -249,10 +247,10 @@ pub(crate) async fn create_settlement(
     AuthenticatedUser(user): AuthenticatedUser,
     Path(id): Path<uuid::Uuid>,
     headers: HeaderMap,
-    V2Json(body): V2Json<SettlementBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<SettlementBody>,
+) -> Result<Response, ApiError> {
     let hash = canonical_request_hash(&(id, &body))
-        .map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        .map_err(|_| ApiError::bad_request("invalid request"))?;
     let (amount, _) = money(&state, &body.amount).await?;
     let evidence = match body.evidence {
         SettlementEvidenceDto::External => SettlementEvidence::External,
@@ -291,10 +289,10 @@ pub(crate) async fn reverse_settlement(
     AuthenticatedUser(user): AuthenticatedUser,
     Path((id, settlement_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     headers: HeaderMap,
-    V2Json(body): V2Json<ReversalBody>,
-) -> Result<Response, V2ApiError> {
+    ApiJson(body): ApiJson<ReversalBody>,
+) -> Result<Response, ApiError> {
     let hash = canonical_request_hash(&(id, settlement_id, &body))
-        .map_err(|_| V2ApiError::bad_request("invalid request"))?;
+        .map_err(|_| ApiError::bad_request("invalid request"))?;
     let command = ReverseSettlement {
         metadata: metadata(user, &headers, hash, Utc::now())?,
         bill_id: BillSplitId::new(id),
@@ -315,7 +313,7 @@ pub(crate) async fn reverse_settlement(
         .into_response())
 }
 
-async fn draft(state: &SharingApiState, body: &BillBody) -> Result<BillDraft, V2ApiError> {
+async fn draft(state: &SharingApiState, body: &BillBody) -> Result<BillDraft, ApiError> {
     let (total, scale) = money(state, &body.total).await?;
     let mut contributions = Vec::with_capacity(body.contributions.len());
     for value in &body.contributions {
@@ -369,19 +367,19 @@ async fn draft(state: &SharingApiState, body: &BillBody) -> Result<BillDraft, V2
         shares,
     })
 }
-async fn money(state: &SharingApiState, value: &MoneyDto) -> Result<(Money, u32), V2ApiError> {
+async fn money(state: &SharingApiState, value: &MoneyDto) -> Result<(Money, u32), ApiError> {
     let code = CurrencyCode::new(&value.currency)
-        .map_err(|_| V2ApiError::bad_request("invalid currency"))?;
+        .map_err(|_| ApiError::bad_request("invalid currency"))?;
     let definition = state
         .currencies
         .require_enabled(code.clone())
         .await
-        .map_err(|_| V2ApiError::bad_request("currency is not enabled"))?;
+        .map_err(|_| ApiError::bad_request("currency is not enabled"))?;
     let amount = rust_decimal::Decimal::from_str(&value.amount)
-        .map_err(|_| V2ApiError::bad_request("invalid money amount"))?;
+        .map_err(|_| ApiError::bad_request("invalid money amount"))?;
     Ok((
         Money::new(amount, code, u32::from(definition.minor_unit))
-            .map_err(|_| V2ApiError::bad_request("invalid money amount"))?,
+            .map_err(|_| ApiError::bad_request("invalid money amount"))?,
         u32::from(definition.minor_unit),
     ))
 }
@@ -391,14 +389,14 @@ fn participant(value: ParticipantDto) -> Participant {
         ParticipantDto::Contact(id) => Participant::Contact(ContactId::new(id)),
     }
 }
-fn map_domain(error: SharingError) -> V2ApiError {
+fn map_domain(error: SharingError) -> ApiError {
     match error {
-        SharingError::NotFound => V2ApiError::not_found("sharing item not found"),
+        SharingError::NotFound => ApiError::not_found("sharing item not found"),
         SharingError::VersionConflict { .. }
         | SharingError::IdempotencyConflict
         | SharingError::ActiveSettlements
-        | SharingError::AccountingPending => V2ApiError::conflict("sharing conflict"),
-        SharingError::Persistence(_) => V2ApiError::internal(),
-        _ => V2ApiError::bad_request("invalid sharing command"),
+        | SharingError::AccountingPending => ApiError::conflict("sharing conflict"),
+        SharingError::Persistence(_) => ApiError::internal(),
+        _ => ApiError::bad_request("invalid sharing command"),
     }
 }

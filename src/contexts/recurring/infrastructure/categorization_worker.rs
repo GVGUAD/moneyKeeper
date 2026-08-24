@@ -152,7 +152,7 @@ impl CategorizationWorker {
             }
             Err(_) => return self.retry(&claim).await,
         };
-        let Some(version) = journal.annotation_version else {
+        let Some(annotation) = journal.annotation.as_ref() else {
             let updated = self
                 .finish(&claim, "terminal_no_effect", None, None)
                 .await?;
@@ -162,7 +162,8 @@ impl CategorizationWorker {
                 ..CategorizationReport::default()
             });
         };
-        if journal.category_id.map(|id| id.into_uuid()) == Some(category_id) {
+        let version = annotation.version;
+        if annotation.category_id.map(|id| id.into_uuid()) == Some(category_id) {
             let updated = self
                 .finish(&claim, "terminal_no_effect", None, None)
                 .await?;
@@ -193,7 +194,7 @@ impl CategorizationWorker {
                     .finish(
                         &claim,
                         "posted",
-                        Some(journal.category_id.map(|id| id.into_uuid())),
+                        Some(annotation.category_id.map(|id| id.into_uuid())),
                         Some((version.get(), result.version.get())),
                     )
                     .await?;
@@ -243,7 +244,10 @@ impl CategorizationWorker {
             }
             Err(_) => return self.retry(&claim).await,
         };
-        let current = journal.annotation_version.map(AnnotationVersion::get);
+        let current = journal
+            .annotation
+            .as_ref()
+            .map(|annotation| annotation.version.get());
         if current != claim.produced_annotation_version {
             let updated = self.finish(&claim, "review_required", None, None).await?;
             return Ok(CategorizationReport {

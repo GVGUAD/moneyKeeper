@@ -1,5 +1,7 @@
 use super::super::{
-    application::ports::{GmailOAuth, OAuthTokens},
+    application::ports::{
+        CallbackResult, GmailOAuth, OAuthTokens, OauthCallbackPreparation, OauthStartResult,
+    },
     domain::{ConnectionState, ConnectionVersion, GmailConnectionId},
     public::ConnectionView,
 };
@@ -32,22 +34,6 @@ pub(crate) enum MailStoreError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
-#[derive(Clone, Debug)]
-pub(crate) struct OauthStartResult {
-    pub response: Value,
-    pub replayed: bool,
-}
-#[derive(Clone, Debug)]
-pub(crate) struct CallbackResult {
-    pub response: Value,
-    pub replayed: bool,
-}
-#[derive(Clone, Debug)]
-pub(crate) enum OauthCallbackPreparation {
-    Replay(CallbackResult),
-    Exchange { verifier: String },
-}
-
 #[derive(Serialize, Deserialize)]
 pub(crate) struct EncryptedOAuthCredential {
     pub access_token: String,

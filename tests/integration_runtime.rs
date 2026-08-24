@@ -1,5 +1,5 @@
-#[path = "v2_test_support.rs"]
-mod v2_test_support;
+#[path = "test_support.rs"]
+mod test_support;
 
 use std::{
     sync::{Arc, Mutex},
@@ -55,7 +55,7 @@ async fn append_committed(pool: &PgPool, event: &IntegrationEvent) {
 
 #[tokio::test]
 async fn outbox_append_rolls_back_with_callers_unit_of_work() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let event = integration_event();
 
     let mut transaction = pool.begin().await.unwrap();
@@ -81,7 +81,7 @@ async fn outbox_append_rolls_back_with_callers_unit_of_work() {
 
 #[tokio::test]
 async fn skip_locked_claims_never_give_one_message_to_two_dispatchers() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     append_committed(&pool, &integration_event()).await;
     let store = PgOutboxStore::new(&verified);
 
@@ -96,7 +96,7 @@ async fn skip_locked_claims_never_give_one_message_to_two_dispatchers() {
 
 #[tokio::test]
 async fn crash_after_publish_before_ack_is_redelivered_after_claim_expiry() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let event = integration_event();
     append_committed(&pool, &event).await;
     let store = PgOutboxStore::new(&verified);
@@ -177,7 +177,7 @@ fn dispatcher_config(maximum_attempts: u32) -> DispatcherConfig {
 
 #[tokio::test]
 async fn dispatcher_publishes_after_claim_commit_and_acknowledges() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     let event = integration_event();
     append_committed(&pool, &event).await;
     let published = Arc::new(Mutex::new(Vec::new()));
@@ -213,7 +213,7 @@ async fn dispatcher_publishes_after_claim_commit_and_acknowledges() {
 
 #[tokio::test]
 async fn publication_failures_back_off_redact_and_dead_letter_at_the_cap() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     append_committed(&pool, &integration_event()).await;
     let dispatcher = OutboxDispatcher::new(
         &verified,
@@ -285,7 +285,7 @@ async fn execute_increment(
 
 #[tokio::test]
 async fn inbox_duplicate_and_concurrent_delivery_apply_local_effect_once() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     sqlx::query(
         "CREATE TABLE integration.test_effects (
             effect_key TEXT PRIMARY KEY,
@@ -349,7 +349,7 @@ async fn inbox_duplicate_and_concurrent_delivery_apply_local_effect_once() {
 
 #[tokio::test]
 async fn failed_inbox_action_rolls_back_receipt_and_partial_effect() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     sqlx::query(
         "CREATE TABLE integration.test_effects (
             effect_key TEXT PRIMARY KEY,
@@ -390,7 +390,7 @@ async fn failed_inbox_action_rolls_back_receipt_and_partial_effect() {
 
 #[tokio::test]
 async fn process_state_compare_and_swap_rejects_stale_versions() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let key = ProcessKey::new("bank-import", "job-1").unwrap();
     let state = ProcessState::new(
         key.clone(),
@@ -418,7 +418,7 @@ async fn process_state_compare_and_swap_rejects_stale_versions() {
 
 #[tokio::test]
 async fn expired_holder_cannot_save_after_successor_gets_higher_fencing_token() {
-    let (_verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (_verified, pool) = test_support::fresh_runtime().await;
     let key = ProcessKey::new("ledger-posting", "workflow-1").unwrap();
     let state = ProcessState::new(
         key.clone(),
@@ -477,7 +477,7 @@ async fn expired_holder_cannot_save_after_successor_gets_higher_fencing_token() 
 
 #[tokio::test]
 async fn failure_recording_reports_fenced_claim_after_expiry() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
+    let (verified, pool) = test_support::fresh_runtime().await;
     append_committed(&pool, &integration_event()).await;
     let store = PgOutboxStore::new(&verified);
     let claim = store

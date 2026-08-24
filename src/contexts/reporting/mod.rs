@@ -4,7 +4,9 @@ pub(crate) mod api;
 pub(crate) mod application;
 pub(crate) mod infrastructure;
 pub mod public;
-use crate::infrastructure::v2_db::VerifiedV2Pool;
-pub(crate) fn build(pool: &VerifiedV2Pool) -> public::ReportingFacade {
-    public::ReportingFacade::new(infrastructure::PgReportingStore::new(pool.pool().clone()))
+use crate::infrastructure::database::VerifiedDatabase;
+use std::sync::Arc;
+pub(crate) fn build(pool: &VerifiedDatabase) -> public::ReportingFacade {
+    let repository = Arc::new(infrastructure::PgReportingStore::new(pool.pool().clone()));
+    public::ReportingFacade::new(repository.clone(), repository.clone(), repository)
 }

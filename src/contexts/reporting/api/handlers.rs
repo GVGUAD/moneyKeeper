@@ -1,10 +1,7 @@
 use super::dto::ReportQuery;
 use crate::{
-    api::v2::{AuthenticatedUser, V2ApiError},
-    contexts::reporting::{
-        application,
-        public::{ReportResponse, ReportingFacade},
-    },
+    api::{ApiError, AuthenticatedUser},
+    contexts::reporting::public::{ReportResponse, ReportingFacade},
 };
 use axum::{
     Json,
@@ -15,14 +12,14 @@ async fn report(
     user: crate::shared_kernel::UserId,
     q: ReportQuery,
     kind: &'static str,
-) -> Result<Json<ReportResponse>, V2ApiError> {
+) -> Result<Json<ReportResponse>, ApiError> {
     let range = q
         .try_into()
-        .map_err(|_| V2ApiError::bad_request("invalid report range"))?;
-    application::queries::read(&f, user, range, kind)
+        .map_err(|_| ApiError::bad_request("invalid report range"))?;
+    f.read(user, range, kind)
         .await
         .map(Json)
-        .map_err(|_| V2ApiError::internal())
+        .map_err(|_| ApiError::internal())
 }
 macro_rules! handler {
     ($name:ident,$kind:literal) => {
@@ -30,7 +27,7 @@ macro_rules! handler {
             State(f): State<ReportingFacade>,
             AuthenticatedUser(user): AuthenticatedUser,
             Query(q): Query<ReportQuery>,
-        ) -> Result<Json<ReportResponse>, V2ApiError> {
+        ) -> Result<Json<ReportResponse>, ApiError> {
             report(f, user, q, $kind).await
         }
     };

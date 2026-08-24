@@ -1,8 +1,8 @@
-mod v2_test_support;
+mod test_support;
 
 use chrono::{Duration, Utc};
 use moneykeeper::{
-    bootstrap::v2,
+    bootstrap,
     contexts::portfolio::public::*,
     shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, UserId},
 };
@@ -10,8 +10,8 @@ use rust_decimal_macros::dec;
 
 #[tokio::test]
 async fn ovdp_lifecycle_rebuildable_scenario_is_exact() {
-    let (verified, pool) = v2_test_support::fresh_v2_runtime().await;
-    let contexts = v2::supporting_contexts(&verified);
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = bootstrap::build_contexts(&verified);
     let portfolio = contexts.portfolio.clone();
     let user = UserId::generate();
     let now = Utc::now();
@@ -175,9 +175,9 @@ async fn ovdp_lifecycle_rebuildable_scenario_is_exact() {
         .unwrap(),
         6
     );
-    let workers = v2::phase4_workers(&verified);
+    let workers = bootstrap::event_consumers(&verified);
     for _ in 0..32 {
-        if !workers.route_event_once().await.unwrap().claimed {
+        if !workers.run_reporting_once().await.unwrap().claimed {
             break;
         }
     }

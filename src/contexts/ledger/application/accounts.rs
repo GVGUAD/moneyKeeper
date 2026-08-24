@@ -16,7 +16,6 @@ use super::super::{
         Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount,
         LedgerAccountId, LedgerError, Posting, PostingId, PostingPurpose, SystemAccountRole,
     },
-    infrastructure::{PgLedgerProjection, PgLedgerQueries, PgLedgerUnitOfWork},
     public::{
         AccountResult, AccountView, ArchiveAccount, OpenAccount, OpenProviderObservedAccount,
         RenameAccount, RestoreAccount,
@@ -30,20 +29,16 @@ use super::ports::{
 
 /// Public command facade with private PostgreSQL composition.
 #[derive(Clone)]
-pub struct LedgerFacade {
-    pub(super) uow: PgLedgerUnitOfWork,
+pub(crate) struct LedgerApplication<U, Q, P> {
+    pub(super) uow: U,
     pub(super) clock: Arc<dyn Clock>,
     pub(super) categories: Option<CategoryCatalogFacade>,
-    pub(super) queries: PgLedgerQueries,
-    pub(super) projection: PgLedgerProjection,
+    pub(super) queries: Q,
+    pub(super) projection: P,
 }
 
-impl LedgerFacade {
-    pub(crate) fn new(
-        uow: PgLedgerUnitOfWork,
-        queries: PgLedgerQueries,
-        projection: PgLedgerProjection,
-    ) -> Self {
+impl<U, Q, P> LedgerApplication<U, Q, P> {
+    pub(crate) fn new(uow: U, queries: Q, projection: P) -> Self {
         Self {
             uow,
             clock: Arc::new(SystemClock),
@@ -54,9 +49,9 @@ impl LedgerFacade {
     }
 
     pub(crate) fn new_with_categories(
-        uow: PgLedgerUnitOfWork,
-        queries: PgLedgerQueries,
-        projection: PgLedgerProjection,
+        uow: U,
+        queries: Q,
+        projection: P,
         categories: CategoryCatalogFacade,
     ) -> Self {
         Self {
@@ -67,7 +62,9 @@ impl LedgerFacade {
             projection,
         }
     }
+}
 
+impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
     /// Opens an account and records any non-zero opening balance as a journal.
     pub async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError> {
         open_account(&self.uow, self.clock.as_ref(), command, false).await
