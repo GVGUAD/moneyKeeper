@@ -108,6 +108,8 @@ pub struct SyncJobView {
     pub id: SyncJobId,
     pub user_id: UserId,
     pub connection_id: ProviderConnectionId,
+    #[serde(default)]
+    pub resource_id: Option<ExternalResourceId>,
     pub requested_from: DateTime<Utc>,
     pub requested_to: DateTime<Utc>,
     pub overlap_seconds: i32,

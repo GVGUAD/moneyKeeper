@@ -607,6 +607,7 @@ impl BankingWorkerRepository for PgBankingStore {
              FROM banking.sync_jobs job
              JOIN banking.external_resources resource
                ON resource.user_id=job.user_id AND resource.connection_id=job.connection_id
+              AND (job.resource_id IS NULL OR resource.id=job.resource_id)
              WHERE job.state IN ('requested','running','retry_due')
                AND resource.kind IN ('card','current_account','jar')
                AND resource.discovery_state IN ('active','needs_review')

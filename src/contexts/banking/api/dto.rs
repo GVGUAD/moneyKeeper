@@ -31,6 +31,7 @@ pub(crate) struct MappingChangeRequest {
 }
 #[derive(Deserialize)]
 pub(crate) struct SyncRequest {
+    pub(crate) resource_id: Uuid,
     pub(crate) requested_from: DateTime<Utc>,
     pub(crate) requested_to: DateTime<Utc>,
     #[serde(default)]

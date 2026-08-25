@@ -460,7 +460,7 @@ Provider balance fields retain their declared provider basis/sign separately. Th
 
 `ProviderEvent` and its revisions are durable provider facts. Identity is scoped by connection/resource/external event ID; a revision or payload-hash change is retained rather than discarded. Financial processing is serialized per event stream: revision N+1 waits until every known predecessor is posted, no-financial-change, or explicitly terminal, so a correction/reversal cannot race ahead of the journal it references. Raw payload provenance is encrypted or access-restricted and redacted from normal logs.
 
-Sync jobs have requested ranges, durable cursor, overlap window, lease owner/expiry, attempt count, retry time, and last error. A page cursor advances only after every event in that page reaches a durable processed or explicitly quarantined state. Rate limiting is per credential.
+Each new sync job targets one actively mapped `ExternalResource` by identity and has a requested range, durable cursor, overlap window, lease owner/expiry, attempt count, retry time, and last error. Legacy connection-wide jobs remain valid and retain their original FIFO scheduling. A page cursor advances only after every event in that page reaches a durable processed or explicitly quarantined state. Rate limiting is per credential.
 
 The import process manager translates provider language through the Monobank anti-corruption layer and invokes typed Ledger import/update commands. Hold-to-settled changes that do not alter monetary data update visible provider state without rewriting postings. A monetary correction or reversal produces an explicit Ledger reversal/replacement chain.
 

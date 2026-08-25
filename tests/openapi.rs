@@ -285,6 +285,30 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
 }
 
 #[test]
+fn provider_sync_contract_requires_and_returns_a_resource_identity() {
+    let document = contract();
+    let request = &document["components"]["schemas"]["RequestSync"];
+    assert!(
+        request["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "resource_id")
+    );
+    assert_eq!(request["properties"]["resource_id"]["format"], "uuid");
+
+    let job = &document["components"]["schemas"]["SyncJob"];
+    assert!(
+        job["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "resource_id")
+    );
+    assert_eq!(job["properties"]["resource_id"]["format"], "uuid");
+}
+
+#[test]
 fn every_android_financial_command_requires_an_idempotency_key() {
     let document = contract();
     for (method, path) in [

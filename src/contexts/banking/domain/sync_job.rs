@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shared_kernel::UserId;
 
-use super::{BankingError, ProviderConnectionId, SyncJobId};
+use super::{BankingError, ExternalResourceId, ProviderConnectionId, SyncJobId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +31,7 @@ pub struct SyncJob {
     id: SyncJobId,
     user_id: UserId,
     connection_id: ProviderConnectionId,
+    resource_id: ExternalResourceId,
     requested_from: DateTime<Utc>,
     requested_to: DateTime<Utc>,
     state: SyncJobState,
@@ -45,6 +46,7 @@ impl SyncJob {
     pub fn request(
         user_id: UserId,
         connection_id: ProviderConnectionId,
+        resource_id: ExternalResourceId,
         requested_from: DateTime<Utc>,
         requested_to: DateTime<Utc>,
     ) -> Result<Self, BankingError> {
@@ -55,6 +57,7 @@ impl SyncJob {
             id: SyncJobId::generate(),
             user_id,
             connection_id,
+            resource_id,
             requested_from,
             requested_to,
             state: SyncJobState::Requested,
@@ -143,6 +146,9 @@ impl SyncJob {
     }
     pub const fn connection_id(&self) -> ProviderConnectionId {
         self.connection_id
+    }
+    pub const fn resource_id(&self) -> ExternalResourceId {
+        self.resource_id
     }
     pub const fn requested_from(&self) -> DateTime<Utc> {
         self.requested_from

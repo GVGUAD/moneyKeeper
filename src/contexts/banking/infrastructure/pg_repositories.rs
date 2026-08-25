@@ -750,6 +750,7 @@ impl PgBankingStore {
         let request_hash = Sha256::digest(
             serde_json::to_vec(&json!({
                 "connection_id": command.connection_id,
+                "resource_id": command.resource_id,
                 "requested_from": command.requested_from,
                 "requested_to": command.requested_to,
                 "overlap_seconds": command.overlap_seconds,
@@ -776,29 +777,42 @@ impl PgBankingStore {
             tx.rollback().await.map_err(database)?;
             return Ok(result);
         }
-        let row=sqlx::query("SELECT version,credential_generation,state FROM banking.provider_connections WHERE id=$1 AND user_id=$2 FOR UPDATE").bind(command.connection_id.into_uuid()).bind(command.user_id.into_uuid()).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
-        if row.get::<String, _>("state") != "active" {
-            return Err(BankingError::InvalidState);
-        }
+        let row = sqlx::query(
+            "SELECT connection.version,connection.credential_generation
+             FROM banking.provider_connections connection
+             JOIN banking.external_resources resource
+               ON resource.connection_id=connection.id AND resource.user_id=connection.user_id
+             JOIN banking.resource_mappings mapping
+               ON mapping.external_resource_id=resource.id AND mapping.user_id=resource.user_id
+              AND mapping.connection_id=resource.connection_id
+             WHERE connection.id=$1 AND connection.user_id=$2 AND resource.id=$3
+               AND connection.state='active'
+               AND resource.kind IN ('card','current_account','jar')
+               AND resource.discovery_state IN ('active','needs_review')
+               AND mapping.state='active' AND mapping.ledger_account_id IS NOT NULL
+             FOR UPDATE OF connection,resource",
+        )
+        .bind(command.connection_id.into_uuid())
+        .bind(command.user_id.into_uuid())
+        .bind(command.resource_id.into_uuid())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?
+        .ok_or(BankingError::InvalidState)?;
         let id = SyncJobId::generate();
         let snapshot_from =
             command.requested_from - chrono::Duration::seconds(i64::from(command.overlap_seconds));
-        let inserted=sqlx::query("INSERT INTO banking.sync_jobs (id,user_id,connection_id,requested_from,requested_to,overlap_seconds,state,connection_version,credential_generation) VALUES ($1,$2,$3,$4,$5,$6,'requested',$7,$8) RETURNING id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.requested_from).bind(command.requested_to).bind(command.overlap_seconds).bind(row.get::<i64,_>("version")).bind(row.get::<i64,_>("credential_generation")).fetch_one(&mut *tx).await.map_err(database)?;
+        let inserted=sqlx::query("INSERT INTO banking.sync_jobs (id,user_id,connection_id,resource_id,requested_from,requested_to,overlap_seconds,state,connection_version,credential_generation) VALUES ($1,$2,$3,$4,$5,$6,$7,'requested',$8,$9) RETURNING id,user_id,connection_id,resource_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(id.into_uuid()).bind(command.user_id.into_uuid()).bind(command.connection_id.into_uuid()).bind(command.resource_id.into_uuid()).bind(command.requested_from).bind(command.requested_to).bind(command.overlap_seconds).bind(row.get::<i64,_>("version")).bind(row.get::<i64,_>("credential_generation")).fetch_one(&mut *tx).await.map_err(database)?;
         let snapshotted = sqlx::query(
             "INSERT INTO banking.sync_job_resources
              (sync_job_id,user_id,connection_id,external_resource_id,position,
               snapshot_from,snapshot_to,next_from)
-             SELECT $1,resource.user_id,resource.connection_id,resource.id,
-                    row_number() OVER (ORDER BY resource.created_at,resource.id)::integer,
-                    $4,$5,$4
-             FROM banking.external_resources resource
-             WHERE resource.user_id=$2 AND resource.connection_id=$3
-               AND resource.kind IN ('card','current_account','jar')
-               AND resource.discovery_state IN ('active','needs_review')",
+             VALUES ($1,$2,$3,$4,1,$5,$6,$5)",
         )
         .bind(id.into_uuid())
         .bind(command.user_id.into_uuid())
         .bind(command.connection_id.into_uuid())
+        .bind(command.resource_id.into_uuid())
         .bind(snapshot_from)
         .bind(command.requested_to)
         .execute(&mut *tx)
@@ -823,7 +837,7 @@ impl PgBankingStore {
         if holder.is_empty() || holder.len() > 200 || lease_seconds <= 0 || lease_seconds > 3600 {
             return Err(BankingError::InvalidValue("invalid sync claim"));
         }
-        let row=sqlx::query("WITH candidate AS (SELECT job.id,job.user_id FROM banking.sync_jobs job JOIN banking.provider_connections connection ON connection.id=job.connection_id AND connection.user_id=job.user_id WHERE job.state IN ('requested','retry_due','running','waiting_for_events') AND (job.next_retry_at IS NULL OR job.next_retry_at<=$2) AND (job.lease_expires_at IS NULL OR job.lease_expires_at<=$2 OR job.lease_holder=$1) AND connection.state='active' AND connection.version=job.connection_version AND connection.credential_generation=job.credential_generation AND NOT EXISTS (SELECT 1 FROM banking.sync_jobs other WHERE other.connection_id=job.connection_id AND other.id<>job.id AND other.lease_expires_at>$2) ORDER BY job.created_at,job.id FOR UPDATE OF job SKIP LOCKED LIMIT 1) UPDATE banking.sync_jobs job SET state='running',lease_holder=$1,lease_token=job.lease_token+1,lease_expires_at=$2+($3::bigint*interval '1 second'),attempts=job.attempts+1,updated_at=$2 FROM candidate WHERE job.id=candidate.id AND job.user_id=candidate.user_id RETURNING job.id,job.user_id,job.connection_id,job.requested_from,job.requested_to,job.overlap_seconds,job.connection_version,job.credential_generation,job.state,job.cursor,job.attempts,job.next_retry_at,job.last_error,job.lease_token,job.lease_holder,job.lease_expires_at")
+        let row=sqlx::query("WITH candidate AS (SELECT job.id,job.user_id FROM banking.sync_jobs job JOIN banking.provider_connections connection ON connection.id=job.connection_id AND connection.user_id=job.user_id WHERE job.state IN ('requested','retry_due','running','waiting_for_events') AND (job.next_retry_at IS NULL OR job.next_retry_at<=$2) AND (job.lease_expires_at IS NULL OR job.lease_expires_at<=$2 OR job.lease_holder=$1) AND connection.state='active' AND connection.version=job.connection_version AND connection.credential_generation=job.credential_generation AND NOT EXISTS (SELECT 1 FROM banking.sync_jobs other WHERE other.connection_id=job.connection_id AND other.id<>job.id AND other.lease_expires_at>$2) ORDER BY job.created_at,job.id FOR UPDATE OF job SKIP LOCKED LIMIT 1) UPDATE banking.sync_jobs job SET state='running',lease_holder=$1,lease_token=job.lease_token+1,lease_expires_at=$2+($3::bigint*interval '1 second'),attempts=job.attempts+1,updated_at=$2 FROM candidate WHERE job.id=candidate.id AND job.user_id=candidate.user_id RETURNING job.id,job.user_id,job.connection_id,job.resource_id,job.requested_from,job.requested_to,job.overlap_seconds,job.connection_version,job.credential_generation,job.state,job.cursor,job.attempts,job.next_retry_at,job.last_error,job.lease_token,job.lease_holder,job.lease_expires_at")
             .bind(holder).bind(now).bind(lease_seconds).fetch_optional(&self.uow.pool).await.map_err(database)?;
         row.map(sync_job_view).transpose()
     }
@@ -864,7 +878,7 @@ impl PgBankingStore {
         } else {
             "completed"
         };
-        let row=sqlx::query("UPDATE banking.sync_jobs SET state=$3,cursor=$4,lease_holder=NULL,lease_expires_at=NULL,updated_at=$5 WHERE id=$1 AND user_id=$2 AND lease_token=$6 RETURNING id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(state).bind(next).bind(command.now).bind(command.fencing_token).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
+        let row=sqlx::query("UPDATE banking.sync_jobs SET state=$3,cursor=$4,lease_holder=NULL,lease_expires_at=NULL,updated_at=$5 WHERE id=$1 AND user_id=$2 AND lease_token=$6 RETURNING id,user_id,connection_id,resource_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at").bind(command.sync_job_id.into_uuid()).bind(command.user_id.into_uuid()).bind(state).bind(next).bind(command.now).bind(command.fencing_token).fetch_optional(&mut *tx).await.map_err(database)?.ok_or(BankingError::LeaseFenced)?;
         tx.commit().await.map_err(database)?;
         sync_job_view(row)
     }
@@ -874,7 +888,7 @@ impl PgBankingStore {
         user_id: UserId,
         id: SyncJobId,
     ) -> Result<SyncJobView, BankingError> {
-        let row=sqlx::query("SELECT id,user_id,connection_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at FROM banking.sync_jobs WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
+        let row=sqlx::query("SELECT id,user_id,connection_id,resource_id,requested_from,requested_to,overlap_seconds,connection_version,credential_generation,state,cursor,attempts,next_retry_at,last_error,lease_token,lease_holder,lease_expires_at FROM banking.sync_jobs WHERE id=$1 AND user_id=$2").bind(id.into_uuid()).bind(user_id.into_uuid()).fetch_optional(&self.uow.pool).await.map_err(database)?.ok_or(BankingError::InvalidState)?;
         sync_job_view(row)
     }
 
@@ -1641,6 +1655,9 @@ fn sync_job_view(row: sqlx::postgres::PgRow) -> Result<SyncJobView, BankingError
         id: SyncJobId::new(row.get("id")),
         user_id: UserId::new(row.get("user_id")),
         connection_id: ProviderConnectionId::new(row.get("connection_id")),
+        resource_id: row
+            .get::<Option<uuid::Uuid>, _>("resource_id")
+            .map(ExternalResourceId::new),
         requested_from: row.get("requested_from"),
         requested_to: row.get("requested_to"),
         overlap_seconds: row.get("overlap_seconds"),

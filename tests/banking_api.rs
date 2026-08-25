@@ -2,6 +2,14 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use moneykeeper::{
+    contexts::{
+        banking::public::{BindExistingResource, ExternalResourceId},
+        ledger::public::{AccountKind, AccountNature, OpenAccount},
+    },
+    shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId},
+};
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -259,4 +267,156 @@ async fn resource_paths_are_connection_scoped_and_lists_include_current_mapping(
     .await
     .unwrap();
     assert_eq!(state, "pending_account_creation");
+}
+
+#[tokio::test]
+async fn sync_api_requires_one_actively_mapped_resource() {
+    let (verified, pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
+    let user_uuid = Uuid::new_v4();
+    let user_id = UserId::new(user_uuid);
+    let connection_uuid = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO banking.provider_connections (id,user_id,provider,state)
+         VALUES ($1,$2,'monobank','active')",
+    )
+    .bind(connection_uuid)
+    .bind(user_uuid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let target_uuid = Uuid::new_v4();
+    let unmapped_uuid = Uuid::new_v4();
+    for (id, external, label) in [
+        (target_uuid, "api-sync-target", "•••• 1111"),
+        (unmapped_uuid, "api-sync-unmapped", "•••• 2222"),
+    ] {
+        sqlx::query(
+            "INSERT INTO banking.external_resources
+             (id,user_id,connection_id,external_resource_id,kind,funding_model,currency,masked_label)
+             VALUES ($1,$2,$3,$4,'card','own_funds','UAH',$5)",
+        )
+        .bind(id)
+        .bind(user_uuid)
+        .bind(connection_uuid)
+        .bind(external)
+        .bind(label)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let currency = CurrencyCode::new("UAH").unwrap();
+    let account = contexts
+        .ledger
+        .open_account(OpenAccount {
+            user_id,
+            name: "API sync card".to_owned(),
+            currency: currency.clone(),
+            kind: AccountKind::DebitCard,
+            nature: AccountNature::Asset,
+            opening_balance: Money::new(Decimal::ZERO, currency, 2).unwrap(),
+            idempotency_key: IdempotencyKey::new("api-sync-open-account").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap()
+        .account;
+    contexts
+        .banking
+        .bind_existing_resource(BindExistingResource {
+            user_id,
+            resource_id: ExternalResourceId::new(target_uuid),
+            ledger_account_id: account.id,
+            expected_resource_version: 1,
+            idempotency_key: IdempotencyKey::new("api-sync-map-resource").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            requested_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    let server = TestServer::new(moneykeeper::bootstrap::router(
+        &verified,
+        Arc::new(test_jwks()),
+    ))
+    .unwrap();
+    let token = jwt(user_uuid);
+    let path = format!("/provider-connections/{connection_uuid}/sync-jobs");
+    let from = "2026-08-01T00:00:00Z";
+    let to = "2026-08-20T00:00:00Z";
+
+    let missing_target = server
+        .post(&path)
+        .authorization_bearer(&token)
+        .add_header("Idempotency-Key", "api-sync-missing-target")
+        .json(&json!({"requested_from":from,"requested_to":to}))
+        .await;
+    assert_eq!(missing_target.status_code(), StatusCode::BAD_REQUEST);
+
+    let unmapped = server
+        .post(&path)
+        .authorization_bearer(&token)
+        .add_header("Idempotency-Key", "api-sync-unmapped")
+        .json(&json!({
+            "resource_id":unmapped_uuid,
+            "requested_from":from,
+            "requested_to":to
+        }))
+        .await;
+    assert_eq!(unmapped.status_code(), StatusCode::NOT_FOUND);
+
+    let mismatched_connection = server
+        .post(&format!(
+            "/provider-connections/{}/sync-jobs",
+            Uuid::new_v4()
+        ))
+        .authorization_bearer(&token)
+        .add_header("Idempotency-Key", "api-sync-wrong-connection")
+        .json(&json!({
+            "resource_id":target_uuid,
+            "requested_from":from,
+            "requested_to":to
+        }))
+        .await;
+    assert_eq!(mismatched_connection.status_code(), StatusCode::NOT_FOUND);
+
+    let accepted = server
+        .post(&path)
+        .authorization_bearer(&token)
+        .add_header("Idempotency-Key", "api-sync-target")
+        .json(&json!({
+            "resource_id":target_uuid,
+            "requested_from":from,
+            "requested_to":to,
+            "overlap_seconds":0
+        }))
+        .await;
+    assert_eq!(accepted.status_code(), StatusCode::ACCEPTED);
+    let job: Value = accepted.json();
+    assert_eq!(job["resource_id"], target_uuid.to_string());
+    assert_eq!(job["connection_id"], connection_uuid.to_string());
+
+    let targets: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT external_resource_id FROM banking.sync_job_resources
+         WHERE sync_job_id=$1 ORDER BY position",
+    )
+    .bind(Uuid::parse_str(job["id"].as_str().unwrap()).unwrap())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(targets, vec![target_uuid]);
+
+    let stranger = server
+        .post(&path)
+        .authorization_bearer(jwt(Uuid::new_v4()))
+        .add_header("Idempotency-Key", "api-sync-stranger")
+        .json(&json!({
+            "resource_id":target_uuid,
+            "requested_from":from,
+            "requested_to":to
+        }))
+        .await;
+    assert_eq!(stranger.status_code(), StatusCode::NOT_FOUND);
 }

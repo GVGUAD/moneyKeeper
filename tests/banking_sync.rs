@@ -6,7 +6,10 @@ use async_trait::async_trait;
 use chrono::{Duration, TimeZone, Utc};
 use moneykeeper::contexts::banking::adapters::Aes256CredentialCipher;
 use moneykeeper::{
-    contexts::banking::{self, public::*},
+    contexts::{
+        banking::{self, public::*},
+        ledger::public::{AccountKind, AccountNature, OpenAccount},
+    },
     shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId},
 };
 use rust_decimal_macros::dec;
@@ -33,6 +36,7 @@ async fn banking_fixture() -> (
 ) {
     let (verified, pool) = test_support::fresh_runtime().await;
     let supporting = moneykeeper::bootstrap::build_contexts(&verified);
+    let ledger = supporting.ledger.clone();
     let banking = banking::build_with_ledger(
         &verified,
         Arc::new(Aes256CredentialCipher::new("test-key", [6_u8; 32]).unwrap()),
@@ -65,6 +69,36 @@ async fn banking_fixture() -> (
     .fetch_all(&pool)
     .await
     .unwrap();
+    let first_resource = ExternalResourceId::new(ids[0]);
+    let currency = CurrencyCode::new("UAH").unwrap();
+    let account = ledger
+        .open_account(OpenAccount {
+            user_id,
+            name: "Sync card".to_owned(),
+            currency: currency.clone(),
+            kind: AccountKind::DebitCard,
+            nature: AccountNature::Asset,
+            opening_balance: Money::new(dec!(0), currency, 2).unwrap(),
+            idempotency_key: IdempotencyKey::new("open-sync-card").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: Utc::now(),
+        })
+        .await
+        .unwrap()
+        .account;
+    banking
+        .bind_existing_resource(BindExistingResource {
+            user_id,
+            resource_id: first_resource,
+            ledger_account_id: account.id,
+            expected_resource_version: 1,
+            idempotency_key: IdempotencyKey::new("map-sync-card").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            requested_at: Utc::now(),
+        })
+        .await
+        .unwrap();
     (
         banking,
         pool,
@@ -158,12 +192,13 @@ async fn revision_identity_is_scoped_to_resource_and_new_facts_publish_ready_eve
 
 #[tokio::test]
 async fn sync_claims_are_connection_scoped_fenced_and_advance_only_complete_pages() {
-    let (banking, _pool, user, connection, _resources) = banking_fixture().await;
+    let (banking, pool, user, connection, resources) = banking_fixture().await;
     let now = Utc.with_ymd_and_hms(2026, 8, 20, 10, 0, 0).unwrap();
     let job = banking
         .request_sync_job(RequestSyncJob {
             user_id: user,
             connection_id: connection,
+            resource_id: resources[0],
             requested_from: now - Duration::days(1),
             requested_to: now,
             overlap_seconds: 3600,
@@ -172,6 +207,17 @@ async fn sync_claims_are_connection_scoped_fenced_and_advance_only_complete_page
         })
         .await
         .unwrap();
+    assert_eq!(job.resource_id, Some(resources[0]));
+    let targets: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT external_resource_id FROM banking.sync_job_resources
+         WHERE sync_job_id=$1 AND user_id=$2 ORDER BY position",
+    )
+    .bind(job.id.into_uuid())
+    .bind(user.into_uuid())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(targets, vec![resources[0].into_uuid()]);
     let (first, second) = tokio::join!(
         banking.claim_due_sync_job("worker-a", now, 60),
         banking.claim_due_sync_job("worker-b", now, 60)
@@ -240,4 +286,106 @@ async fn sync_claims_are_connection_scoped_fenced_and_advance_only_complete_page
         .await
         .unwrap();
     assert_eq!(completed.state, "completed");
+}
+
+#[tokio::test]
+async fn sync_request_requires_a_tenant_scoped_supported_active_mapping() {
+    let (banking, pool, user, connection, resources) = banking_fixture().await;
+    let now = Utc.with_ymd_and_hms(2026, 8, 20, 10, 0, 0).unwrap();
+    let request = |user_id, connection_id, resource_id, key: &'static str| RequestSyncJob {
+        user_id,
+        connection_id,
+        resource_id,
+        requested_from: now - Duration::days(1),
+        requested_to: now,
+        overlap_seconds: 0,
+        idempotency_key: IdempotencyKey::new(key).unwrap(),
+        correlation_id: CorrelationId::generate(),
+    };
+
+    assert!(
+        banking
+            .request_sync_job(request(user, connection, resources[1], "sync-unmapped"))
+            .await
+            .is_err()
+    );
+    assert!(
+        banking
+            .request_sync_job(request(
+                UserId::generate(),
+                connection,
+                resources[0],
+                "sync-wrong-tenant"
+            ))
+            .await
+            .is_err()
+    );
+    assert!(
+        banking
+            .request_sync_job(request(
+                user,
+                ProviderConnectionId::new(Uuid::new_v4()),
+                resources[0],
+                "sync-wrong-connection"
+            ))
+            .await
+            .is_err()
+    );
+
+    sqlx::query(
+        "UPDATE banking.external_resources SET kind='unsupported' WHERE id=$1 AND user_id=$2",
+    )
+    .bind(resources[0].into_uuid())
+    .bind(user.into_uuid())
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        banking
+            .request_sync_job(request(user, connection, resources[0], "sync-unsupported"))
+            .await
+            .is_err()
+    );
+    sqlx::query(
+        "UPDATE banking.external_resources SET kind='card',discovery_state='removed'
+         WHERE id=$1 AND user_id=$2",
+    )
+    .bind(resources[0].into_uuid())
+    .bind(user.into_uuid())
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        banking
+            .request_sync_job(request(user, connection, resources[0], "sync-removed"))
+            .await
+            .is_err()
+    );
+
+    sqlx::query(
+        "INSERT INTO banking.resource_mappings
+         (id,user_id,connection_id,external_resource_id,mapping_version,state,
+          process_correlation_id,effective_at)
+         VALUES ($1,$2,$3,$4,1,'pending_account_creation',$5,$6)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(user.into_uuid())
+    .bind(connection.into_uuid())
+    .bind(resources[1].into_uuid())
+    .bind(Uuid::new_v4())
+    .bind(now)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        banking
+            .request_sync_job(request(
+                user,
+                connection,
+                resources[1],
+                "sync-pending-mapping"
+            ))
+            .await
+            .is_err()
+    );
 }

@@ -262,6 +262,7 @@ pub(crate) async fn request_sync(
         .request_sync_job(RequestSyncJob {
             user_id: user,
             connection_id: ProviderConnectionId::new(id),
+            resource_id: ExternalResourceId::new(request.resource_id),
             requested_from: request.requested_from,
             requested_to: request.requested_to,
             overlap_seconds: request.overlap_seconds,

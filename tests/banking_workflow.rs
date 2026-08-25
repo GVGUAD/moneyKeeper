@@ -228,6 +228,7 @@ async fn banking_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
         .request_sync_job(RequestSyncJob {
             user_id,
             connection_id: connection.id,
+            resource_id: card.id,
             requested_from: now - Duration::days(1),
             requested_to: now,
             overlap_seconds: 3_600,
@@ -240,6 +241,7 @@ async fn banking_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
         .request_sync_job(RequestSyncJob {
             user_id,
             connection_id: connection.id,
+            resource_id: card.id,
             requested_from: now - Duration::days(1),
             requested_to: now,
             overlap_seconds: 3_600,
@@ -254,9 +256,10 @@ async fn banking_is_revision_safe_restartable_and_keeps_ledger_authoritative() {
         .request_sync_job(RequestSyncJob {
             user_id,
             connection_id: connection.id,
+            resource_id: jar.id,
             requested_from: now - Duration::days(1),
             requested_to: now,
-            overlap_seconds: 60,
+            overlap_seconds: 3_600,
             idempotency_key: IdempotencyKey::new("banking-sync").unwrap(),
             correlation_id: CorrelationId::generate(),
         })

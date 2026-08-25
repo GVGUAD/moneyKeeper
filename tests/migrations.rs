@@ -430,6 +430,142 @@ async fn monobank_worker_migration_backfills_replayable_state_additively() {
 }
 
 #[tokio::test]
+async fn resource_specific_sync_migration_preserves_and_classifies_legacy_jobs() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let before_resource_targets = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            DATABASE_MIGRATOR
+                .iter()
+                .filter(|migration| migration.version < 15)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    before_resource_targets.run(&pool).await.unwrap();
+
+    let user_id = uuid::Uuid::new_v4();
+    let connection_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO banking.provider_connections (id,user_id,provider,state)
+         VALUES ($1,$2,'monobank','active')",
+    )
+    .bind(connection_id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let resource_a = uuid::Uuid::new_v4();
+    let resource_b = uuid::Uuid::new_v4();
+    for (id, external) in [(resource_a, "migration-a"), (resource_b, "migration-b")] {
+        sqlx::query(
+            "INSERT INTO banking.external_resources
+             (id,user_id,connection_id,external_resource_id,kind,funding_model,currency,masked_label)
+             VALUES ($1,$2,$3,$4,'card','own_funds','UAH',$4)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(connection_id)
+        .bind(external)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let single_job = uuid::Uuid::new_v4();
+    let multi_job = uuid::Uuid::new_v4();
+    for job_id in [single_job, multi_job] {
+        sqlx::query(
+            "INSERT INTO banking.sync_jobs
+             (id,user_id,connection_id,requested_from,requested_to,state,
+              connection_version,credential_generation)
+             VALUES ($1,$2,$3,'2026-08-01T00:00:00Z','2026-08-02T00:00:00Z',
+                     'requested',1,1)",
+        )
+        .bind(job_id)
+        .bind(user_id)
+        .bind(connection_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    for (job_id, resource_id, position) in [
+        (single_job, resource_a, 1_i32),
+        (multi_job, resource_a, 1_i32),
+        (multi_job, resource_b, 2_i32),
+    ] {
+        sqlx::query(
+            "INSERT INTO banking.sync_job_resources
+             (sync_job_id,user_id,connection_id,external_resource_id,position,
+              snapshot_from,snapshot_to,next_from)
+             VALUES ($1,$2,$3,$4,$5,'2026-08-01T00:00:00Z',
+                     '2026-08-02T00:00:00Z','2026-08-01T00:00:00Z')",
+        )
+        .bind(job_id)
+        .bind(user_id)
+        .bind(connection_id)
+        .bind(resource_id)
+        .bind(position)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    pool.close().await;
+
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+    let targets: Vec<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT id,resource_id FROM banking.sync_jobs
+         WHERE id IN ($1,$2) ORDER BY id",
+    )
+    .bind(single_job)
+    .bind(multi_job)
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    let target_for = |id| targets.iter().find(|row| row.0 == id).unwrap().1;
+    assert_eq!(target_for(single_job), Some(resource_a));
+    assert_eq!(target_for(multi_job), None);
+    let legacy_resources: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM banking.sync_job_resources WHERE sync_job_id=$1")
+            .bind(multi_job)
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(legacy_resources, 2);
+
+    let targeted_job = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO banking.sync_jobs
+         (id,user_id,connection_id,resource_id,requested_from,requested_to,state,
+          connection_version,credential_generation)
+         VALUES ($1,$2,$3,$4,'2026-08-01T00:00:00Z','2026-08-02T00:00:00Z',
+                 'requested',1,1)",
+    )
+    .bind(targeted_job)
+    .bind(user_id)
+    .bind(connection_id)
+    .bind(resource_a)
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    let mismatched_snapshot = sqlx::query(
+        "INSERT INTO banking.sync_job_resources
+         (sync_job_id,user_id,connection_id,external_resource_id,position,
+          snapshot_from,snapshot_to,next_from)
+         VALUES ($1,$2,$3,$4,1,'2026-08-01T00:00:00Z',
+                 '2026-08-02T00:00:00Z','2026-08-01T00:00:00Z')",
+    )
+    .bind(targeted_job)
+    .bind(user_id)
+    .bind(connection_id)
+    .bind(resource_b)
+    .execute(&mut *connection)
+    .await;
+    assert!(mismatched_snapshot.is_err());
+}
+
+#[tokio::test]
 async fn database_generation_failure_returns_no_pool_and_redacts_database_password() {
     let database = fresh_database().await;
     let pool = PgPool::connect(database.database_url()).await.unwrap();

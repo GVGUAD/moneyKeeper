@@ -184,10 +184,15 @@ fn sync_pages_advance_only_after_terminal_event_outcomes_and_are_fenced() {
     let mut job = SyncJob::request(
         user(),
         ProviderConnectionId::new(Uuid::from_u128(1)),
+        ExternalResourceId::new(Uuid::from_u128(11)),
         at(0),
         at(20),
     )
     .unwrap();
+    assert_eq!(
+        job.resource_id(),
+        ExternalResourceId::new(Uuid::from_u128(11))
+    );
     let lease = job.claim("worker-a", at(1), at(10)).unwrap();
     job.begin_page(&lease, "cursor-0", 2, at(2)).unwrap();
     assert!(job.complete_page(&lease, 1, 0, at(3)).is_err());
@@ -198,6 +203,7 @@ fn sync_pages_advance_only_after_terminal_event_outcomes_and_are_fenced() {
     let mut second = SyncJob::request(
         user(),
         ProviderConnectionId::new(Uuid::from_u128(2)),
+        ExternalResourceId::new(Uuid::from_u128(22)),
         at(0),
         at(20),
     )

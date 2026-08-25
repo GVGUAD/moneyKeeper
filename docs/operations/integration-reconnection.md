@@ -66,8 +66,21 @@ pending before deployment.
    the connection. The response never contains the callback credential. The
    full callback URL contains a secret and must not appear in tickets, logs,
    screenshots, or this record.
-5. Request synchronization. Review provider-event conflicts, failed pages, and
-   reconciliation cases. Approve, dismiss, or correct cases deliberately before
+5. Request synchronization separately for each actively mapped resource. The
+   request body must identify the internal `resource_id` returned by the
+   connection resource list:
+
+   ```sh
+   curl -fsS -X POST \
+     "$MONEYKEEPER_URL/provider-connections/$CONNECTION_ID/sync-jobs" \
+     -H "Authorization: Bearer $MONEYKEEPER_JWT" \
+     -H "Idempotency-Key: monobank-$RESOURCE_ID-$(date +%s)" \
+     -H 'Content-Type: application/json' \
+     --data "{\"resource_id\":\"$RESOURCE_ID\",\"requested_from\":\"$SYNC_FROM\",\"requested_to\":\"$SYNC_TO\",\"overlap_seconds\":0}"
+   ```
+
+   Review provider-event conflicts, failed pages, and reconciliation cases.
+   Approve, dismiss, or correct cases deliberately before
    treating balances and reports as authoritative. Statement history is fetched
    oldest-first in 30-day windows, with at least 61 seconds between Monobank
    statement calls, so a long initial range is intentionally gradual.
