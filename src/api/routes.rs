@@ -286,6 +286,13 @@ where
 pub struct ApiError {
     status: StatusCode,
     message: &'static str,
+    diagnostic: Option<ApiDiagnostic>,
+}
+
+#[derive(Debug)]
+struct ApiDiagnostic {
+    category: &'static str,
+    message: &'static str,
 }
 
 impl ApiError {
@@ -293,6 +300,7 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message,
+            diagnostic: None,
         }
     }
 
@@ -300,6 +308,7 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "unauthorized",
+            diagnostic: None,
         }
     }
 
@@ -307,6 +316,7 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message,
+            diagnostic: None,
         }
     }
 
@@ -314,26 +324,112 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message,
+            diagnostic: None,
         }
     }
 
-    pub fn bad_gateway(message: &'static str) -> Self {
+    pub fn bad_gateway(
+        message: &'static str,
+        category: &'static str,
+        diagnostic_message: &'static str,
+    ) -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message,
+            diagnostic: Some(ApiDiagnostic {
+                category,
+                message: diagnostic_message,
+            }),
         }
     }
 
-    pub fn internal() -> Self {
+    pub fn internal(category: &'static str, diagnostic_message: &'static str) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "internal server error",
+            diagnostic: Some(ApiDiagnostic {
+                category,
+                message: diagnostic_message,
+            }),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if let Some(diagnostic) = &self.diagnostic {
+            tracing::error!(
+                event.name = "api.error",
+                http.status = self.status.as_u16(),
+                error.category = diagnostic.category,
+                error.message = diagnostic.message,
+                "API request failed"
+            );
+        }
         (self.status, Json(json!({"error": self.message}))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use axum::body::to_bytes;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::{ApiError, IntoResponse, StatusCode};
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for BufferWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> MakeWriter<'writer> for Buffer {
+        type Writer = BufferWriter;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            BufferWriter(Arc::clone(&self.0))
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_errors_keep_the_response_stable_and_drop_source_details() {
+        let source = anyhow::anyhow!("bound-value-sentinel");
+        let error = Err::<(), _>(source)
+            .map_err(|_| ApiError::internal("ledger.persistence", "ledger request failed"))
+            .unwrap_err();
+        let output = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_ansi(false)
+            .with_writer(output.clone())
+            .finish();
+
+        let response = tracing::subscriber::with_default(subscriber, || error.into_response());
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"error": "internal server error"})
+        );
+
+        let logs = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("api.error"));
+        assert!(logs.contains("ledger.persistence"));
+        assert!(logs.contains("ledger request failed"));
+        assert!(!logs.contains("bound-value-sentinel"));
     }
 }

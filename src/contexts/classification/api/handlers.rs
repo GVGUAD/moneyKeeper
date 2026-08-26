@@ -122,7 +122,10 @@ fn map_error(error: ClassificationError) -> ApiError {
         ApiError::bad_request("invalid category")
     } else {
         debug_assert!(error.is_persistence());
-        ApiError::internal()
+        ApiError::internal(
+            "classification.persistence",
+            "classification storage operation failed",
+        )
     }
 }
 

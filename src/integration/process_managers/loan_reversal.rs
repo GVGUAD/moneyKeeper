@@ -4,6 +4,7 @@ use crate::contexts::ledger::public::{LedgerFacade, ReverseTransaction};
 use crate::contexts::loans::public::LoansFacade;
 use crate::shared_kernel::IdempotencyKey;
 use chrono::Utc;
+use tracing::Instrument as _;
 
 #[derive(Clone)]
 pub struct LoanReversalWorker {
@@ -29,6 +30,14 @@ impl LoanReversalWorker {
                 "posted loan movement has no Ledger journal"
             ));
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "loans.reversal",
+            loan_id = %p.pending.movement.agreement_id,
+            movement_id = %p.pending.movement.id,
+            correlation_id = %p.pending.movement.correlation_id,
+        );
+        item_span.in_scope(log_claimed);
         let result = self
             .ledger
             .reverse_transaction(ReverseTransaction {
@@ -40,6 +49,7 @@ impl LoanReversalWorker {
                 causation_id: None,
                 occurred_at: p.pending.movement.requested_at,
             })
+            .instrument(item_span)
             .await;
         match result {
             Ok(result) => {
@@ -59,6 +69,14 @@ impl LoanReversalWorker {
             }),
         }
     }
+}
+
+fn log_claimed() {
+    tracing::info!(
+        event.name = "worker.item.claimed",
+        outcome = "claimed",
+        "Worker item claimed"
+    );
 }
 pub fn idempotency_key(movement_id: crate::contexts::loans::public::LoanMovementId) -> String {
     format!("loan-reversal:{movement_id}")

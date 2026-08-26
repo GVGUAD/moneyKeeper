@@ -62,6 +62,17 @@ async fn readiness_stays_false_until_worker_barrier_then_flips_once() {
         unavailable.status(),
         reqwest::StatusCode::SERVICE_UNAVAILABLE
     );
+    assert!(
+        uuid::Uuid::parse_str(
+            unavailable
+                .headers()
+                .get("x-request-id")
+                .unwrap()
+                .to_str()
+                .unwrap()
+        )
+        .is_ok()
+    );
     assert!(!readiness.is_ready());
 
     startup_gate.notify_one();
@@ -75,10 +86,32 @@ async fn readiness_stays_false_until_worker_barrier_then_flips_once() {
     assert_eq!(readiness.ready_transitions(), 1);
     let available = client
         .get(format!("http://{address}/business"))
+        .header("x-request-id", "client-request.123")
         .send()
         .await
         .unwrap();
     assert_eq!(available.status(), reqwest::StatusCode::OK);
+    assert_eq!(available.headers()["x-request-id"], "client-request.123");
+
+    let invalid_request_id = client
+        .get(format!("http://{address}/business"))
+        .header("x-request-id", "invalid/request/id")
+        .send()
+        .await
+        .unwrap();
+    let generated = invalid_request_id.headers()["x-request-id"]
+        .to_str()
+        .unwrap();
+    assert_ne!(generated, "invalid/request/id");
+    assert!(uuid::Uuid::parse_str(generated).is_ok());
+
+    let missing = client
+        .get(format!("http://{address}/missing?secret=sentinel"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+    assert!(missing.headers().contains_key("x-request-id"));
 
     shutdown_tx.send(()).unwrap();
     server.await.unwrap().unwrap();

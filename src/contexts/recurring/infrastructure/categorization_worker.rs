@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use sqlx::{PgPool, Row};
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 use crate::{
@@ -66,15 +67,33 @@ impl CategorizationWorker {
         let Some(claim) = self.claim().await? else {
             return Ok(CategorizationReport::default());
         };
-        match claim.state.as_str() {
-            "pending" | "retry_due" => self.apply(claim).await,
-            "compensating" => self.compensate(claim).await,
-            _ => Ok(CategorizationReport {
-                claimed: true,
-                fenced: true,
-                ..CategorizationReport::default()
-            }),
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "recurring.categorization",
+            match_id = %claim.match_id,
+            journal_entry_id = %claim.journal_entry_id,
+            correlation_id = %claim.match_id,
+        );
+        item_span.in_scope(|| {
+            tracing::info!(
+                event.name = "worker.item.claimed",
+                outcome = "claimed",
+                "Worker item claimed"
+            );
+        });
+        async move {
+            match claim.state.as_str() {
+                "pending" | "retry_due" => self.apply(claim).await,
+                "compensating" => self.compensate(claim).await,
+                _ => Ok(CategorizationReport {
+                    claimed: true,
+                    fenced: true,
+                    ..CategorizationReport::default()
+                }),
+            }
         }
+        .instrument(item_span)
+        .await
     }
 
     async fn claim(&self) -> Result<Option<TargetClaim>, CategorizationError> {

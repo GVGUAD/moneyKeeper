@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sqlx::{PgPool, Row};
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 use crate::{
@@ -168,15 +169,21 @@ impl RecurringEventConsumer {
         let Some(event) = self.feed.next_event().await? else {
             return Ok(ConsumerRunReport::default());
         };
-        if event.schema_version != 1 && is_recurring_event(&event.event_type) {
-            return Err(ConsumerError::UnsupportedVersion);
+        let item_span = event_span("integration.recurring_consumer", &event);
+        log_claimed(&item_span);
+        async {
+            if event.schema_version != 1 && is_recurring_event(&event.event_type) {
+                return Err(ConsumerError::UnsupportedVersion);
+            }
+            let applied = self.consume(&event).await?;
+            self.feed.acknowledge(&event).await?;
+            Ok(ConsumerRunReport {
+                applied,
+                ignored: !applied,
+            })
         }
-        let applied = self.consume(&event).await?;
-        self.feed.acknowledge(&event).await?;
-        Ok(ConsumerRunReport {
-            applied,
-            ignored: !applied,
-        })
+        .instrument(item_span)
+        .await
     }
 
     async fn consume(&self, event: &PersistedEvent) -> Result<bool, ConsumerError> {
@@ -261,15 +268,21 @@ impl ReportingEventConsumer {
         let Some(event) = self.feed.next_event().await? else {
             return Ok(ConsumerRunReport::default());
         };
-        if event.schema_version != 1 && is_reporting_event(&event.event_type) {
-            return Err(ConsumerError::UnsupportedVersion);
+        let item_span = event_span("integration.reporting_consumer", &event);
+        log_claimed(&item_span);
+        async {
+            if event.schema_version != 1 && is_reporting_event(&event.event_type) {
+                return Err(ConsumerError::UnsupportedVersion);
+            }
+            let applied = self.consume(&event).await?;
+            self.feed.acknowledge(&event).await?;
+            Ok(ConsumerRunReport {
+                applied,
+                ignored: !applied,
+            })
         }
-        let applied = self.consume(&event).await?;
-        self.feed.acknowledge(&event).await?;
-        Ok(ConsumerRunReport {
-            applied,
-            ignored: !applied,
-        })
+        .instrument(item_span)
+        .await
     }
 
     async fn consume(&self, event: &PersistedEvent) -> Result<bool, ConsumerError> {
@@ -766,4 +779,23 @@ struct PersistedEvent {
     correlation_id: Uuid,
     causation_id: Option<Uuid>,
     payload: serde_json::Value,
+}
+
+fn event_span(operation: &'static str, event: &PersistedEvent) -> tracing::Span {
+    tracing::info_span!(
+        "worker.item",
+        operation,
+        event_id = %event.event_id,
+        correlation_id = %event.correlation_id,
+    )
+}
+
+fn log_claimed(span: &tracing::Span) {
+    span.in_scope(|| {
+        tracing::info!(
+            event.name = "worker.item.claimed",
+            outcome = "claimed",
+            "Worker item claimed"
+        );
+    });
 }

@@ -24,7 +24,7 @@ pub(crate) async fn list(
     f.subscriptions(u)
         .await
         .map(|v| Json(json!({"subscriptions":v})))
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal("recurring.persistence", "recurring query failed"))
 }
 pub(crate) async fn get(
     State(f): State<RecurringFacade>,
@@ -33,7 +33,7 @@ pub(crate) async fn get(
 ) -> Result<Json<Value>, ApiError> {
     f.subscription(user, SubscriptionId::new(id))
         .await
-        .map_err(|_| ApiError::internal())?
+        .map_err(|_| ApiError::internal("recurring.persistence", "recurring query failed"))?
         .map(|view| Json(json!(view)))
         .ok_or_else(|| ApiError::not_found("subscription not found"))
 }
@@ -58,7 +58,7 @@ pub(crate) async fn charges(
     f.charges(user, SubscriptionId::new(id))
         .await
         .map(|charges| Json(json!({"charges":charges})))
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal("recurring.persistence", "recurring query failed"))
 }
 pub(crate) async fn forecast(
     State(f): State<RecurringFacade>,
@@ -67,7 +67,7 @@ pub(crate) async fn forecast(
     f.forecast(user)
         .await
         .map(|forecast| Json(json!({"forecast":forecast})))
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal("recurring.persistence", "recurring forecast failed"))
 }
 pub(crate) async fn create_match(
     State(f): State<RecurringFacade>,
@@ -127,6 +127,9 @@ fn map_store(error: RecurringFacadeError) -> ApiError {
     } else if let Some(message) = error.invalid_reason() {
         ApiError::bad_request(message)
     } else {
-        ApiError::internal()
+        ApiError::internal(
+            "recurring.persistence",
+            "recurring storage operation failed",
+        )
     }
 }

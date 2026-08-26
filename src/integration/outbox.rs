@@ -5,6 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use tracing::Instrument as _;
 
 use crate::infrastructure::database::VerifiedDatabase;
 
@@ -185,7 +186,26 @@ where
         };
 
         for claim in claims {
-            match self.publisher.publish(&claim.event).await {
+            let item_span = tracing::info_span!(
+                "worker.item",
+                operation = "integration.outbox_dispatch",
+                outbox_message_id = %claim.message_id,
+                event_id = %claim.event.envelope.event_id(),
+                correlation_id = %claim.event.envelope.correlation_id(),
+            );
+            item_span.in_scope(|| {
+                tracing::info!(
+                    event.name = "worker.item.claimed",
+                    outcome = "claimed",
+                    "Worker item claimed"
+                );
+            });
+            match self
+                .publisher
+                .publish(&claim.event)
+                .instrument(item_span)
+                .await
+            {
                 Ok(()) => {
                     if store.acknowledge(&claim).await? {
                         report.published += 1;

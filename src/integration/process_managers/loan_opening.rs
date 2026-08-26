@@ -1,6 +1,7 @@
 //! Durable Loans-to-Ledger account-opening coordinator.
 
 use chrono::Utc;
+use tracing::Instrument as _;
 
 use crate::contexts::ledger::public::{AccountKind, AccountNature, LedgerFacade, OpenAccount};
 use crate::contexts::loans::public::{LoanDirection, LoansFacade};
@@ -36,6 +37,13 @@ impl LoanOpeningWorker {
             LoanDirection::Lent => AccountNature::Asset,
         };
         let correlation = CorrelationId::generate();
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "loans.opening",
+            loan_id = %loan.id,
+            correlation_id = %correlation,
+        );
+        item_span.in_scope(log_claimed);
         let now = Utc::now();
         match self
             .ledger
@@ -51,6 +59,7 @@ impl LoanOpeningWorker {
                 causation_id: None,
                 occurred_at: loan.created_at,
             })
+            .instrument(item_span)
             .await
         {
             Ok(result) => {
@@ -70,4 +79,12 @@ impl LoanOpeningWorker {
             }),
         }
     }
+}
+
+fn log_claimed() {
+    tracing::info!(
+        event.name = "worker.item.claimed",
+        outcome = "claimed",
+        "Worker item claimed"
+    );
 }

@@ -1,5 +1,7 @@
 //! Gmail wire adapter boundary. Provider response bodies are never logged.
 
+use std::time::{Duration, Instant};
+
 #[derive(Clone)]
 pub(crate) struct GmailClient {
     client: reqwest::Client,
@@ -32,6 +34,7 @@ impl crate::contexts::mail::application::ports::GmailSource for GmailClient {
             messages: Vec<MessageRef>,
             next_page_token: Option<String>,
         }
+        let started = Instant::now();
         let mut request = self
             .client
             .get(format!("{}/gmail/v1/users/me/messages", self.base_url))
@@ -40,10 +43,22 @@ impl crate::contexts::mail::application::ports::GmailSource for GmailClient {
         if let Some(cursor) = cursor {
             request = request.query(&[("pageToken", cursor)]);
         }
-        let page: WirePage = request.send().await?.error_for_status()?.json().await?;
+        let response = request.send().await.map_err(|error| {
+            log_transport_failure("list_messages", &error, started.elapsed());
+            anyhow::anyhow!("Gmail message-list request failed")
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            log_http_failure("list_messages", status, started.elapsed());
+            anyhow::bail!("Gmail message-list endpoint rejected the request");
+        }
+        let page: WirePage = response.json().await.map_err(|_| {
+            log_invalid_response("list_messages", status, started.elapsed());
+            anyhow::anyhow!("Gmail message-list response was invalid")
+        })?;
         let mut messages = Vec::with_capacity(page.messages.len());
         for message in page.messages {
-            let wire: WireMessage = self
+            let response = self
                 .client
                 .get(format!(
                     "{}/gmail/v1/users/me/messages/{}",
@@ -52,17 +67,93 @@ impl crate::contexts::mail::application::ports::GmailSource for GmailClient {
                 .bearer_auth(access_token)
                 .query(&[("format", "full")])
                 .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            messages.push(wire.normalize()?);
+                .await;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    log_transport_failure("get_message", &error, started.elapsed());
+                    anyhow::bail!("Gmail message request failed");
+                }
+            };
+            let message_status = response.status();
+            if !message_status.is_success() {
+                log_http_failure("get_message", message_status, started.elapsed());
+                anyhow::bail!("Gmail message endpoint rejected the request");
+            }
+            let wire: WireMessage = response.json().await.map_err(|_| {
+                log_invalid_response("get_message", message_status, started.elapsed());
+                anyhow::anyhow!("Gmail message response was invalid")
+            })?;
+            messages.push(wire.normalize().map_err(|_| {
+                log_invalid_response("normalize_message", message_status, started.elapsed());
+                anyhow::anyhow!("Gmail message response could not be normalized")
+            })?);
         }
+        let records = u64::try_from(messages.len()).unwrap_or(u64::MAX);
+        tracing::info!(
+            event.name = "provider.request.completed",
+            provider = "gmail",
+            operation = "fetch_page",
+            outcome = "success",
+            http.status = status.as_u16(),
+            records,
+            duration_ms = elapsed_ms(started.elapsed()),
+            "Provider request completed"
+        );
         Ok(crate::contexts::mail::application::ports::GmailPage {
             messages,
             next_cursor: page.next_page_token,
         })
     }
+}
+
+fn log_transport_failure(operation: &'static str, error: &reqwest::Error, elapsed: Duration) {
+    tracing::warn!(
+        event.name = "provider.request.completed",
+        provider = "gmail",
+        operation,
+        outcome = transport_outcome(error),
+        duration_ms = elapsed_ms(elapsed),
+        "Provider request completed"
+    );
+}
+
+fn log_http_failure(operation: &'static str, status: reqwest::StatusCode, elapsed: Duration) {
+    tracing::warn!(
+        event.name = "provider.request.completed",
+        provider = "gmail",
+        operation,
+        outcome = "http_error",
+        http.status = status.as_u16(),
+        duration_ms = elapsed_ms(elapsed),
+        "Provider request completed"
+    );
+}
+
+fn log_invalid_response(operation: &'static str, status: reqwest::StatusCode, elapsed: Duration) {
+    tracing::warn!(
+        event.name = "provider.request.completed",
+        provider = "gmail",
+        operation,
+        outcome = "invalid_response",
+        http.status = status.as_u16(),
+        duration_ms = elapsed_ms(elapsed),
+        "Provider request completed"
+    );
+}
+
+fn transport_outcome(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect_error"
+    } else {
+        "transport_error"
+    }
+}
+
+fn elapsed_ms(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[derive(serde::Deserialize)]

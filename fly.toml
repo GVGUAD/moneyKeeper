@@ -13,7 +13,8 @@ primary_region = 'fra'
   PUBLIC_URL   = "https://moneykeeper.fly.dev"
   MONOBANK_WEBHOOK_BASE_URL = "https://moneykeeper.fly.dev"
   BIND_ADDR    = "0.0.0.0:8080"
-  RUST_LOG     = "info"
+  RUST_LOG     = "moneykeeper=debug"
+  LOG_FORMAT   = "json"
 
 # DATABASE_URL, FINANCE_V2_ENCRYPTION_KEY_ID, FINANCE_V2_ENCRYPTION_KEY,
 # FINANCE_V2_WEBHOOK_DIGEST_KEY, and Gmail OAuth credentials are Fly secrets.

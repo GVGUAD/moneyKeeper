@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
+use tracing::Instrument as _;
 
 use super::{
     BankingFacade, CredentialBinding, ProviderCredential, ProviderFailure, ProviderFailureClass,
@@ -38,6 +39,12 @@ impl BankingFacade {
         else {
             return Ok(BankingWorkerStepReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "banking.validation",
+            connection_id = %work.connection_id,
+        );
+        log_claimed(&item_span);
         let binding = CredentialBinding::new(
             work.user_id,
             work.connection_id.into_uuid(),
@@ -69,7 +76,12 @@ impl BankingFacade {
                 });
             }
         };
-        let body = match self.provider.client_info(&credential).await {
+        let body = match self
+            .provider
+            .client_info(&credential)
+            .instrument(item_span)
+            .await
+        {
             Ok(body) => body,
             Err(failure) => {
                 return self.finish_validation_failure(&work, failure, now).await;
@@ -151,6 +163,12 @@ impl BankingFacade {
         else {
             return Ok(BankingWorkerStepReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "banking.webhook_registration",
+            connection_id = %work.connection_id,
+        );
+        log_claimed(&item_span);
         let provider_token = self.cipher.decrypt(
             &work.provider_envelope,
             &CredentialBinding::new(
@@ -180,6 +198,7 @@ impl BankingFacade {
                 );
                 self.provider
                     .register_webhook(&provider_token, &callback)
+                    .instrument(item_span)
                     .await
                     .err()
             }
@@ -217,6 +236,13 @@ impl BankingFacade {
         else {
             return Ok(BankingWorkerStepReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "banking.webhook_receipt",
+            connection_id = %work.connection_id,
+            webhook_receipt_id = %work.receipt_id,
+        );
+        log_claimed(&item_span);
         let binding = CredentialBinding::new(
             work.user_id,
             work.connection_id.into_uuid(),
@@ -274,6 +300,14 @@ impl BankingFacade {
         else {
             return Ok(BankingWorkerStepReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "banking.statement",
+            connection_id = %work.connection_id,
+            sync_job_id = %work.sync_job_id,
+            resource_id = %work.resource_id,
+        );
+        log_claimed(&item_span);
         let credential = match self.cipher.decrypt(
             &work.provider_envelope,
             &CredentialBinding::new(
@@ -300,6 +334,7 @@ impl BankingFacade {
         let body = match self
             .provider
             .statement(&credential, &work.external_resource_id, work.from, work.to)
+            .instrument(item_span)
             .await
         {
             Ok(body) => body,
@@ -422,6 +457,16 @@ impl BankingFacade {
             ..BankingWorkerStepReport::default()
         })
     }
+}
+
+fn log_claimed(span: &tracing::Span) {
+    span.in_scope(|| {
+        tracing::info!(
+            event.name = "worker.item.claimed",
+            outcome = "claimed",
+            "Worker item claimed"
+        );
+    });
 }
 
 fn completion_time(claimed_at: DateTime<Utc>) -> DateTime<Utc> {

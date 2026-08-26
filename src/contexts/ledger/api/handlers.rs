@@ -17,7 +17,7 @@ use crate::contexts::ledger::public::{
     UpdateTransactionAnnotation,
 };
 use crate::contexts::reference_data::public::{CurrencyCatalog, CurrencyError};
-use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money};
+use crate::shared_kernel::{CurrencyCode, IdempotencyKey, Money};
 
 use super::dto::{
     ActivityQuery, AnnotationRequest, ApproveReconciliationRequest, BalanceCorrectionRequest,
@@ -51,7 +51,7 @@ pub(crate) async fn open_account(
             nature: request.nature,
             opening_balance: money,
             idempotency_key: key,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -86,7 +86,12 @@ pub(crate) async fn get_account(
         let summary = banking
             .provider_account_summary(user_id, account.id)
             .await
-            .map_err(|_| ApiError::internal())?;
+            .map_err(|_| {
+                ApiError::internal(
+                    "banking.persistence",
+                    "provider account summary query failed",
+                )
+            })?;
         account.provider_reported = summary.provider_reported;
         account.available = summary.available;
         account.reconciliation_difference = summary
@@ -109,7 +114,7 @@ pub(crate) async fn rename_account(
         name: request.name,
         expected_version: account_version(request.expected_version)?,
         idempotency_key: idempotency_key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
     };
     state
@@ -134,7 +139,7 @@ pub(crate) async fn archive_account(
             account_id: LedgerAccountId::new(id),
             expected_version: account_version(request.expected_version)?,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -156,7 +161,7 @@ pub(crate) async fn restore_account(
             account_id: LedgerAccountId::new(id),
             expected_version: account_version(request.expected_version)?,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -211,7 +216,7 @@ pub(crate) async fn record_transaction(
             tags,
             budget_visibility: request.budget_visibility,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -292,7 +297,7 @@ pub(crate) async fn update_annotation(
             expected_version: AnnotationVersion::new(request.expected_version)
                 .map_err(map_ledger_error)?,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -320,7 +325,7 @@ pub(crate) async fn reverse_transaction(
             journal_entry_id: JournalEntryId::new(id),
             reason: request.reason,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -358,7 +363,7 @@ pub(crate) async fn replace_transaction(
             tags,
             budget_visibility: request.budget_visibility,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -405,7 +410,7 @@ pub(crate) async fn transfer(
             implied_rate,
             description: request.description,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -438,7 +443,7 @@ pub(crate) async fn correct_balance(
             reason: request.reason,
             observed_at: request.observed_at,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -490,7 +495,7 @@ pub(crate) async fn approve_reconciliation(
                 .map_err(map_ledger_error)?,
             reason: request.reason,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -515,7 +520,7 @@ pub(crate) async fn dismiss_reconciliation(
                 .map_err(map_ledger_error)?,
             reason: request.reason,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -583,7 +588,10 @@ fn map_currency_error(error: CurrencyError) -> ApiError {
     if error.is_not_found() || error.is_disabled() {
         ApiError::bad_request("currency is unknown or inactive")
     } else {
-        ApiError::internal()
+        ApiError::internal(
+            "reference_data.persistence",
+            "currency storage operation failed",
+        )
     }
 }
 
@@ -597,7 +605,7 @@ fn map_ledger_error(error: LedgerError) -> ApiError {
     {
         ApiError::conflict("ledger conflict")
     } else if error.is_persistence() {
-        ApiError::internal()
+        ApiError::internal("ledger.persistence", "ledger storage operation failed")
     } else {
         ApiError::bad_request("invalid ledger request")
     }

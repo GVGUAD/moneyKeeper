@@ -55,7 +55,10 @@ fn map_error(error: PreferencesError) -> ApiError {
     } else if error.is_version_conflict() {
         ApiError::conflict("preferences version conflict")
     } else {
-        ApiError::internal()
+        ApiError::internal(
+            "preferences.persistence",
+            "preferences storage operation failed",
+        )
     }
 }
 

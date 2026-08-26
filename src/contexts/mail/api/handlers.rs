@@ -81,9 +81,13 @@ fn map_mail(error: MailFacadeError) -> ApiError {
     } else if error.is_invalid() {
         ApiError::bad_request("invalid_oauth_state")
     } else if error.is_oauth_provider() {
-        ApiError::bad_gateway("oauth_provider_failed")
+        ApiError::bad_gateway(
+            "oauth_provider_failed",
+            "mail.oauth_provider",
+            "OAuth provider request failed",
+        )
     } else {
-        ApiError::internal()
+        ApiError::internal("mail.persistence", "mail storage operation failed")
     }
 }
 pub(crate) async fn list(
@@ -93,7 +97,7 @@ pub(crate) async fn list(
     f.list_connections(user)
         .await
         .map(|v| Json(json!({"connections":v})))
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal("mail.persistence", "mail connection query failed"))
 }
 pub(crate) async fn status(
     State(f): State<MailFacade>,
@@ -102,7 +106,7 @@ pub(crate) async fn status(
 ) -> Result<Json<Value>, ApiError> {
     f.connection_status(user, GmailConnectionId::new(id))
         .await
-        .map_err(|_| ApiError::internal())?
+        .map_err(|_| ApiError::internal("mail.persistence", "mail connection query failed"))?
         .map(Json)
         .ok_or_else(|| ApiError::not_found("email connection not found"))
 }

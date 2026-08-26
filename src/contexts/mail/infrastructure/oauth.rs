@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use serde::Deserialize;
+use std::time::Instant;
 
 use crate::contexts::mail::application::ports::{GmailOAuth, OAuthTokens};
 
@@ -35,9 +36,9 @@ impl std::fmt::Debug for GoogleOAuthClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("GoogleOAuthClient")
-            .field("client_id", &self.client_id)
+            .field("client_id", &"[REDACTED]")
             .field("client_secret", &"[REDACTED]")
-            .field("redirect_uri", &self.redirect_uri)
+            .field("redirect_uri", &"[REDACTED]")
             .finish_non_exhaustive()
     }
 }
@@ -76,7 +77,11 @@ impl GoogleOAuthClient {
         Ok(())
     }
 
-    async fn token_request(&self, fields: &[(&str, &str)]) -> anyhow::Result<OAuthTokens> {
+    async fn token_request(
+        &self,
+        operation: &'static str,
+        fields: &[(&str, &str)],
+    ) -> anyhow::Result<OAuthTokens> {
         #[derive(Deserialize)]
         struct TokenResponse {
             access_token: String,
@@ -86,13 +91,17 @@ impl GoogleOAuthClient {
         }
 
         self.configured()?;
+        let started = Instant::now();
         let response = self
             .http
             .post(GOOGLE_TOKEN_URL)
             .form(fields)
             .send()
             .await
-            .map_err(|_| OAuthProviderError::Transient)?;
+            .map_err(|error| {
+                log_oauth_transport(operation, &error, started.elapsed());
+                OAuthProviderError::Transient
+            })?;
         if !response.status().is_success() {
             #[derive(Deserialize)]
             struct ErrorResponse {
@@ -106,20 +115,34 @@ impl GoogleOAuthClient {
                 .map(|body| body.error)
                 .unwrap_or_default();
             if error_code == "invalid_grant" || status == reqwest::StatusCode::UNAUTHORIZED {
+                log_oauth_failure(operation, status, "invalid_credentials", started.elapsed());
                 return Err(OAuthProviderError::InvalidCredentials.into());
             }
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                log_oauth_failure(operation, status, "transient", started.elapsed());
                 return Err(OAuthProviderError::Transient.into());
             }
+            log_oauth_failure(operation, status, "rejected", started.elapsed());
             return Err(OAuthProviderError::Rejected.into());
         }
-        let response = response
-            .json::<TokenResponse>()
-            .await
-            .map_err(|_| OAuthProviderError::Rejected)?;
+        let status = response.status();
+        let response = response.json::<TokenResponse>().await.map_err(|_| {
+            log_oauth_failure(operation, status, "invalid_response", started.elapsed());
+            OAuthProviderError::Rejected
+        })?;
         if response.access_token.trim().is_empty() || response.expires_in <= 0 {
+            log_oauth_failure(operation, status, "invalid_response", started.elapsed());
             return Err(OAuthProviderError::Rejected.into());
         }
+        tracing::info!(
+            event.name = "provider.request.completed",
+            provider = "google_oauth",
+            operation,
+            outcome = "success",
+            http.status = status.as_u16(),
+            duration_ms = elapsed_ms(started.elapsed()),
+            "Provider request completed"
+        );
         Ok(OAuthTokens {
             access_token: response.access_token,
             refresh_token: response
@@ -128,6 +151,52 @@ impl GoogleOAuthClient {
             expires_at: Utc::now() + Duration::seconds((response.expires_in - 60).max(1)),
         })
     }
+}
+
+fn log_oauth_transport(
+    operation: &'static str,
+    error: &reqwest::Error,
+    elapsed: std::time::Duration,
+) {
+    tracing::warn!(
+        event.name = "provider.request.completed",
+        provider = "google_oauth",
+        operation,
+        outcome = transport_outcome(error),
+        duration_ms = elapsed_ms(elapsed),
+        "Provider request completed"
+    );
+}
+
+fn log_oauth_failure(
+    operation: &'static str,
+    status: reqwest::StatusCode,
+    outcome: &'static str,
+    elapsed: std::time::Duration,
+) {
+    tracing::warn!(
+        event.name = "provider.request.completed",
+        provider = "google_oauth",
+        operation,
+        outcome,
+        http.status = status.as_u16(),
+        duration_ms = elapsed_ms(elapsed),
+        "Provider request completed"
+    );
+}
+
+fn transport_outcome(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect_error"
+    } else {
+        "transport_error"
+    }
+}
+
+fn elapsed_ms(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[async_trait]
@@ -149,25 +218,31 @@ impl GmailOAuth for GoogleOAuthClient {
     }
 
     async fn exchange(&self, code: &str, verifier: &str) -> anyhow::Result<OAuthTokens> {
-        self.token_request(&[
-            ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
-            ("code", code),
-            ("code_verifier", verifier),
-            ("grant_type", "authorization_code"),
-            ("redirect_uri", &self.redirect_uri),
-        ])
+        self.token_request(
+            "exchange_token",
+            &[
+                ("client_id", &self.client_id),
+                ("client_secret", &self.client_secret),
+                ("code", code),
+                ("code_verifier", verifier),
+                ("grant_type", "authorization_code"),
+                ("redirect_uri", &self.redirect_uri),
+            ],
+        )
         .await
     }
 
     async fn refresh(&self, refresh_token: &str) -> anyhow::Result<OAuthTokens> {
         let mut tokens = self
-            .token_request(&[
-                ("client_id", &self.client_id),
-                ("client_secret", &self.client_secret),
-                ("refresh_token", refresh_token),
-                ("grant_type", "refresh_token"),
-            ])
+            .token_request(
+                "refresh_token",
+                &[
+                    ("client_id", &self.client_id),
+                    ("client_secret", &self.client_secret),
+                    ("refresh_token", refresh_token),
+                    ("grant_type", "refresh_token"),
+                ],
+            )
             .await?;
         tokens.refresh_token = Some(refresh_token.to_owned());
         Ok(tokens)
@@ -213,7 +288,10 @@ mod tests {
         assert!(url.contains("code_challenge=pkce-challenge"));
         assert!(url.contains("access_type=offline"));
         assert!(!url.contains("top-secret"));
-        assert!(!format!("{client:?}").contains("top-secret"));
+        let debug = format!("{client:?}");
+        assert!(!debug.contains("top-secret"));
+        assert!(!debug.contains("client-id"));
+        assert!(!debug.contains("example.test"));
     }
 
     #[test]

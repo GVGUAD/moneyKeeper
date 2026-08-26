@@ -18,7 +18,7 @@ use crate::contexts::loans::public::{
     RecordLoanMovement, ReviseLoanTerms,
 };
 use crate::contexts::reference_data::public::CurrencyCatalog;
-use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey};
+use crate::shared_kernel::{CurrencyCode, IdempotencyKey};
 
 pub(crate) async fn list(
     State(state): State<LoansApiState>,
@@ -38,9 +38,9 @@ pub(crate) async fn get(
         .await
         .map_err(map_error)?
         .ok_or_else(|| ApiError::not_found("loan was not found"))?;
-    Ok(Json(
-        serde_json::to_value(loan).map_err(|_| ApiError::internal())?,
-    ))
+    Ok(Json(serde_json::to_value(loan).map_err(|_| {
+        ApiError::internal("loans.response.serialization", "serialize loan response")
+    })?))
 }
 pub(crate) async fn terms(
     State(state): State<LoansApiState>,
@@ -81,9 +81,9 @@ pub(crate) async fn movement(
         .await
         .map_err(map_error)?
         .ok_or_else(|| ApiError::not_found("loan movement was not found"))?;
-    Ok(Json(
-        serde_json::to_value(row).map_err(|_| ApiError::internal())?,
-    ))
+    Ok(Json(serde_json::to_value(row).map_err(|_| {
+        ApiError::internal("loans.response.serialization", "serialize loan response")
+    })?))
 }
 
 pub(crate) async fn open(
@@ -111,14 +111,16 @@ pub(crate) async fn open(
             due_date: body.due_date,
             annual_rate: body.annual_rate.as_deref().map(rate_decimal).transpose()?,
             idempotency_key: key,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: Utc::now(),
         })
         .await
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| {
+            ApiError::internal("loans.response.serialization", "serialize loan response")
+        })?),
     ))
 }
 
@@ -145,14 +147,14 @@ pub(crate) async fn revise(
             reason: body.reason,
             expected_version: body.expected_version,
             idempotency_key: key,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: Utc::now(),
         })
         .await
         .map_err(map_error)?;
-    Ok(Json(
-        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
-    ))
+    Ok(Json(serde_json::to_value(result).map_err(|_| {
+        ApiError::internal("loans.response.serialization", "serialize loan response")
+    })?))
 }
 
 pub(crate) async fn disburse(
@@ -225,14 +227,16 @@ async fn record(
             replaces,
             expected_version: body.expected_version,
             idempotency_key: key,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: Utc::now(),
         })
         .await
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| {
+            ApiError::internal("loans.response.serialization", "serialize loan response")
+        })?),
     ))
 }
 
@@ -250,14 +254,14 @@ pub(crate) async fn close(
             LoanAgreementId::new(id),
             body.expected_version,
             idempotency(&headers)?,
-            CorrelationId::generate(),
+            crate::api::request_correlation_id(),
             Utc::now(),
         )
         .await
         .map_err(map_error)?;
-    Ok(Json(
-        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
-    ))
+    Ok(Json(serde_json::to_value(result).map_err(|_| {
+        ApiError::internal("loans.response.serialization", "serialize loan response")
+    })?))
 }
 
 pub(crate) async fn reverse(
@@ -280,14 +284,16 @@ pub(crate) async fn reverse(
             reason: body.reason,
             expected_version: body.expected_version,
             idempotency_key: key,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: Utc::now(),
         })
         .await
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| {
+            ApiError::internal("loans.response.serialization", "serialize loan response")
+        })?),
     ))
 }
 pub(crate) async fn replace(
@@ -329,7 +335,7 @@ pub(crate) async fn replace(
                 replaces: Some(LoanMovementId::new(original)),
                 expected_version: body.expected_version,
                 idempotency_key: key,
-                correlation_id: CorrelationId::generate(),
+                correlation_id: crate::api::request_correlation_id(),
                 occurred_at: Utc::now(),
             },
             LoanMovementId::new(original),
@@ -338,7 +344,9 @@ pub(crate) async fn replace(
         .map_err(map_error)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(serde_json::to_value(result).map_err(|_| ApiError::internal())?),
+        Json(serde_json::to_value(result).map_err(|_| {
+            ApiError::internal("loans.response.serialization", "serialize loan response")
+        })?),
     ))
 }
 
@@ -390,6 +398,6 @@ fn map_error(error: crate::contexts::loans::public::LoansError) -> ApiError {
     } else if error.is_invalid() {
         ApiError::bad_request("invalid loan command")
     } else {
-        ApiError::internal()
+        ApiError::internal("loans.persistence", "loan storage operation failed")
     }
 }

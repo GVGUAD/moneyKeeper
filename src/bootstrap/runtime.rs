@@ -1,6 +1,9 @@
 //! Moneykeeper composition root and application lifecycle.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use axum::extract::{Request, State};
@@ -306,6 +309,18 @@ pub struct WorkerRunReport {
     pub replayed: u32,
     pub retry_scheduled: bool,
     pub fenced: bool,
+    pub dead_lettered: u32,
+}
+
+impl WorkerRunReport {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.claimed |= other.claimed;
+        self.records = self.records.saturating_add(other.records);
+        self.replayed = self.replayed.saturating_add(other.replayed);
+        self.retry_scheduled |= other.retry_scheduled;
+        self.fenced |= other.fenced;
+        self.dead_lettered = self.dead_lettered.saturating_add(other.dead_lettered);
+    }
 }
 
 impl ContextMaintenanceWorkers {
@@ -317,6 +332,7 @@ impl ContextMaintenanceWorkers {
             replayed: 0,
             retry_scheduled: report.retry_scheduled,
             fenced: report.fenced,
+            dead_lettered: 0,
         })
     }
 
@@ -328,6 +344,7 @@ impl ContextMaintenanceWorkers {
             replayed: report.replayed,
             retry_scheduled: report.retry_scheduled,
             fenced: report.fenced,
+            dead_lettered: 0,
         })
     }
 
@@ -339,6 +356,7 @@ impl ContextMaintenanceWorkers {
             replayed: 0,
             retry_scheduled: report.retry_scheduled,
             fenced: report.fenced,
+            dead_lettered: 0,
         })
     }
 }
@@ -445,6 +463,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
     pub async fn run_accounting_once(&self) -> anyhow::Result<WorkerRunReport> {
@@ -455,6 +474,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
     pub async fn run_reversal_once(&self) -> anyhow::Result<WorkerRunReport> {
@@ -465,6 +485,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
     pub async fn run_replacement_once(&self) -> anyhow::Result<WorkerRunReport> {
@@ -475,6 +496,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
 }
@@ -520,6 +542,7 @@ impl PortfolioSettlementRunner {
             replayed: 0,
             retry_scheduled: r.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
 }
@@ -550,6 +573,7 @@ impl SharingWorkflowRunner {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
 }
@@ -691,6 +715,14 @@ pub async fn serve<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    let serving_started = Instant::now();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "http",
+        outcome = "starting",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
     let health = Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
@@ -699,7 +731,9 @@ where
         readiness.clone(),
         require_readiness,
     ));
-    let application = health.merge(business);
+    let application = health
+        .merge(business)
+        .layer(middleware::from_fn(crate::api::middleware::trace_request));
 
     let (stop_http, mut stop_http_rx) = tokio::sync::watch::channel(false);
     let http = tokio::spawn(async move {
@@ -715,10 +749,20 @@ where
     });
     tokio::task::yield_now().await;
 
+    let worker_barrier_started = Instant::now();
     let worker_runtime = match workers.start().await {
         Ok(runtime) => runtime,
         Err(error) => {
             readiness.mark_not_ready();
+            tracing::error!(
+                event.name = "app.lifecycle",
+                stage = "worker_barrier",
+                outcome = "failed",
+                error.category = "worker.startup",
+                error.message = "worker startup barrier failed",
+                duration_ms = elapsed_ms(worker_barrier_started.elapsed()),
+                "Application lifecycle transition"
+            );
             let _ = stop_http.send(true);
             http.await
                 .context("join not-ready Moneykeeper HTTP listener")??;
@@ -726,12 +770,57 @@ where
         }
     };
     readiness.mark_ready();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "readiness",
+        outcome = "ready",
+        duration_ms = elapsed_ms(serving_started.elapsed()),
+        "Application lifecycle transition"
+    );
 
     shutdown.await;
+    let shutdown_started = Instant::now();
     readiness.mark_not_ready();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "readiness",
+        outcome = "not_ready",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "http_draining",
+        outcome = "started",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
     let _ = stop_http.send(true);
     http.await.context("join Moneykeeper HTTP listener")??;
-    worker_runtime.shutdown().await
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "http_draining",
+        outcome = "completed",
+        duration_ms = elapsed_ms(shutdown_started.elapsed()),
+        "Application lifecycle transition"
+    );
+    let worker_shutdown_started = Instant::now();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "worker_shutdown",
+        outcome = "started",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
+    worker_runtime.shutdown().await?;
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "worker_shutdown",
+        outcome = "completed",
+        duration_ms = elapsed_ms(worker_shutdown_started.elapsed()),
+        "Application lifecycle transition"
+    );
+    Ok(())
 }
 
 async fn live() -> impl IntoResponse {

@@ -19,7 +19,7 @@ async fn report(
     f.read(user, range, kind)
         .await
         .map(Json)
-        .map_err(|_| ApiError::internal())
+        .map_err(|_| ApiError::internal("reporting.persistence", "report query failed"))
 }
 macro_rules! handler {
     ($name:ident,$kind:literal) => {
