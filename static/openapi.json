@@ -243,8 +243,15 @@
       },
       "get": {
         "operationId": "listLedgerTransactions", "summary": "List transactions",
-        "description": "Lists tenant journal facts with stable reverse chronological cursor pagination.",
-        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/AfterOccurredAt"},{"$ref":"#/components/parameters/AfterSequence"},{"$ref":"#/components/parameters/ActivityLimit"}], "responses": {"200": {"description": "Transactions", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Journal"}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "description": "Lists tenant journal facts with stable reverse chronological cursor pagination. Supplying any Activity filter requires both half-open range parameters.",
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/AfterOccurredAt"},{"$ref":"#/components/parameters/AfterSequence"},{"$ref":"#/components/parameters/ActivityLimit"},{"$ref":"#/components/parameters/FromOccurredAt"},{"$ref":"#/components/parameters/BeforeOccurredAt"},{"$ref":"#/components/parameters/ActivityKind"}], "responses": {"200": {"description": "Transactions", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Journal"}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/summary": {
+      "get": {
+        "operationId": "summarizeLedgerTransactions", "summary": "Summarize Activity transactions",
+        "description": "Returns exact transaction count, distinct category count, and cash-flow totals for one tenant-scoped half-open Activity range.",
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/RequiredFromOccurredAt"},{"$ref":"#/components/parameters/RequiredBeforeOccurredAt"},{"$ref":"#/components/parameters/ActivityKind"}], "responses": {"200": {"description": "Exact Activity summary", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ActivitySummary"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}": {
@@ -517,7 +524,12 @@
       "IdempotencyKey": {"name":"Idempotency-Key","in":"header","required":true,"schema":{"type":"string","minLength":1,"maxLength":200}},
       "AfterOccurredAt": {"name":"after_occurred_at","in":"query","required":false,"schema":{"type":"string","format":"date-time"}},
       "AfterSequence": {"name":"after_sequence","in":"query","required":false,"schema":{"type":"integer","format":"int64","minimum":1}},
-      "ActivityLimit": {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":200,"default":50}}
+      "ActivityLimit": {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":200,"default":50}},
+      "FromOccurredAt": {"name":"from_occurred_at","in":"query","required":false,"schema":{"type":"string","format":"date-time"}},
+      "BeforeOccurredAt": {"name":"before_occurred_at","in":"query","required":false,"schema":{"type":"string","format":"date-time"}},
+      "RequiredFromOccurredAt": {"name":"from_occurred_at","in":"query","required":true,"schema":{"type":"string","format":"date-time"}},
+      "RequiredBeforeOccurredAt": {"name":"before_occurred_at","in":"query","required":true,"schema":{"type":"string","format":"date-time"}},
+      "ActivityKind": {"name":"kind","in":"query","required":false,"schema":{"type":"string","enum":["all","income","expense"],"default":"all"}}
     },
     "responses": {
       "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
@@ -627,6 +639,8 @@
       "JournalActor": {"type":"object","required":["kind"],"properties":{"kind":{"type":"string","enum":["user","system","external"]},"user_id":{"type":"string","format":"uuid"},"source_kind":{"type":"string"},"source_reference":{"type":"string"}}},
       "Correction": {"type":"object","required":["account_id","before_display_balance","target_display_balance","display_delta","observed_balance_version","reason","observed_at"],"properties":{"account_id":{"type":"string","format":"uuid"},"before_display_balance":{"$ref":"#/components/schemas/DecimalString"},"target_display_balance":{"$ref":"#/components/schemas/DecimalString"},"display_delta":{"$ref":"#/components/schemas/DecimalString"},"observed_balance_version":{"type":"integer","minimum":0},"reason":{"type":"string"},"observed_at":{"type":"string","format":"date-time"}}},
       "Journal": {"type":"object","required":["id","user_id","ledger_sequence","source","purpose","actor","description","occurred_at","recorded_at","correlation_id","relations","postings","annotation","reversed_by_journal_id","replaced_by_journal_id","correction"],"properties":{"id":{"type":"string","format":"uuid"},"user_id":{"type":"string","format":"uuid"},"ledger_sequence":{"type":"integer","format":"int64","minimum":1},"source":{"type":"string","enum":["manual","import","system","correction","reconciliation"]},"purpose":{"type":"string","enum":["ordinary","correction","reversal","approved_reconciliation"]},"actor":{"$ref":"#/components/schemas/JournalActor"},"description":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"},"recorded_at":{"type":"string","format":"date-time"},"correlation_id":{"type":"string","format":"uuid"},"relations":{"$ref":"#/components/schemas/JournalRelations"},"postings":{"type":"array","minItems":2,"items":{"$ref":"#/components/schemas/Posting"}},"annotation":{"oneOf":[{"$ref":"#/components/schemas/JournalAnnotation"},{"type":"null"}]},"reversed_by_journal_id":{"type":["string","null"],"format":"uuid"},"replaced_by_journal_id":{"type":["string","null"],"format":"uuid"},"correction":{"oneOf":[{"$ref":"#/components/schemas/Correction"},{"type":"null"}]}}},
+      "ActivityTotal": {"type":"object","required":["currency","amount"],"properties":{"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"amount":{"$ref":"#/components/schemas/DecimalString"}}},
+      "ActivitySummary": {"type":"object","required":["transaction_count","category_count","totals"],"properties":{"transaction_count":{"type":"integer","format":"int64","minimum":0},"category_count":{"type":"integer","format":"int64","minimum":0},"totals":{"type":"array","items":{"$ref":"#/components/schemas/ActivityTotal"}}}},
       "TransactionResult": {"type":"object","required":["journal_entry_id","effects","annotation_version","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"annotation_version":{"type":"integer","minimum":1},"replayed":{"type":"boolean"}}},
       "AnnotationResult": {"type":"object","required":["journal_entry_id","version","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"version":{"type":"integer","minimum":1},"replayed":{"type":"boolean"}}},
       "FinancialChangeResult": {"type":"object","required":["journal_entry_id","effects","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"replayed":{"type":"boolean"}}},

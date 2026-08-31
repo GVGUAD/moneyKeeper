@@ -108,7 +108,7 @@ pub struct CurrencyDefinition {
     pub as_of: DateTime<Utc>,
 }
 
-/// Resolves enabled currency definitions without exposing persistence details.
+/// Resolves currency definitions without exposing persistence details.
 pub trait CurrencyCatalog: Send + Sync {
     fn require_enabled(
         &self,
@@ -116,6 +116,11 @@ pub trait CurrencyCatalog: Send + Sync {
     ) -> impl Future<Output = Result<CurrencyDefinition, CurrencyError>> + Send;
 
     fn list_enabled(
+        &self,
+    ) -> impl Future<Output = Result<Vec<CurrencyDefinition>, CurrencyError>> + Send;
+
+    /// Lists every known definition, including disabled provider evidence.
+    fn list_known(
         &self,
     ) -> impl Future<Output = Result<Vec<CurrencyDefinition>, CurrencyError>> + Send;
 }
@@ -132,6 +137,10 @@ impl CurrencyCatalog for CurrencyCatalogFacade {
 
     async fn list_enabled(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError> {
         application::list_enabled(self.currencies.as_ref()).await
+    }
+
+    async fn list_known(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError> {
+        application::list_known(self.currencies.as_ref()).await
     }
 }
 

@@ -3,7 +3,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::contexts::ledger::public::{
-    AccountKind, AccountNature, BudgetVisibility, ManualTransactionKind,
+    AccountKind, AccountNature, ActivityKind, BudgetVisibility, ManualTransactionKind,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -128,6 +128,25 @@ pub(crate) struct ActivityQuery {
     pub(crate) after_occurred_at: Option<DateTime<Utc>>,
     pub(crate) after_sequence: Option<i64>,
     pub(crate) limit: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TransactionActivityQuery {
+    pub(crate) after_occurred_at: Option<DateTime<Utc>>,
+    pub(crate) after_sequence: Option<i64>,
+    pub(crate) limit: Option<u32>,
+    pub(crate) from_occurred_at: Option<DateTime<Utc>>,
+    pub(crate) before_occurred_at: Option<DateTime<Utc>>,
+    pub(crate) kind: Option<ActivityKind>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ActivitySummaryQuery {
+    pub(crate) from_occurred_at: Option<DateTime<Utc>>,
+    pub(crate) before_occurred_at: Option<DateTime<Utc>>,
+    pub(crate) kind: Option<ActivityKind>,
 }
 
 #[derive(Debug, Deserialize)]

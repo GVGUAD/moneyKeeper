@@ -1,5 +1,7 @@
 //! Pool-backed read-only Ledger query adapter.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use sqlx::{FromRow, PgPool};
@@ -17,8 +19,8 @@ use super::super::{
         ReconciliationVersion, SourceReference,
     },
     public::{
-        AccountView, ActivityCursor, CorrectionView, JournalAnnotationView, JournalView,
-        PostingView, ReconciliationView,
+        AccountView, ActivityCursor, ActivityFilter, ActivitySummary, ActivityTotal,
+        CorrectionView, JournalAnnotationView, JournalView, PostingView, ReconciliationView,
     },
 };
 use super::rows::AccountRow;
@@ -27,6 +29,62 @@ use super::rows::AccountRow;
 #[derive(Clone)]
 pub(crate) struct PgLedgerQueries {
     pool: PgPool,
+}
+
+#[derive(FromRow)]
+struct JournalRow {
+    id: Uuid,
+    user_id: Uuid,
+    ledger_sequence: i64,
+    source: String,
+    purpose: String,
+    description: String,
+    actor_kind: String,
+    actor_reference: Option<String>,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    recorded_at: chrono::DateTime<chrono::Utc>,
+    correlation_id: Uuid,
+    reverses_transaction_id: Option<Uuid>,
+    corrects_transaction_id: Option<Uuid>,
+    replaces_transaction_id: Option<Uuid>,
+    annotation_version: Option<i64>,
+    annotation_description: Option<String>,
+    category_id: Option<Uuid>,
+    annotation_note: Option<String>,
+    annotation_tags: Option<Vec<String>>,
+    annotation_budget_visibility: Option<String>,
+    annotation_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    annotation_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    reversed_by_journal_id: Option<Uuid>,
+    replaced_by_journal_id: Option<Uuid>,
+    correction_account_id: Option<Uuid>,
+    correction_before: Option<Decimal>,
+    correction_target: Option<Decimal>,
+    correction_delta: Option<Decimal>,
+    correction_balance_version: Option<i64>,
+    correction_reason: Option<String>,
+    correction_observed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(FromRow)]
+struct PostingRow {
+    journal_entry_id: Uuid,
+    id: Uuid,
+    account_id: Uuid,
+    account_kind: String,
+    account_authority: String,
+    position: i16,
+    currency: String,
+    account_nature: String,
+    signed_amount: Decimal,
+}
+
+#[derive(FromRow)]
+struct ActivitySummaryRow {
+    transaction_count: i64,
+    category_count: i64,
+    currency: Option<String>,
+    amount: Option<Decimal>,
 }
 
 impl PgLedgerQueries {
@@ -98,11 +156,7 @@ impl PgLedgerQueries {
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
-        let mut views = Vec::with_capacity(ids.len());
-        for id in ids {
-            views.push(self.get_journal(user_id, JournalEntryId::new(id)).await?);
-        }
-        Ok(views)
+        self.load_journals(user_id, &ids).await
     }
 
     pub(crate) async fn list_journals(
@@ -128,11 +182,111 @@ impl PgLedgerQueries {
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
-        let mut views = Vec::with_capacity(ids.len());
-        for id in ids {
-            views.push(self.get_journal(user_id, JournalEntryId::new(id)).await?);
+        self.load_journals(user_id, &ids).await
+    }
+
+    pub(crate) async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        if limit == 0 || limit > 200 {
+            return Err(LedgerError::invalid_state(
+                "activity limit must be 1 to 200",
+            ));
         }
-        Ok(views)
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT j.id FROM ledger.journal_entries j \
+             WHERE j.user_id = $1 \
+               AND j.occurred_at >= $2 AND j.occurred_at < $3 \
+               AND ($4 = 'all' OR EXISTS ( \
+                   SELECT 1 FROM ledger.postings flow \
+                   WHERE flow.user_id = j.user_id AND flow.journal_entry_id = j.id \
+                     AND flow.account_nature IN ('income', 'expense') \
+                   GROUP BY flow.currency \
+                   HAVING ($4 = 'income' AND -SUM(flow.signed_amount) > 0) \
+                       OR ($4 = 'expense' AND -SUM(flow.signed_amount) < 0) \
+               )) \
+               AND ($5::timestamptz IS NULL OR (j.occurred_at, j.ledger_sequence) < ($5, $6)) \
+             ORDER BY j.occurred_at DESC, j.ledger_sequence DESC LIMIT $7",
+        )
+        .bind(user_id.into_uuid())
+        .bind(filter.from_occurred_at())
+        .bind(filter.before_occurred_at())
+        .bind(filter.kind().as_str())
+        .bind(after.map(|cursor| cursor.occurred_at))
+        .bind(after.map(|cursor| cursor.ledger_sequence))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(LedgerError::storage)?;
+        self.load_journals(user_id, &ids).await
+    }
+
+    pub(crate) async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError> {
+        let rows = sqlx::query_as::<_, ActivitySummaryRow>(
+            "WITH matching_journals AS ( \
+                 SELECT j.id FROM ledger.journal_entries j \
+                 WHERE j.user_id = $1 \
+                   AND j.occurred_at >= $2 AND j.occurred_at < $3 \
+                   AND ($4 = 'all' OR EXISTS ( \
+                       SELECT 1 FROM ledger.postings flow \
+                       WHERE flow.user_id = j.user_id AND flow.journal_entry_id = j.id \
+                         AND flow.account_nature IN ('income', 'expense') \
+                       GROUP BY flow.currency \
+                       HAVING ($4 = 'income' AND -SUM(flow.signed_amount) > 0) \
+                           OR ($4 = 'expense' AND -SUM(flow.signed_amount) < 0) \
+                   )) \
+             ), counts AS ( \
+                 SELECT COUNT(*)::bigint AS transaction_count, \
+                        COUNT(DISTINCT a.category_id)::bigint AS category_count \
+                 FROM matching_journals m \
+                 LEFT JOIN ledger.transaction_annotations a \
+                   ON a.user_id = $1 AND a.journal_entry_id = m.id \
+             ), totals AS ( \
+                 SELECT p.currency, -SUM(p.signed_amount) AS amount \
+                 FROM matching_journals m \
+                 JOIN ledger.postings p ON p.user_id = $1 AND p.journal_entry_id = m.id \
+                 WHERE p.account_nature IN ('income', 'expense') \
+                 GROUP BY p.currency HAVING SUM(p.signed_amount) <> 0 \
+             ) \
+             SELECT c.transaction_count, c.category_count, t.currency, t.amount \
+             FROM counts c LEFT JOIN totals t ON TRUE \
+             ORDER BY ABS(t.amount) DESC NULLS LAST, t.currency",
+        )
+        .bind(user_id.into_uuid())
+        .bind(filter.from_occurred_at())
+        .bind(filter.before_occurred_at())
+        .bind(filter.kind().as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(LedgerError::storage)?;
+
+        let first = rows
+            .first()
+            .ok_or_else(|| LedgerError::persistence("activity summary returned no counts"))?;
+        let totals = rows
+            .iter()
+            .filter_map(|row| row.currency.as_ref().zip(row.amount))
+            .map(|(currency, amount)| {
+                Ok(ActivityTotal {
+                    currency: CurrencyCode::new(currency.clone())
+                        .map_err(|_| LedgerError::persistence("stored currency invalid"))?,
+                    amount,
+                })
+            })
+            .collect::<Result<Vec<_>, LedgerError>>()?;
+        Ok(ActivitySummary {
+            transaction_count: first.transaction_count,
+            category_count: first.category_count,
+            totals,
+        })
     }
 
     pub(crate) async fn get_journal(
@@ -140,41 +294,23 @@ impl PgLedgerQueries {
         user_id: UserId,
         id: JournalEntryId,
     ) -> Result<JournalView, LedgerError> {
-        #[derive(FromRow)]
-        struct JournalRow {
-            id: Uuid,
-            user_id: Uuid,
-            ledger_sequence: i64,
-            source: String,
-            purpose: String,
-            description: String,
-            actor_kind: String,
-            actor_reference: Option<String>,
-            occurred_at: chrono::DateTime<chrono::Utc>,
-            recorded_at: chrono::DateTime<chrono::Utc>,
-            correlation_id: Uuid,
-            reverses_transaction_id: Option<Uuid>,
-            corrects_transaction_id: Option<Uuid>,
-            replaces_transaction_id: Option<Uuid>,
-            annotation_version: Option<i64>,
-            annotation_description: Option<String>,
-            category_id: Option<Uuid>,
-            annotation_note: Option<String>,
-            annotation_tags: Option<Vec<String>>,
-            annotation_budget_visibility: Option<String>,
-            annotation_created_at: Option<chrono::DateTime<chrono::Utc>>,
-            annotation_updated_at: Option<chrono::DateTime<chrono::Utc>>,
-            reversed_by_journal_id: Option<Uuid>,
-            replaced_by_journal_id: Option<Uuid>,
-            correction_account_id: Option<Uuid>,
-            correction_before: Option<Decimal>,
-            correction_target: Option<Decimal>,
-            correction_delta: Option<Decimal>,
-            correction_balance_version: Option<i64>,
-            correction_reason: Option<String>,
-            correction_observed_at: Option<chrono::DateTime<chrono::Utc>>,
+        self.load_journals(user_id, &[id.into_uuid()])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(LedgerError::not_found)
+    }
+
+    async fn load_journals(
+        &self,
+        user_id: UserId,
+        ids: &[Uuid],
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
-        let row = sqlx::query_as::<_, JournalRow>(
+
+        let rows = sqlx::query_as::<_, JournalRow>(
             "SELECT j.id, j.user_id, j.ledger_sequence, j.source, j.purpose, j.description, j.actor_kind, j.actor_reference, j.occurred_at, \
                     j.recorded_at, j.correlation_id, j.reverses_transaction_id, \
                     j.corrects_transaction_id, j.replaces_transaction_id, a.version AS annotation_version, \
@@ -193,175 +329,45 @@ impl PgLedgerQueries {
              LEFT JOIN ledger.journal_entries replacement \
                ON replacement.replaces_transaction_id = j.id AND replacement.user_id = j.user_id \
              LEFT JOIN ledger.balance_correction_details c ON c.journal_entry_id = j.id AND c.user_id = j.user_id \
-             WHERE j.id = $1 AND j.user_id = $2",
-        ).bind(id.into_uuid()).bind(user_id.into_uuid())
-         .fetch_optional(&self.pool).await.map_err(LedgerError::storage)?
-         .ok_or_else(LedgerError::not_found)?;
-        #[derive(FromRow)]
-        struct PostingRow {
-            id: Uuid,
-            account_id: Uuid,
-            account_kind: String,
-            account_authority: String,
-            position: i16,
-            currency: String,
-            account_nature: String,
-            signed_amount: Decimal,
-        }
-        let posting_rows = sqlx::query_as::<_, PostingRow>(
-            "SELECT p.id, p.account_id, p.position, p.currency, p.account_nature, p.signed_amount, \
-                    a.kind AS account_kind,a.authority AS account_authority \
-             FROM ledger.postings p JOIN ledger.accounts a ON a.id=p.account_id AND a.user_id=p.user_id \
-             WHERE p.journal_entry_id = $1 AND p.user_id = $2 ORDER BY p.position",
+             WHERE j.user_id = $1 AND j.id = ANY($2)",
         )
-        .bind(id.into_uuid())
         .bind(user_id.into_uuid())
+        .bind(ids)
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
-        let postings = posting_rows
+
+        let posting_rows = sqlx::query_as::<_, PostingRow>(
+            "SELECT p.journal_entry_id, p.id, p.account_id, p.position, p.currency, p.account_nature, p.signed_amount, \
+                    a.kind AS account_kind,a.authority AS account_authority \
+             FROM ledger.postings p JOIN ledger.accounts a ON a.id=p.account_id AND a.user_id=p.user_id \
+             WHERE p.user_id = $1 AND p.journal_entry_id = ANY($2) \
+             ORDER BY p.journal_entry_id, p.position",
+        )
+        .bind(user_id.into_uuid())
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(LedgerError::storage)?;
+
+        let mut postings_by_journal = HashMap::<Uuid, Vec<PostingView>>::with_capacity(ids.len());
+        for posting in posting_rows {
+            postings_by_journal
+                .entry(posting.journal_entry_id)
+                .or_default()
+                .push(posting.into_view()?);
+        }
+
+        let mut rows_by_id = rows
             .into_iter()
-            .map(|posting| {
-                let nature = AccountNature::parse(&posting.account_nature)?;
-                Ok(PostingView {
-                    id: PostingId::new(posting.id),
-                    account_id: LedgerAccountId::new(posting.account_id),
-                    account_kind: AccountKind::parse(&posting.account_kind)?,
-                    account_nature: nature,
-                    account_authority: AccountAuthority::parse(&posting.account_authority)?,
-                    position: u16::try_from(posting.position)
-                        .map_err(|_| LedgerError::persistence("stored position invalid"))?,
-                    currency: CurrencyCode::new(posting.currency)
-                        .map_err(|_| LedgerError::persistence("stored currency invalid"))?,
-                    signed_amount: posting.signed_amount,
-                    display_effect: posting.signed_amount * Decimal::from(nature.normal_sign()),
-                })
-            })
-            .collect::<Result<Vec<_>, LedgerError>>()?;
-        let relations = if let Some(related) = row.reverses_transaction_id {
-            JournalRelations::reversal_of(JournalEntryId::new(related))
-        } else if let Some(related) = row.corrects_transaction_id {
-            JournalRelations::correction_of(JournalEntryId::new(related))
-        } else if let Some(related) = row.replaces_transaction_id {
-            JournalRelations::replacement_of(JournalEntryId::new(related))
-        } else {
-            JournalRelations::none()
-        };
-        Ok(JournalView {
-            id: JournalEntryId::new(row.id),
-            user_id: UserId::new(row.user_id),
-            ledger_sequence: row.ledger_sequence,
-            source: match row.source.as_str() {
-                "manual" => JournalSource::Manual,
-                "import" => JournalSource::Import,
-                "system" => JournalSource::System,
-                "correction" => JournalSource::Correction,
-                "reconciliation" => JournalSource::Reconciliation,
-                _ => return Err(LedgerError::persistence("stored source invalid")),
-            },
-            purpose: PostingPurpose::parse(&row.purpose)?,
-            actor: match row.actor_kind.as_str() {
-                "user" => Actor::User(UserId::new(
-                    Uuid::parse_str(row.actor_reference.as_deref().unwrap_or(""))
-                        .map_err(|_| LedgerError::persistence("stored user actor is invalid"))?,
-                )),
-                "system" => Actor::System,
-                "external" => {
-                    let reference = row.actor_reference.unwrap_or_default();
-                    let (source_kind, source_reference) = reference
-                        .split_once(':')
-                        .unwrap_or(("external", reference.as_str()));
-                    Actor::External {
-                        source_kind: source_kind.to_owned(),
-                        source_reference: source_reference.to_owned(),
-                    }
-                }
-                _ => return Err(LedgerError::persistence("stored actor kind invalid")),
-            },
-            description: row.description,
-            occurred_at: row.occurred_at,
-            recorded_at: row.recorded_at,
-            correlation_id: CorrelationId::new(row.correlation_id),
-            relations,
-            postings,
-            annotation: match (
-                row.annotation_version,
-                row.annotation_description,
-                row.annotation_tags,
-                row.annotation_budget_visibility,
-                row.annotation_created_at,
-                row.annotation_updated_at,
-            ) {
-                (
-                    Some(version),
-                    Some(description),
-                    Some(tags),
-                    Some(budget_visibility),
-                    Some(created_at),
-                    Some(updated_at),
-                ) => Some(JournalAnnotationView {
-                    version: AnnotationVersion::new(version)?,
-                    description,
-                    category_id: row
-                        .category_id
-                        .map(crate::contexts::classification::public::CategoryId::new),
-                    note: row.annotation_note,
-                    tags,
-                    budget_visibility: match budget_visibility.as_str() {
-                        "included" => super::super::domain::BudgetVisibility::Included,
-                        "excluded" => super::super::domain::BudgetVisibility::Excluded,
-                        _ => {
-                            return Err(LedgerError::persistence(
-                                "stored budget visibility is invalid",
-                            ));
-                        }
-                    },
-                    created_at,
-                    updated_at,
-                }),
-                (None, None, None, None, None, None) => None,
-                _ => {
-                    return Err(LedgerError::persistence(
-                        "stored transaction annotation is incomplete",
-                    ));
-                }
-            },
-            reversed_by_journal_id: row.reversed_by_journal_id.map(JournalEntryId::new),
-            replaced_by_journal_id: row.replaced_by_journal_id.map(JournalEntryId::new),
-            correction: match (
-                row.correction_account_id,
-                row.correction_before,
-                row.correction_target,
-                row.correction_delta,
-                row.correction_balance_version,
-                row.correction_reason,
-                row.correction_observed_at,
-            ) {
-                (
-                    Some(account_id),
-                    Some(before_display_balance),
-                    Some(target_display_balance),
-                    Some(display_delta),
-                    Some(observed_balance_version),
-                    Some(reason),
-                    Some(observed_at),
-                ) => Some(CorrectionView {
-                    account_id: LedgerAccountId::new(account_id),
-                    before_display_balance,
-                    target_display_balance,
-                    display_delta,
-                    observed_balance_version,
-                    reason,
-                    observed_at,
-                }),
-                (None, None, None, None, None, None, None) => None,
-                _ => {
-                    return Err(LedgerError::persistence(
-                        "stored correction detail is incomplete",
-                    ));
-                }
-            },
-        })
+            .map(|row| (row.id, row))
+            .collect::<HashMap<_, _>>();
+        let mut views = Vec::with_capacity(ids.len());
+        for id in ids {
+            let row = rows_by_id.remove(id).ok_or_else(LedgerError::not_found)?;
+            views.push(row.into_view(postings_by_journal.remove(id).unwrap_or_default())?);
+        }
+        Ok(views)
     }
 
     pub(crate) async fn list_reconciliations(
@@ -402,6 +408,154 @@ impl PgLedgerQueries {
     }
 }
 
+impl PostingRow {
+    fn into_view(self) -> Result<PostingView, LedgerError> {
+        let nature = AccountNature::parse(&self.account_nature)?;
+        Ok(PostingView {
+            id: PostingId::new(self.id),
+            account_id: LedgerAccountId::new(self.account_id),
+            account_kind: AccountKind::parse(&self.account_kind)?,
+            account_nature: nature,
+            account_authority: AccountAuthority::parse(&self.account_authority)?,
+            position: u16::try_from(self.position)
+                .map_err(|_| LedgerError::persistence("stored position invalid"))?,
+            currency: CurrencyCode::new(self.currency)
+                .map_err(|_| LedgerError::persistence("stored currency invalid"))?,
+            signed_amount: self.signed_amount,
+            display_effect: self.signed_amount * Decimal::from(nature.normal_sign()),
+        })
+    }
+}
+
+impl JournalRow {
+    fn into_view(self, postings: Vec<PostingView>) -> Result<JournalView, LedgerError> {
+        let relations = if let Some(related) = self.reverses_transaction_id {
+            JournalRelations::reversal_of(JournalEntryId::new(related))
+        } else if let Some(related) = self.corrects_transaction_id {
+            JournalRelations::correction_of(JournalEntryId::new(related))
+        } else if let Some(related) = self.replaces_transaction_id {
+            JournalRelations::replacement_of(JournalEntryId::new(related))
+        } else {
+            JournalRelations::none()
+        };
+        Ok(JournalView {
+            id: JournalEntryId::new(self.id),
+            user_id: UserId::new(self.user_id),
+            ledger_sequence: self.ledger_sequence,
+            source: match self.source.as_str() {
+                "manual" => JournalSource::Manual,
+                "import" => JournalSource::Import,
+                "system" => JournalSource::System,
+                "correction" => JournalSource::Correction,
+                "reconciliation" => JournalSource::Reconciliation,
+                _ => return Err(LedgerError::persistence("stored source invalid")),
+            },
+            purpose: PostingPurpose::parse(&self.purpose)?,
+            actor: match self.actor_kind.as_str() {
+                "user" => Actor::User(UserId::new(
+                    Uuid::parse_str(self.actor_reference.as_deref().unwrap_or(""))
+                        .map_err(|_| LedgerError::persistence("stored user actor is invalid"))?,
+                )),
+                "system" => Actor::System,
+                "external" => {
+                    let reference = self.actor_reference.unwrap_or_default();
+                    let (source_kind, source_reference) = reference
+                        .split_once(':')
+                        .unwrap_or(("external", reference.as_str()));
+                    Actor::External {
+                        source_kind: source_kind.to_owned(),
+                        source_reference: source_reference.to_owned(),
+                    }
+                }
+                _ => return Err(LedgerError::persistence("stored actor kind invalid")),
+            },
+            description: self.description,
+            occurred_at: self.occurred_at,
+            recorded_at: self.recorded_at,
+            correlation_id: CorrelationId::new(self.correlation_id),
+            relations,
+            postings,
+            annotation: match (
+                self.annotation_version,
+                self.annotation_description,
+                self.annotation_tags,
+                self.annotation_budget_visibility,
+                self.annotation_created_at,
+                self.annotation_updated_at,
+            ) {
+                (
+                    Some(version),
+                    Some(description),
+                    Some(tags),
+                    Some(budget_visibility),
+                    Some(created_at),
+                    Some(updated_at),
+                ) => Some(JournalAnnotationView {
+                    version: AnnotationVersion::new(version)?,
+                    description,
+                    category_id: self
+                        .category_id
+                        .map(crate::contexts::classification::public::CategoryId::new),
+                    note: self.annotation_note,
+                    tags,
+                    budget_visibility: match budget_visibility.as_str() {
+                        "included" => super::super::domain::BudgetVisibility::Included,
+                        "excluded" => super::super::domain::BudgetVisibility::Excluded,
+                        _ => {
+                            return Err(LedgerError::persistence(
+                                "stored budget visibility is invalid",
+                            ));
+                        }
+                    },
+                    created_at,
+                    updated_at,
+                }),
+                (None, None, None, None, None, None) => None,
+                _ => {
+                    return Err(LedgerError::persistence(
+                        "stored transaction annotation is incomplete",
+                    ));
+                }
+            },
+            reversed_by_journal_id: self.reversed_by_journal_id.map(JournalEntryId::new),
+            replaced_by_journal_id: self.replaced_by_journal_id.map(JournalEntryId::new),
+            correction: match (
+                self.correction_account_id,
+                self.correction_before,
+                self.correction_target,
+                self.correction_delta,
+                self.correction_balance_version,
+                self.correction_reason,
+                self.correction_observed_at,
+            ) {
+                (
+                    Some(account_id),
+                    Some(before_display_balance),
+                    Some(target_display_balance),
+                    Some(display_delta),
+                    Some(observed_balance_version),
+                    Some(reason),
+                    Some(observed_at),
+                ) => Some(CorrectionView {
+                    account_id: LedgerAccountId::new(account_id),
+                    before_display_balance,
+                    target_display_balance,
+                    display_delta,
+                    observed_balance_version,
+                    reason,
+                    observed_at,
+                }),
+                (None, None, None, None, None, None, None) => None,
+                _ => {
+                    return Err(LedgerError::persistence(
+                        "stored correction detail is incomplete",
+                    ));
+                }
+            },
+        })
+    }
+}
+
 #[async_trait]
 impl LedgerQueryPort for PgLedgerQueries {
     async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError> {
@@ -433,6 +587,24 @@ impl LedgerQueryPort for PgLedgerQueries {
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError> {
         PgLedgerQueries::list_journals(self, user_id, after, limit).await
+    }
+
+    async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        PgLedgerQueries::list_activity(self, user_id, filter, after, limit).await
+    }
+
+    async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError> {
+        PgLedgerQueries::summarize_activity(self, user_id, filter).await
     }
 
     async fn get_journal(

@@ -660,7 +660,126 @@ async fn root_migration_seeds_and_constrains_reference_and_tenant_data() {
     assert!(currencies.iter().any(|code| code == "USD"));
     assert!(currencies.iter().any(|code| code == "EUR"));
 
-    for (code, minor_unit) in [("usd", 2_i16), ("US", 2), ("USDX", 2), ("GBP", 9)] {
+    let popular: Vec<(String, String, String, i16, bool)> = sqlx::query_as(
+        "SELECT code, numeric_code, name, minor_unit, enabled \
+         FROM reference_data.currencies \
+         WHERE code NOT IN ('UAH', 'USD', 'EUR') ORDER BY code",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        popular,
+        vec![
+            (
+                "AED".to_owned(),
+                "784".to_owned(),
+                "UAE Dirham".to_owned(),
+                2,
+                true
+            ),
+            (
+                "AUD".to_owned(),
+                "036".to_owned(),
+                "Australian Dollar".to_owned(),
+                2,
+                true
+            ),
+            (
+                "CAD".to_owned(),
+                "124".to_owned(),
+                "Canadian Dollar".to_owned(),
+                2,
+                true
+            ),
+            (
+                "CHF".to_owned(),
+                "756".to_owned(),
+                "Swiss Franc".to_owned(),
+                2,
+                true
+            ),
+            (
+                "CNY".to_owned(),
+                "156".to_owned(),
+                "Yuan Renminbi".to_owned(),
+                2,
+                true
+            ),
+            (
+                "CZK".to_owned(),
+                "203".to_owned(),
+                "Czech Koruna".to_owned(),
+                2,
+                true
+            ),
+            (
+                "GBP".to_owned(),
+                "826".to_owned(),
+                "Pound Sterling".to_owned(),
+                2,
+                true
+            ),
+            (
+                "GEL".to_owned(),
+                "981".to_owned(),
+                "Lari".to_owned(),
+                2,
+                true
+            ),
+            (
+                "HUF".to_owned(),
+                "348".to_owned(),
+                "Forint".to_owned(),
+                2,
+                true
+            ),
+            (
+                "ILS".to_owned(),
+                "376".to_owned(),
+                "New Israeli Sheqel".to_owned(),
+                2,
+                true
+            ),
+            (
+                "JPY".to_owned(),
+                "392".to_owned(),
+                "Yen".to_owned(),
+                0,
+                true
+            ),
+            (
+                "PLN".to_owned(),
+                "985".to_owned(),
+                "Zloty".to_owned(),
+                2,
+                true
+            ),
+            (
+                "RON".to_owned(),
+                "946".to_owned(),
+                "Romanian Leu".to_owned(),
+                2,
+                true
+            ),
+            (
+                "RUB".to_owned(),
+                "643".to_owned(),
+                "Russian Ruble".to_owned(),
+                2,
+                false
+            ),
+            (
+                "TRY".to_owned(),
+                "949".to_owned(),
+                "Turkish Lira".to_owned(),
+                2,
+                true
+            ),
+        ]
+    );
+
+    for (code, minor_unit) in [("usd", 2_i16), ("US", 2), ("USDX", 2), ("ZZZ", 9)] {
         let result = sqlx::query(
             "INSERT INTO reference_data.currencies \
              (code, name, minor_unit, enabled) VALUES ($1, 'Invalid', $2, TRUE)",

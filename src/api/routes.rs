@@ -151,6 +151,7 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/accounts/{id}/activity"),
     ("POST", "/transactions"),
     ("GET", "/transactions"),
+    ("GET", "/transactions/summary"),
     ("GET", "/transactions/{id}"),
     ("PATCH", "/transactions/{id}/annotation"),
     ("POST", "/transactions/{id}/reversals"),

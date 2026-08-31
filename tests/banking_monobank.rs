@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use moneykeeper::contexts::banking::{
     adapters::{Aes256CredentialCipher, MonobankAdapter},
     public::{
-        CredentialBinding, CredentialCipher, FundingModel, ProviderCredential,
+        CredentialBinding, CredentialCipher, FundingModel, ProviderCredential, ProviderCurrency,
         ProviderFailureClass, ResourceKind,
     },
 };
@@ -57,8 +57,22 @@ fn monobank_acl_discovers_cards_current_accounts_and_jars_without_securities_gue
       ]
     }"#;
     let currencies = BTreeMap::from([
-        (980_u16, (CurrencyCode::new("UAH").unwrap(), 2_u8)),
-        (840_u16, (CurrencyCode::new("USD").unwrap(), 2_u8)),
+        (
+            980_u16,
+            ProviderCurrency {
+                code: CurrencyCode::new("UAH").unwrap(),
+                minor_unit: 2,
+                enabled: true,
+            },
+        ),
+        (
+            840_u16,
+            ProviderCurrency {
+                code: CurrencyCode::new("USD").unwrap(),
+                minor_unit: 2,
+                enabled: true,
+            },
+        ),
     ]);
     let snapshot = MonobankAdapter::normalize_client_info(fixture, &currencies).unwrap();
     assert_eq!(snapshot.resources.len(), 4);

@@ -152,7 +152,7 @@ fn transport_outcome(error: &reqwest::Error) -> &'static str {
     }
 }
 
-fn elapsed_ms(elapsed: Duration) -> u64 {
+pub fn elapsed_ms(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 

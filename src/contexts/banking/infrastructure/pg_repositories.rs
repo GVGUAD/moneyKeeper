@@ -1,7 +1,5 @@
 //! PostgreSQL Banking store.
 
-use std::collections::BTreeMap;
-
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -15,12 +13,12 @@ use crate::{
             ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher,
             DeactivateResourceMapping, ExternalResourceView, IntakeProviderEvent,
             NormalizedResource, ProviderAccountSummary, ProviderClient, ProviderConnectionView,
-            ProviderCredential, ProviderEventIntakeOutcome, ProviderEventReadyV1,
-            ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
-            RecordBalanceObservation, ReplaceProviderCredential, RequestSyncJob, ResourceBinding,
-            ResourceMappingResult, ResourceMappingView, RotateWebhookCredential, SyncJobView,
-            SyncPageView, WebhookCredential, WebhookReceiptOutcome, WebhookRegistrationWork,
-            WebhookRotationResult, WebhookSecrets,
+            ProviderCredential, ProviderCurrencyMap, ProviderEventIntakeOutcome,
+            ProviderEventReadyV1, ProviderEventReceipt, ProviderEventView, ProviderImportOutcome,
+            ProviderImportWork, RecordBalanceObservation, ReplaceProviderCredential,
+            RequestSyncJob, ResourceBinding, ResourceMappingResult, ResourceMappingView,
+            RotateWebhookCredential, SyncJobView, SyncPageView, WebhookCredential,
+            WebhookReceiptOutcome, WebhookRegistrationWork, WebhookRotationResult, WebhookSecrets,
         },
         domain::{
             BalanceBasis, BalanceComparability, BalanceObservationId, BankingError,
@@ -222,7 +220,7 @@ impl PgBankingStore {
         connection_id: ProviderConnectionId,
         cipher: &dyn CredentialCipher,
         provider_client: &dyn ProviderClient,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedResource>, BankingError> {
         let row = self.connection_row(user_id, connection_id).await?;
         let candidate = row.state == "pending_credential_validation";

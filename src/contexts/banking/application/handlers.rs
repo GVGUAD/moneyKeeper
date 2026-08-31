@@ -99,7 +99,7 @@ impl BankingFacade {
         use crate::contexts::reference_data::public::CurrencyCatalog;
         let currencies = self
             .currencies
-            .list_enabled()
+            .list_known()
             .await
             .map_err(|_| BankingError::InvalidValue("currency catalog unavailable"))?
             .into_iter()
@@ -107,7 +107,16 @@ impl BankingFacade {
                 definition
                     .numeric_code
                     .and_then(|numeric| numeric.parse::<u16>().ok())
-                    .map(|numeric| (numeric, (definition.code, definition.minor_unit)))
+                    .map(|numeric| {
+                        (
+                            numeric,
+                            super::ProviderCurrency {
+                                code: definition.code,
+                                minor_unit: definition.minor_unit,
+                                enabled: definition.enabled,
+                            },
+                        )
+                    })
             })
             .collect();
         let resources = self

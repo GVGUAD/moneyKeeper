@@ -44,6 +44,7 @@ fn openapi_is_unversioned_and_has_exact_finance_routes() {
         "/accounts/{id}/restore",
         "/accounts/{id}/activity",
         "/transactions",
+        "/transactions/summary",
         "/transactions/{id}",
         "/transactions/{id}/annotation",
         "/transactions/{id}/reversals",
@@ -160,7 +161,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 110);
+    assert_eq!(operation_count, 111);
 }
 
 #[test]
@@ -228,6 +229,8 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
         "JournalAnnotation",
         "JournalRelations",
         "Journal",
+        "ActivityTotal",
+        "ActivitySummary",
         "ProviderConnection",
         "ProviderResource",
         "ResourceMapping",
@@ -281,6 +284,31 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
                 })
             );
         }
+    }
+
+    let transaction_parameters = document["paths"]["/transactions"]["get"]["parameters"]
+        .as_array()
+        .unwrap();
+    for parameter in ["FromOccurredAt", "BeforeOccurredAt", "ActivityKind"] {
+        assert!(
+            transaction_parameters
+                .iter()
+                .any(|value| { value["$ref"] == format!("#/components/parameters/{parameter}") })
+        );
+    }
+    let summary = &document["paths"]["/transactions/summary"]["get"];
+    assert_eq!(
+        summary["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ActivitySummary"
+    );
+    for parameter in ["RequiredFromOccurredAt", "RequiredBeforeOccurredAt"] {
+        assert!(
+            summary["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| { value["$ref"] == format!("#/components/parameters/{parameter}") })
+        );
     }
 }
 

@@ -1,17 +1,14 @@
 //! Bounded, fenced Banking worker steps. Claims are committed by the
 //! repository before this layer decrypts credentials or performs provider I/O.
 
-use std::collections::BTreeMap;
-
 use chrono::{DateTime, Duration, Utc};
 use tracing::Instrument as _;
 
 use super::{
-    BankingFacade, CredentialBinding, ProviderCredential, ProviderFailure, ProviderFailureClass,
-    WebhookProvisioning,
+    BankingFacade, CredentialBinding, ProviderCredential, ProviderCurrency, ProviderCurrencyMap,
+    ProviderFailure, ProviderFailureClass, WebhookProvisioning,
 };
 use crate::contexts::banking::domain::BankingError;
-use crate::shared_kernel::CurrencyCode;
 
 const LEASE_SECONDS: i64 = 30;
 const MAX_ATTEMPTS: i32 = 10;
@@ -376,11 +373,11 @@ impl BankingFacade {
         })
     }
 
-    async fn currency_map(&self) -> Result<BTreeMap<u16, (CurrencyCode, u8)>, BankingError> {
+    async fn currency_map(&self) -> Result<ProviderCurrencyMap, BankingError> {
         use crate::contexts::reference_data::public::CurrencyCatalog;
         Ok(self
             .currencies
-            .list_enabled()
+            .list_known()
             .await
             .map_err(|_| BankingError::InvalidValue("currency catalog unavailable"))?
             .into_iter()
@@ -388,7 +385,16 @@ impl BankingFacade {
                 definition
                     .numeric_code
                     .and_then(|numeric| numeric.parse::<u16>().ok())
-                    .map(|numeric| (numeric, (definition.code, definition.minor_unit)))
+                    .map(|numeric| {
+                        (
+                            numeric,
+                            ProviderCurrency {
+                                code: definition.code,
+                                minor_unit: definition.minor_unit,
+                                enabled: definition.enabled,
+                            },
+                        )
+                    })
             })
             .collect())
     }

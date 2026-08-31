@@ -823,6 +823,10 @@ where
     Ok(())
 }
 
+pub fn elapsed_ms(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
 async fn live() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({"status": "live"})))
 }

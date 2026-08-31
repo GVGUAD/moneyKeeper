@@ -22,6 +22,10 @@ pub(crate) fn router(state: LedgerApiState) -> Router {
             "/transactions",
             post(handlers::record_transaction).get(handlers::list_transactions),
         )
+        .route(
+            "/transactions/summary",
+            get(handlers::summarize_transactions),
+        )
         .route("/transactions/{id}", get(handlers::get_transaction))
         .route(
             "/transactions/{id}/annotation",

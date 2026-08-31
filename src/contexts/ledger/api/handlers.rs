@@ -9,21 +9,21 @@ use crate::api::state::LedgerApiState;
 use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::classification::public::CategoryId;
 use crate::contexts::ledger::public::{
-    AccountVersion, ActivityCursor, AnnotationChanges, AnnotationVersion, ApproveReconciliation,
-    ArchiveAccount, BalanceVersion, CategoryReference, CorrectBalance, DismissReconciliation,
-    JournalEntryId, LedgerAccountId, LedgerError, NormalizedTags, OpenAccount,
-    ReconciliationCaseId, ReconciliationVersion, RecordManualTransaction, RenameAccount,
-    ReplaceTransaction, RestoreAccount, ReverseTransaction, TransferFee, TransferFunds,
-    UpdateTransactionAnnotation,
+    AccountVersion, ActivityCursor, ActivityFilter, ActivityKind, AnnotationChanges,
+    AnnotationVersion, ApproveReconciliation, ArchiveAccount, BalanceVersion, CategoryReference,
+    CorrectBalance, DismissReconciliation, JournalEntryId, LedgerAccountId, LedgerError,
+    NormalizedTags, OpenAccount, ReconciliationCaseId, ReconciliationVersion,
+    RecordManualTransaction, RenameAccount, ReplaceTransaction, RestoreAccount, ReverseTransaction,
+    TransferFee, TransferFunds, UpdateTransactionAnnotation,
 };
 use crate::contexts::reference_data::public::{CurrencyCatalog, CurrencyError};
 use crate::shared_kernel::{CurrencyCode, IdempotencyKey, Money};
 
 use super::dto::{
-    ActivityQuery, AnnotationRequest, ApproveReconciliationRequest, BalanceCorrectionRequest,
-    DismissReconciliationRequest, ExpectedAccountVersionRequest, MoneyRequest, OpenAccountRequest,
-    RecordTransactionRequest, RenameAccountRequest, ReplaceRequest, ReverseRequest,
-    TransferRequest,
+    ActivityQuery, ActivitySummaryQuery, AnnotationRequest, ApproveReconciliationRequest,
+    BalanceCorrectionRequest, DismissReconciliationRequest, ExpectedAccountVersionRequest,
+    MoneyRequest, OpenAccountRequest, RecordTransactionRequest, RenameAccountRequest,
+    ReplaceRequest, ReverseRequest, TransactionActivityQuery, TransferRequest,
 };
 
 pub(crate) async fn open_account(
@@ -228,11 +228,48 @@ pub(crate) async fn record_transaction(
 pub(crate) async fn list_transactions(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
-    Query(query): Query<ActivityQuery>,
+    Query(query): Query<TransactionActivityQuery>,
 ) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
+    let after = cursor_values(query.after_occurred_at, query.after_sequence)?;
+    let result = match (query.from_occurred_at, query.before_occurred_at, query.kind) {
+        (None, None, None) => {
+            state
+                .ledger
+                .list_journals(user_id, after, query.limit.unwrap_or(50))
+                .await
+        }
+        (Some(from), Some(before), kind) => {
+            let filter = ActivityFilter::new(from, before, kind.unwrap_or(ActivityKind::All))
+                .map_err(map_ledger_error)?;
+            state
+                .ledger
+                .list_activity(user_id, filter, after, query.limit.unwrap_or(50))
+                .await
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "filtered activity requires from_occurred_at and before_occurred_at",
+            ));
+        }
+    };
+    result.map(Json).map_err(map_ledger_error)
+}
+
+pub(crate) async fn summarize_transactions(
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    State(state): State<LedgerApiState>,
+    Query(query): Query<ActivitySummaryQuery>,
+) -> Result<Json<crate::contexts::ledger::public::ActivitySummary>, ApiError> {
+    let (Some(from), Some(before)) = (query.from_occurred_at, query.before_occurred_at) else {
+        return Err(ApiError::bad_request(
+            "activity summary requires from_occurred_at and before_occurred_at",
+        ));
+    };
+    let filter = ActivityFilter::new(from, before, query.kind.unwrap_or(ActivityKind::All))
+        .map_err(map_ledger_error)?;
     state
         .ledger
-        .list_journals(user_id, cursor(&query)?, query.limit.unwrap_or(50))
+        .summarize_activity(user_id, filter)
         .await
         .map(Json)
         .map_err(map_ledger_error)
@@ -570,7 +607,14 @@ fn account_version(value: i64) -> Result<AccountVersion, ApiError> {
 }
 
 fn cursor(query: &ActivityQuery) -> Result<Option<ActivityCursor>, ApiError> {
-    match (query.after_occurred_at, query.after_sequence) {
+    cursor_values(query.after_occurred_at, query.after_sequence)
+}
+
+fn cursor_values(
+    after_occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    after_sequence: Option<i64>,
+) -> Result<Option<ActivityCursor>, ApiError> {
+    match (after_occurred_at, after_sequence) {
         (None, None) => Ok(None),
         (Some(occurred_at), Some(ledger_sequence)) if ledger_sequence > 0 => {
             Ok(Some(ActivityCursor {

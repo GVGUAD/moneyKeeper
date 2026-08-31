@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
-
 use rust_decimal::Decimal;
 
 use crate::{
     contexts::banking::{
-        application::{NormalizedResource, NormalizedSnapshot, ProviderFailureClass},
+        application::{
+            NormalizedResource, NormalizedSnapshot, ProviderCurrencyMap, ProviderFailureClass,
+        },
         domain::{FundingModel, ResourceKind},
     },
     shared_kernel::{CurrencyCode, Money},
@@ -17,7 +17,7 @@ pub struct MonobankAdapter;
 impl MonobankAdapter {
     pub fn normalize_client_info(
         body: &str,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<NormalizedSnapshot, crate::contexts::banking::domain::BankingError> {
         let dto: ClientInfoDto = serde_json::from_str(body).map_err(|_| {
             crate::contexts::banking::domain::BankingError::InvalidValue(
@@ -27,15 +27,23 @@ impl MonobankAdapter {
         let mut resources = Vec::with_capacity(dto.accounts.len() + dto.jars.len());
         for account in dto.accounts {
             let external_resource_id = remote_id(account.id, "invalid provider account id")?;
-            let (currency, scale) = currencies.get(&account.currency_code).cloned().ok_or(
+            let definition = currencies.get(&account.currency_code).ok_or(
                 crate::contexts::banking::domain::BankingError::InvalidValue(
                     "unknown numeric currency",
                 ),
             )?;
-            let kind = match account.product_type.as_str() {
-                "black" | "white" | "platinum" | "iron" | "eAid" | "yellow" => ResourceKind::Card,
-                "fop" => ResourceKind::CurrentAccount,
-                _ => ResourceKind::Unsupported,
+            let currency = definition.code.clone();
+            let scale = definition.minor_unit;
+            let kind = if definition.enabled {
+                match account.product_type.as_str() {
+                    "black" | "white" | "platinum" | "iron" | "eAid" | "yellow" => {
+                        ResourceKind::Card
+                    }
+                    "fop" => ResourceKind::CurrentAccount,
+                    _ => ResourceKind::Unsupported,
+                }
+            } else {
+                ResourceKind::Unsupported
             };
             let funding_model = if kind == ResourceKind::Unsupported {
                 FundingModel::Unknown
@@ -66,15 +74,22 @@ impl MonobankAdapter {
         }
         for jar in dto.jars {
             let external_resource_id = remote_id(jar.id, "invalid provider jar id")?;
-            let (currency, scale) = currencies.get(&jar.currency_code).cloned().ok_or(
+            let definition = currencies.get(&jar.currency_code).ok_or(
                 crate::contexts::banking::domain::BankingError::InvalidValue(
                     "unknown numeric currency",
                 ),
             )?;
+            let currency = definition.code.clone();
+            let scale = definition.minor_unit;
+            let (kind, funding_model) = if definition.enabled {
+                (ResourceKind::Jar, FundingModel::OwnFunds)
+            } else {
+                (ResourceKind::Unsupported, FundingModel::Unknown)
+            };
             resources.push(NormalizedResource {
                 external_resource_id,
-                kind: ResourceKind::Jar,
-                funding_model: FundingModel::OwnFunds,
+                kind,
+                funding_model,
                 currency: currency.clone(),
                 masked_label: bounded_label(jar.title),
                 provider_balance: minor_money(jar.balance, currency, scale)?,
@@ -87,7 +102,7 @@ impl MonobankAdapter {
     pub(crate) fn normalize_statement(
         body: &str,
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<
         Vec<crate::contexts::banking::application::NormalizedProviderEvent>,
         crate::contexts::banking::domain::BankingError,
@@ -103,7 +118,7 @@ impl MonobankAdapter {
     pub(crate) fn normalize_webhook(
         body: &[u8],
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<
         (
             String,
@@ -146,7 +161,7 @@ impl crate::contexts::banking::application::ProviderNormalizer for MonobankAdapt
     fn client_info(
         &self,
         body: &str,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<
         crate::contexts::banking::application::NormalizedSnapshot,
         crate::contexts::banking::domain::BankingError,
@@ -158,7 +173,7 @@ impl crate::contexts::banking::application::ProviderNormalizer for MonobankAdapt
         &self,
         body: &str,
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<
         Vec<crate::contexts::banking::application::NormalizedProviderEvent>,
         crate::contexts::banking::domain::BankingError,
@@ -170,7 +185,7 @@ impl crate::contexts::banking::application::ProviderNormalizer for MonobankAdapt
         &self,
         body: &[u8],
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<
         (
             String,
@@ -185,14 +200,16 @@ impl crate::contexts::banking::application::ProviderNormalizer for MonobankAdapt
 fn normalize_items(
     items: Vec<StatementItemDto>,
     resource_currency: &CurrencyCode,
-    currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+    currencies: &ProviderCurrencyMap,
 ) -> Result<
     Vec<crate::contexts::banking::application::NormalizedProviderEvent>,
     crate::contexts::banking::domain::BankingError,
 > {
     let resource_scale = currencies
         .values()
-        .find_map(|(code, scale)| (code == resource_currency).then_some(*scale))
+        .find_map(|definition| {
+            (&definition.code == resource_currency).then_some(definition.minor_unit)
+        })
         .ok_or(
             crate::contexts::banking::domain::BankingError::InvalidValue(
                 "resource currency is unavailable",
@@ -208,12 +225,11 @@ fn normalize_items(
                     ),
                 );
             }
-            let (original_currency, original_scale) =
-                currencies.get(&item.currency_code).cloned().ok_or(
-                    crate::contexts::banking::domain::BankingError::InvalidValue(
-                        "unknown statement currency",
-                    ),
-                )?;
+            let original_definition = currencies.get(&item.currency_code).ok_or(
+                crate::contexts::banking::domain::BankingError::InvalidValue(
+                    "unknown statement currency",
+                ),
+            )?;
             let effective_at = chrono::DateTime::<chrono::Utc>::from_timestamp(item.time, 0)
                 .ok_or(
                     crate::contexts::banking::domain::BankingError::InvalidValue(
@@ -236,8 +252,8 @@ fn normalize_items(
                     )?,
                     original_money: Some(minor_money(
                         item.operation_amount,
-                        original_currency,
-                        original_scale,
+                        original_definition.code.clone(),
+                        original_definition.minor_unit,
                     )?),
                     description,
                     merchant_mcc: item.mcc.filter(|mcc| (0..=9999).contains(mcc)),
@@ -289,13 +305,24 @@ fn minor_money(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::contexts::banking::application::ProviderCurrency;
+
+    fn currency(code: &str, minor_unit: u8, enabled: bool) -> ProviderCurrency {
+        ProviderCurrency {
+            code: CurrencyCode::new(code).unwrap(),
+            minor_unit,
+            enabled,
+        }
+    }
 
     #[test]
     fn statement_uses_account_currency_and_retains_original_evidence() {
         let currencies = BTreeMap::from([
-            (980, (CurrencyCode::new("UAH").unwrap(), 2)),
-            (840, (CurrencyCode::new("USD").unwrap(), 2)),
+            (980, currency("UAH", 2, true)),
+            (840, currency("USD", 2, true)),
         ]);
         let body = r#"[{"id":"tx-1","time":1787572800,"description":"Shop","mcc":5411,"hold":true,"amount":-4100,"operationAmount":-100,"currencyCode":840,"balance":95900}]"#;
         let events = MonobankAdapter::normalize_statement(
@@ -318,7 +345,7 @@ mod tests {
 
     #[test]
     fn settled_statement_revision_is_not_pending() {
-        let currencies = BTreeMap::from([(980, (CurrencyCode::new("UAH").unwrap(), 2))]);
+        let currencies = BTreeMap::from([(980, currency("UAH", 2, true))]);
         let body = r#"[{"id":"tx-1","time":1787572800,"description":"Shop","hold":false,"amount":-4100,"operationAmount":-4100,"currencyCode":980,"balance":95900}]"#;
         let events = MonobankAdapter::normalize_statement(
             body,
@@ -329,6 +356,59 @@ mod tests {
         assert_eq!(
             events[0].state,
             crate::contexts::banking::domain::ProviderTransactionState::Settled
+        );
+    }
+
+    #[test]
+    fn statement_retains_disabled_rub_as_original_evidence() {
+        let currencies = BTreeMap::from([
+            (980, currency("UAH", 2, true)),
+            (643, currency("RUB", 2, false)),
+        ]);
+        let body = r#"[{"id":"tx-rub","time":1787572800,"description":"Historical purchase","hold":false,"amount":-4100,"operationAmount":-7500,"currencyCode":643,"balance":95900}]"#;
+
+        let events = MonobankAdapter::normalize_statement(
+            body,
+            &CurrencyCode::new("UAH").unwrap(),
+            &currencies,
+        )
+        .unwrap();
+
+        let original = events[0].original_money.as_ref().unwrap();
+        assert_eq!(original.amount(), Decimal::new(-7500, 2));
+        assert_eq!(original.currency().as_str(), "RUB");
+    }
+
+    #[test]
+    fn disabled_currency_resource_is_discovered_as_unsupported() {
+        let currencies = BTreeMap::from([(643, currency("RUB", 2, false))]);
+        let body = r#"{"accounts":[{"id":"rub-card","currencyCode":643,"balance":10000,"creditLimit":0,"maskedPan":["4444******1111"],"type":"black","iban":""}],"jars":[]}"#;
+
+        let snapshot = MonobankAdapter::normalize_client_info(body, &currencies).unwrap();
+
+        assert_eq!(snapshot.resources.len(), 1);
+        assert_eq!(snapshot.resources[0].currency.as_str(), "RUB");
+        assert_eq!(snapshot.resources[0].kind, ResourceKind::Unsupported);
+        assert_eq!(snapshot.resources[0].funding_model, FundingModel::Unknown);
+    }
+
+    #[test]
+    fn unknown_numeric_currency_still_fails_normalization() {
+        let currencies = BTreeMap::from([(980, currency("UAH", 2, true))]);
+        let body = r#"[{"id":"tx-unknown","time":1787572800,"description":"Unknown","hold":false,"amount":-100,"operationAmount":-100,"currencyCode":999,"balance":9900}]"#;
+
+        let error = MonobankAdapter::normalize_statement(
+            body,
+            &CurrencyCode::new("UAH").unwrap(),
+            &currencies,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            crate::contexts::banking::domain::BankingError::InvalidValue(
+                "unknown statement currency"
+            )
         );
     }
 }

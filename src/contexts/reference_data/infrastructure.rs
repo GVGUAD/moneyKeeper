@@ -78,4 +78,18 @@ impl CurrencyRepository for PgCurrencyCatalog {
         .map(CurrencyRow::into_domain)
         .collect()
     }
+
+    async fn list_known_definitions(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError> {
+        sqlx::query_as::<_, CurrencyRow>(
+            "SELECT code::text AS code, numeric_code::text AS numeric_code, name, \
+                    minor_unit, enabled, updated_at \
+             FROM reference_data.currencies ORDER BY code",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(CurrencyError::storage)?
+        .into_iter()
+        .map(CurrencyRow::into_domain)
+        .collect()
+    }
 }

@@ -57,6 +57,16 @@ pub struct NormalizedSnapshot {
     pub resources: Vec<NormalizedResource>,
 }
 
+/// Currency metadata used at a provider boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderCurrency {
+    pub code: CurrencyCode,
+    pub minor_unit: u8,
+    pub enabled: bool,
+}
+
+pub type ProviderCurrencyMap = BTreeMap<u16, ProviderCurrency>;
+
 /// Secret callback credential returned only at rotation time.
 pub struct WebhookCredential(String);
 
@@ -239,7 +249,7 @@ pub(crate) trait ResourceRepository: Send + Sync {
         connection_id: ProviderConnectionId,
         cipher: &dyn CredentialCipher,
         provider: &dyn ProviderClient,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedResource>, BankingError>;
     async fn list_resources(
         &self,
@@ -670,18 +680,18 @@ pub(crate) trait ProviderNormalizer: Send + Sync {
     fn client_info(
         &self,
         body: &str,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<NormalizedSnapshot, BankingError>;
     fn statement(
         &self,
         body: &str,
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedProviderEvent>, BankingError>;
     fn webhook(
         &self,
         body: &[u8],
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<(String, NormalizedProviderEvent), BankingError>;
 }

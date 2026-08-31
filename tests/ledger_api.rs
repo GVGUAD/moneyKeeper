@@ -106,7 +106,7 @@ async fn money_and_idempotency_are_validated_before_ledger_execution() {
     assert_eq!(excess_scale.status_code(), StatusCode::BAD_REQUEST);
 
     let unknown = server.post("/accounts").add_header("Idempotency-Key", "unknown")
-        .json(&json!({"name":"X","currency":"GBP","kind":"cash","nature":"asset","opening_balance":"1","occurred_at":at})).await;
+        .json(&json!({"name":"X","currency":"RUB","kind":"cash","nature":"asset","opening_balance":"1","occurred_at":at})).await;
     assert_eq!(unknown.status_code(), StatusCode::BAD_REQUEST);
 
     let first = server
@@ -131,6 +131,120 @@ async fn money_and_idempotency_are_validated_before_ledger_execution() {
         .await;
     assert_eq!(conflict.status_code(), StatusCode::CONFLICT);
     assert_eq!(conflict.json::<Value>()["error"], "ledger conflict");
+}
+
+#[tokio::test]
+async fn transaction_activity_range_filter_and_summary_are_additive_and_validated() {
+    let server = app(Uuid::new_v4()).await;
+    let opened = server
+        .post("/accounts")
+        .add_header("Idempotency-Key", "activity-api-open")
+        .json(&account_body("0", "2026-08-12T09:00:00Z"))
+        .await;
+    assert_eq!(opened.status_code(), StatusCode::CREATED);
+    let account_id = opened.json::<Value>()["account"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (key, kind, amount, occurred_at) in [
+        (
+            "activity-api-expense",
+            "expense",
+            "15.00",
+            "2026-08-13T10:00:00Z",
+        ),
+        (
+            "activity-api-income",
+            "income",
+            "20.00",
+            "2026-08-13T11:00:00Z",
+        ),
+        (
+            "activity-api-boundary",
+            "expense",
+            "99.00",
+            "2026-08-14T00:00:00Z",
+        ),
+    ] {
+        let response = server
+            .post("/transactions")
+            .add_header("Idempotency-Key", key)
+            .json(&json!({
+                "account_id": account_id,
+                "kind": kind,
+                "amount": {"amount": amount, "currency": "UAH"},
+                "description": key,
+                "occurred_at": occurred_at
+            }))
+            .await;
+        assert_eq!(response.status_code(), StatusCode::CREATED);
+    }
+
+    let legacy = server.get("/transactions?limit=50").await;
+    assert_eq!(legacy.status_code(), StatusCode::OK);
+    assert_eq!(legacy.json::<Vec<Value>>().len(), 3);
+
+    let range = "from_occurred_at=2026-08-13T00:00:00Z&before_occurred_at=2026-08-14T00:00:00Z";
+    let page = server
+        .get(&format!("/transactions?{range}&kind=all&limit=1"))
+        .await;
+    assert_eq!(page.status_code(), StatusCode::OK);
+    let page = page.json::<Vec<Value>>();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0]["annotation"]["description"], "activity-api-income");
+    let next = server
+        .get(&format!(
+            "/transactions?{range}&kind=all&limit=1&after_occurred_at={}&after_sequence={}",
+            page[0]["occurred_at"].as_str().unwrap(),
+            page[0]["ledger_sequence"].as_i64().unwrap()
+        ))
+        .await;
+    assert_eq!(next.status_code(), StatusCode::OK);
+    let next = next.json::<Vec<Value>>();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0]["annotation"]["description"], "activity-api-expense");
+
+    let summary = server
+        .get(&format!("/transactions/summary?{range}&kind=all"))
+        .await;
+    assert_eq!(summary.status_code(), StatusCode::OK);
+    let summary = summary.json::<Value>();
+    assert_eq!(summary["transaction_count"], 2);
+    assert_eq!(summary["category_count"], 0);
+    assert_eq!(summary["totals"][0]["currency"], "UAH");
+    assert_eq!(
+        summary["totals"][0]["amount"]
+            .as_str()
+            .unwrap()
+            .parse::<Decimal>()
+            .unwrap(),
+        Decimal::new(500, 2)
+    );
+    let expense = server
+        .get(&format!("/transactions/summary?{range}&kind=expense"))
+        .await
+        .json::<Value>();
+    assert_eq!(expense["transaction_count"], 1);
+    assert_eq!(
+        expense["totals"][0]["amount"]
+            .as_str()
+            .unwrap()
+            .parse::<Decimal>()
+            .unwrap(),
+        Decimal::new(-1500, 2)
+    );
+
+    for invalid in [
+        "/transactions?from_occurred_at=2026-08-13T00:00:00Z",
+        "/transactions?kind=income",
+        "/transactions?from_occurred_at=2026-08-14T00:00:00Z&before_occurred_at=2026-08-13T00:00:00Z",
+        "/transactions/summary?before_occurred_at=2026-08-14T00:00:00Z",
+    ] {
+        assert_eq!(
+            server.get(invalid).await.status_code(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 }
 
 #[tokio::test]

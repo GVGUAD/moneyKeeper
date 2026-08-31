@@ -1,7 +1,5 @@
 //! Application repository ports implemented by the PostgreSQL adapter.
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -11,7 +9,7 @@ use crate::{
         banking::{application::*, domain::*},
         ledger::public::LedgerAccountId,
     },
-    shared_kernel::{CurrencyCode, UserId},
+    shared_kernel::UserId,
 };
 
 #[async_trait]
@@ -62,7 +60,7 @@ impl ResourceRepository for PgBankingStore {
         connection_id: ProviderConnectionId,
         cipher: &dyn CredentialCipher,
         provider: &dyn ProviderClient,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedResource>, BankingError> {
         PgBankingStore::validate_and_discover(
             self,

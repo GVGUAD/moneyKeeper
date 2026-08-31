@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 pub(crate) trait CurrencyRepository: Send + Sync {
     async fn find(&self, code: CurrencyCode) -> Result<Option<CurrencyDefinition>, CurrencyError>;
     async fn list_enabled_definitions(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError>;
+    async fn list_known_definitions(&self) -> Result<Vec<CurrencyDefinition>, CurrencyError>;
 }
 
 #[async_trait]
@@ -42,6 +43,15 @@ pub(crate) async fn list_enabled<R: CurrencyRepository + ?Sized>(
 ) -> Result<Vec<CurrencyView>, CurrencyError> {
     catalog
         .list_enabled_definitions()
+        .await
+        .map(|definitions| definitions.into_iter().map(Into::into).collect())
+}
+
+pub(crate) async fn list_known<R: CurrencyRepository + ?Sized>(
+    catalog: &R,
+) -> Result<Vec<CurrencyView>, CurrencyError> {
+    catalog
+        .list_known_definitions()
         .await
         .map(|definitions| definitions.into_iter().map(Into::into).collect())
 }

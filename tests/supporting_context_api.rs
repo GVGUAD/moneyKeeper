@@ -115,16 +115,24 @@ async fn currency_routes_are_exact_and_side_effect_free() {
     let list = server.get("/currencies").await;
     assert_eq!(list.status_code(), StatusCode::OK);
     let body: Value = list.json();
-    assert!(
-        body.as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["code"] == "UAH")
-    );
+    let listed = body.as_array().unwrap();
+    for code in [
+        "UAH", "USD", "EUR", "AED", "AUD", "CAD", "CHF", "CNY", "CZK", "GBP", "GEL", "HUF", "ILS",
+        "JPY", "PLN", "RON", "TRY",
+    ] {
+        assert!(
+            listed.iter().any(|item| item["code"] == code),
+            "public catalog omitted {code}"
+        );
+    }
+    assert!(!listed.iter().any(|item| item["code"] == "RUB"));
 
     let get = server.get("/currencies/USD").await;
     assert_eq!(get.status_code(), StatusCode::OK);
     assert_eq!(get.json::<Value>()["minor_unit"], 2);
+
+    let rub = server.get("/currencies/RUB").await;
+    assert_eq!(rub.status_code(), StatusCode::NOT_FOUND);
 
     let invalid = server.get("/currencies/usd").await;
     assert_eq!(invalid.status_code(), StatusCode::BAD_REQUEST);
@@ -254,7 +262,7 @@ async fn preferences_read_is_non_persisting_and_update_is_compare_and_swap() {
 
     let invalid = server
         .patch("/preferences")
-        .json(&json!({"base_currency": "GBP", "expected_version": 1}))
+        .json(&json!({"base_currency": "RUB", "expected_version": 1}))
         .await;
     assert_eq!(invalid.status_code(), StatusCode::BAD_REQUEST);
 }

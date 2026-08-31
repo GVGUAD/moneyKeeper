@@ -68,6 +68,18 @@ pub(crate) trait LedgerQueryCapability: Send + Sync {
         after: Option<ActivityCursor>,
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError>;
     async fn get_journal(
         &self,
         user_id: UserId,
@@ -265,6 +277,22 @@ where
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError> {
         LedgerApplication::list_journals(self, user_id, after, limit).await
+    }
+    async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        LedgerApplication::list_activity(self, user_id, filter, after, limit).await
+    }
+    async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError> {
+        LedgerApplication::summarize_activity(self, user_id, filter).await
     }
     async fn get_journal(
         &self,

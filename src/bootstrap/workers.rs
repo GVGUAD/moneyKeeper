@@ -316,7 +316,7 @@ fn log_report(worker: &'static str, report: WorkerRunReport, elapsed: Duration) 
     }
 }
 
-fn elapsed_ms(elapsed: Duration) -> u64 {
+pub fn elapsed_ms(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 

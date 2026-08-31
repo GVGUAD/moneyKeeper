@@ -149,6 +149,24 @@ impl LedgerFacade {
     ) -> Result<Vec<JournalView>, LedgerError> {
         self.queries.list_journals(user_id, after, limit).await
     }
+    pub async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        self.queries
+            .list_activity(user_id, filter, after, limit)
+            .await
+    }
+    pub async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError> {
+        self.queries.summarize_activity(user_id, filter).await
+    }
     pub async fn get_journal(
         &self,
         user_id: UserId,
@@ -633,6 +651,81 @@ pub struct AnnotationResult {
 pub struct ActivityCursor {
     pub occurred_at: DateTime<Utc>,
     pub ledger_sequence: i64,
+}
+
+/// Optional cash-flow classification applied to an Activity range.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    #[default]
+    All,
+    Income,
+    Expense,
+}
+
+impl ActivityKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Income => "income",
+            Self::Expense => "expense",
+        }
+    }
+}
+
+/// Validated half-open Activity range and optional cash-flow classification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActivityFilter {
+    from_occurred_at: DateTime<Utc>,
+    before_occurred_at: DateTime<Utc>,
+    kind: ActivityKind,
+}
+
+impl ActivityFilter {
+    pub fn new(
+        from_occurred_at: DateTime<Utc>,
+        before_occurred_at: DateTime<Utc>,
+        kind: ActivityKind,
+    ) -> Result<Self, LedgerError> {
+        if from_occurred_at >= before_occurred_at {
+            return Err(LedgerError::invalid_state(
+                "activity range start must be before range end",
+            ));
+        }
+        Ok(Self {
+            from_occurred_at,
+            before_occurred_at,
+            kind,
+        })
+    }
+
+    pub const fn from_occurred_at(self) -> DateTime<Utc> {
+        self.from_occurred_at
+    }
+
+    pub const fn before_occurred_at(self) -> DateTime<Utc> {
+        self.before_occurred_at
+    }
+
+    pub const fn kind(self) -> ActivityKind {
+        self.kind
+    }
+}
+
+/// One exact currency total for a complete Activity range.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityTotal {
+    pub currency: CurrencyCode,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+}
+
+/// Exact range-wide values displayed above a paginated Activity list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivitySummary {
+    pub transaction_count: i64,
+    pub category_count: i64,
+    pub totals: Vec<ActivityTotal>,
 }
 
 /// Read-only posting detail.
