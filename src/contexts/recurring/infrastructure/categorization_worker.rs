@@ -2,15 +2,16 @@
 
 use std::time::Duration;
 
-use chrono::Utc;
 use sqlx::{PgPool, Row};
 use tracing::Instrument as _;
 use uuid::Uuid;
 
 use crate::{
+    contexts::classification::public::CategoryId,
     contexts::ledger::public::{
-        AnnotationChanges, AnnotationVersion, CategoryReference, JournalEntryId, LedgerFacade,
-        UpdateTransactionAnnotation,
+        AnnotationVersion, ApplyCategoryAssignment, AssignmentOrigin, AutomationState,
+        CategoryAssignmentDisposition, CategoryAssignmentSnapshot, CategoryReference,
+        JournalEntryId, LedgerFacade, RestoreCategoryAssignment,
     },
     shared_kernel::{CorrelationId, IdempotencyKey, UserId},
 };
@@ -112,13 +113,23 @@ impl CategorizationWorker {
             )
             UPDATE recurring.categorization_targets t SET
                 lease_holder=$1,lease_expires_at=clock_timestamp()+($2::bigint*interval '1 millisecond'),
-                lease_token=t.lease_token+1,attempts=t.attempts+1,updated_at=clock_timestamp()
+                lease_token=t.lease_token+1,attempts=t.attempts+1,updated_at=clock_timestamp(),
+                apply_command_occurred_at=CASE WHEN t.state<>'compensating'
+                  THEN COALESCE(t.apply_command_occurred_at,clock_timestamp())
+                  ELSE t.apply_command_occurred_at END,
+                compensation_command_occurred_at=CASE WHEN t.state='compensating'
+                  THEN COALESCE(t.compensation_command_occurred_at,clock_timestamp())
+                  ELSE t.compensation_command_occurred_at END
             FROM candidate c,recurring.match_records m
             WHERE t.match_id=c.match_id AND t.user_id=c.user_id AND t.journal_entry_id=c.journal_entry_id
               AND m.id=t.match_id AND m.user_id=t.user_id
             RETURNING t.match_id,t.user_id,t.journal_entry_id,t.state,t.process_generation,
                       t.prior_category_id,t.prior_annotation_version,t.produced_annotation_version,
-                      t.lease_token,m.category_id
+                      t.prior_assignment_origin,t.prior_classification_decision_id,
+                      t.prior_automation_state,t.lease_token,m.category_id,
+                      CASE WHEN t.state='compensating'
+                        THEN COALESCE(t.compensation_command_occurred_at,clock_timestamp())
+                        ELSE COALESCE(t.apply_command_occurred_at,clock_timestamp()) END AS command_occurred_at
             "#,
         )
         .bind(&self.holder)
@@ -134,8 +145,12 @@ impl CategorizationWorker {
             prior_category_id: row.get("prior_category_id"),
             prior_annotation_version: row.get("prior_annotation_version"),
             produced_annotation_version: row.get("produced_annotation_version"),
+            prior_assignment_origin: row.get("prior_assignment_origin"),
+            prior_classification_decision_id: row.get("prior_classification_decision_id"),
+            prior_automation_state: row.get("prior_automation_state"),
             lease_token: row.get("lease_token"),
             category_id: row.get("category_id"),
+            command_occurred_at: row.get("command_occurred_at"),
         }))
     }
 
@@ -181,50 +196,84 @@ impl CategorizationWorker {
                 ..CategorizationReport::default()
             });
         };
-        let version = annotation.version;
-        if annotation.category_id.map(|id| id.into_uuid()) == Some(category_id) {
-            let updated = self
-                .finish(&claim, "terminal_no_effect", None, None)
-                .await?;
-            return Ok(CategorizationReport {
-                claimed: true,
-                fenced: !updated,
-                ..CategorizationReport::default()
-            });
+        let mut version = annotation.version;
+        let mut prior = CategoryAssignmentSnapshot {
+            category: annotation
+                .category_id
+                .map(|id| CategoryReference::new(id.into_uuid())),
+            origin: annotation.assignment_origin,
+            classification_decision_id: annotation.classification_decision_id,
+            automation_state: annotation.automation_state,
+        };
+        if let Some(captured_version) = claim.prior_annotation_version {
+            version = AnnotationVersion::new(captured_version)
+                .map_err(|_| CategorizationError::Ledger)?;
+            prior = prior_snapshot(&claim)?;
+        } else {
+            // Capture the command's complete input before its external Ledger effect.
+            // A restart reuses this version and snapshot when replaying its receipt.
+            let captured = sqlx::query(
+                "UPDATE recurring.categorization_targets SET prior_category_id=$6,prior_annotation_version=$7, \
+                 prior_assignment_origin=$8,prior_classification_decision_id=$9,prior_automation_state=$10 \
+                 WHERE match_id=$1 AND user_id=$2 AND journal_entry_id=$3 AND lease_holder=$4 AND lease_token=$5 \
+                   AND lease_expires_at>clock_timestamp() AND prior_annotation_version IS NULL",
+            ).bind(claim.match_id).bind(claim.user_id).bind(claim.journal_entry_id).bind(&self.holder).bind(claim.lease_token)
+                .bind(prior.category.map(CategoryReference::into_uuid)).bind(version.get())
+                .bind(prior.origin.map(AssignmentOrigin::as_str)).bind(prior.classification_decision_id)
+                .bind(prior.automation_state.as_str()).execute(&self.pool).await?;
+            if captured.rows_affected() != 1 {
+                return Ok(CategorizationReport {
+                    claimed: true,
+                    fenced: true,
+                    ..Default::default()
+                });
+            }
         }
         let result = self
             .ledger
-            .update_annotation(UpdateTransactionAnnotation {
+            .apply_category_assignment(ApplyCategoryAssignment {
                 user_id: UserId::new(claim.user_id),
                 journal_entry_id: JournalEntryId::new(claim.journal_entry_id),
-                changes: AnnotationChanges {
-                    category: Some(Some(CategoryReference::new(category_id))),
-                    ..AnnotationChanges::default()
-                },
+                category_id: Some(CategoryId::new(category_id)),
+                origin: AssignmentOrigin::Recurring,
+                classification_decision_id: None,
                 expected_version: version,
                 idempotency_key: derived_key(&claim, "apply")?,
                 correlation_id: CorrelationId::new(claim.match_id),
-                occurred_at: Utc::now(),
+                occurred_at: claim.command_occurred_at,
             })
             .await;
         match result {
             Ok(result) => {
+                let applied = result.disposition == CategoryAssignmentDisposition::Applied;
                 let updated = self
                     .finish(
                         &claim,
-                        "posted",
-                        Some(annotation.category_id.map(|id| id.into_uuid())),
-                        Some((version.get(), result.version.get())),
+                        if applied {
+                            "posted"
+                        } else {
+                            "terminal_no_effect"
+                        },
+                        applied.then_some(prior),
+                        applied.then_some((version.get(), result.version.get())),
                     )
                     .await?;
                 Ok(CategorizationReport {
                     claimed: true,
-                    posted: updated,
+                    posted: applied && updated,
                     fenced: !updated,
                     ..CategorizationReport::default()
                 })
             }
-            Err(error) if error.is_version_conflict() => self.retry(&claim).await,
+            Err(error) if error.is_version_conflict() => {
+                let updated = self.finish(&claim, "review_required", None, None).await?;
+                Ok(CategorizationReport {
+                    claimed: true,
+                    review_required: updated,
+                    fenced: !updated,
+                    ..Default::default()
+                })
+            }
             Err(error) if error.is_not_found() || error.is_invalid_annotation() => {
                 let updated = self
                     .finish(&claim, "terminal_no_effect", None, None)
@@ -243,7 +292,7 @@ impl CategorizationWorker {
         &self,
         claim: TargetClaim,
     ) -> Result<CategorizationReport, CategorizationError> {
-        let journal = match self
+        match self
             .ledger
             .get_journal(
                 UserId::new(claim.user_id),
@@ -251,7 +300,7 @@ impl CategorizationWorker {
             )
             .await
         {
-            Ok(journal) => journal,
+            Ok(_) => {}
             Err(error) if error.is_not_found() => {
                 let updated = self.finish(&claim, "review_required", None, None).await?;
                 return Ok(CategorizationReport {
@@ -263,34 +312,23 @@ impl CategorizationWorker {
             }
             Err(_) => return self.retry(&claim).await,
         };
-        let current = journal
-            .annotation
-            .as_ref()
-            .map(|annotation| annotation.version.get());
-        if current != claim.produced_annotation_version {
-            let updated = self.finish(&claim, "review_required", None, None).await?;
-            return Ok(CategorizationReport {
-                claimed: true,
-                review_required: updated,
-                fenced: !updated,
-                ..CategorizationReport::default()
-            });
-        }
-        let expected = AnnotationVersion::new(current.ok_or(CategorizationError::Ledger)?)
-            .map_err(|_| CategorizationError::Ledger)?;
+        let expected = AnnotationVersion::new(
+            claim
+                .produced_annotation_version
+                .ok_or(CategorizationError::Ledger)?,
+        )
+        .map_err(|_| CategorizationError::Ledger)?;
+        let snapshot = prior_snapshot(&claim)?;
         let result = self
             .ledger
-            .update_annotation(UpdateTransactionAnnotation {
+            .restore_category_assignment(RestoreCategoryAssignment {
                 user_id: UserId::new(claim.user_id),
                 journal_entry_id: JournalEntryId::new(claim.journal_entry_id),
-                changes: AnnotationChanges {
-                    category: Some(claim.prior_category_id.map(CategoryReference::new)),
-                    ..AnnotationChanges::default()
-                },
+                snapshot,
                 expected_version: expected,
                 idempotency_key: derived_key(&claim, "compensate")?,
                 correlation_id: CorrelationId::new(claim.match_id),
-                occurred_at: Utc::now(),
+                occurred_at: claim.command_occurred_at,
             })
             .await;
         match result {
@@ -320,15 +358,18 @@ impl CategorizationWorker {
         &self,
         claim: &TargetClaim,
         state: &str,
-        prior_category: Option<Option<Uuid>>,
+        prior_assignment: Option<CategoryAssignmentSnapshot>,
         versions: Option<(i64, i64)>,
     ) -> Result<bool, CategorizationError> {
         let updated = sqlx::query(
             r#"
             UPDATE recurring.categorization_targets SET state=$6,
                 prior_category_id=COALESCE($7,prior_category_id),
-                prior_annotation_version=COALESCE($8,prior_annotation_version),
-                produced_annotation_version=COALESCE($9,produced_annotation_version),
+                prior_assignment_origin=COALESCE($8,prior_assignment_origin),
+                prior_classification_decision_id=COALESCE($9,prior_classification_decision_id),
+                prior_automation_state=COALESCE($10,prior_automation_state),
+                prior_annotation_version=COALESCE($11,prior_annotation_version),
+                produced_annotation_version=COALESCE($12,produced_annotation_version),
                 lease_holder=NULL,lease_expires_at=NULL,next_retry_at=NULL,last_error=NULL,
                 updated_at=clock_timestamp()
             WHERE match_id=$1 AND user_id=$2 AND journal_entry_id=$3
@@ -341,7 +382,18 @@ impl CategorizationWorker {
         .bind(&self.holder)
         .bind(claim.lease_token)
         .bind(state)
-        .bind(prior_category.flatten())
+        .bind(
+            prior_assignment
+                .and_then(|snapshot| snapshot.category)
+                .map(CategoryReference::into_uuid),
+        )
+        .bind(
+            prior_assignment
+                .and_then(|snapshot| snapshot.origin)
+                .map(AssignmentOrigin::as_str),
+        )
+        .bind(prior_assignment.and_then(|snapshot| snapshot.classification_decision_id))
+        .bind(prior_assignment.map(|snapshot| snapshot.automation_state.as_str()))
         .bind(versions.map(|value| value.0))
         .bind(versions.map(|value| value.1))
         .execute(&self.pool)
@@ -390,12 +442,48 @@ impl CategorizationWorker {
     }
 }
 
+fn prior_snapshot(claim: &TargetClaim) -> Result<CategoryAssignmentSnapshot, CategorizationError> {
+    Ok(CategoryAssignmentSnapshot {
+        category: claim.prior_category_id.map(CategoryReference::new),
+        origin: claim
+            .prior_assignment_origin
+            .as_deref()
+            .map(parse_origin)
+            .transpose()?,
+        classification_decision_id: claim.prior_classification_decision_id,
+        automation_state: claim
+            .prior_automation_state
+            .as_deref()
+            .map(parse_automation_state)
+            .transpose()?
+            .unwrap_or(AutomationState::LegacyUnknown),
+    })
+}
+
 fn derived_key(claim: &TargetClaim, action: &str) -> Result<IdempotencyKey, CategorizationError> {
     IdempotencyKey::new(format!(
         "recurring:{}:{}:{}:{action}",
         claim.match_id, claim.journal_entry_id, claim.generation
     ))
     .map_err(|_| CategorizationError::Configuration)
+}
+
+fn parse_origin(value: &str) -> Result<AssignmentOrigin, CategorizationError> {
+    match value {
+        "manual" => Ok(AssignmentOrigin::Manual),
+        "recurring" => Ok(AssignmentOrigin::Recurring),
+        "ai" => Ok(AssignmentOrigin::Ai),
+        _ => Err(CategorizationError::Ledger),
+    }
+}
+
+fn parse_automation_state(value: &str) -> Result<AutomationState, CategorizationError> {
+    match value {
+        "eligible" => Ok(AutomationState::Eligible),
+        "suppressed" => Ok(AutomationState::Suppressed),
+        "legacy_unknown" => Ok(AutomationState::LegacyUnknown),
+        _ => Err(CategorizationError::Ledger),
+    }
 }
 
 async fn refresh_process(pool: &PgPool, match_id: Uuid, user_id: Uuid) -> Result<(), sqlx::Error> {
@@ -425,9 +513,12 @@ struct TargetClaim {
     state: String,
     generation: i64,
     prior_category_id: Option<Uuid>,
-    #[allow(dead_code)]
     prior_annotation_version: Option<i64>,
     produced_annotation_version: Option<i64>,
+    prior_assignment_origin: Option<String>,
+    prior_classification_decision_id: Option<Uuid>,
+    prior_automation_state: Option<String>,
     lease_token: i64,
     category_id: Option<Uuid>,
+    command_occurred_at: chrono::DateTime<chrono::Utc>,
 }

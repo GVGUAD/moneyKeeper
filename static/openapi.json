@@ -62,25 +62,27 @@
     "/categories": {
       "post": {
         "operationId": "createCategory",
-        "summary": "Create a category",
-        "description": "Creates an active category for the authenticated user at version 1. The name is trimmed, must contain 1 to 100 characters, and must be unique among that user's active categories under case-insensitive comparison.",
+        "summary": "Create a category node",
+        "description": "Creates a node at the requested parent and sibling position when expected_version matches the user's taxonomy. The operation lazily installs starter template version 1 only when the user has never had category rows.",
         "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateCategory"}}}},
         "responses": {
-          "201": {"description": "Created category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "201": {"description": "Created category node and current taxonomy version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryNodeResult"}}}},
           "400": {"$ref": "#/components/responses/BadRequest"},
           "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
           "409": {"$ref": "#/components/responses/Conflict"},
           "500": {"$ref": "#/components/responses/InternalServerError"}
         }
       },
       "get": {
-        "operationId": "listCategories",
-        "summary": "List the user's categories",
-        "description": "Returns all active and archived categories owned by the authenticated user. Archived categories remain visible so historical classifications are never hidden or deleted.",
+        "operationId": "getCategoryTaxonomy",
+        "summary": "Get the category taxonomy",
+        "description": "Returns the user's complete active and archived category hierarchy, its global version, effective lifecycle and inherited styling, paths, depths, assignability, and the installed starter-template version.",
         "security": [{"bearerAuth": []}],
         "responses": {
-          "200": {"description": "All active and archived user categories", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Category"}}}}},
+          "200": {"description": "Current category taxonomy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryTaxonomy"}}}},
           "401": {"$ref": "#/components/responses/Unauthorized"},
           "500": {"$ref": "#/components/responses/InternalServerError"}
         }
@@ -90,26 +92,62 @@
       "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
         "operationId": "getCategory",
-        "summary": "Get a category",
-        "description": "Returns an active or archived category owned by the authenticated user. A missing category and a category owned by another user are both reported as not found.",
+        "summary": "Get a category subtree",
+        "description": "Returns one tenant-owned category and all its descendants together with the current taxonomy version. Missing and tenant-hidden nodes are both reported as not found.",
         "security": [{"bearerAuth": []}],
         "responses": {
-          "200": {"description": "Category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "200": {"description": "Category subtree", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryNodeResult"}}}},
           "401": {"$ref": "#/components/responses/Unauthorized"},
           "404": {"$ref": "#/components/responses/NotFound"},
           "500": {"$ref": "#/components/responses/InternalServerError"}
         }
       },
       "patch": {
-        "operationId": "renameCategory",
-        "summary": "Rename a category",
-        "description": "Changes a category name when expected_version matches its current version. A real name change increments the version; replaying the same normalized name at the current version is idempotent. Stale versions and active-name collisions return a conflict.",
+        "operationId": "updateCategory",
+        "summary": "Update a category node",
+        "description": "Updates present name, color, or icon fields against the taxonomy version; explicit null clears stored styling. Category kind is immutable.",
         "security": [{"bearerAuth": []}],
-        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameCategory"}}}},
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateCategory"}}}},
         "responses": {
-          "200": {"description": "Renamed category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "200": {"description": "Updated category subtree", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryNodeResult"}}}},
           "400": {"$ref": "#/components/responses/BadRequest"},
           "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories/{id}/move": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "moveCategory",
+        "summary": "Move a category subtree",
+        "description": "Atomically moves one subtree to a parent and target sibling position while rejecting cycles, incompatible kinds, and trees deeper than three levels.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MoveCategory"}}}},
+        "responses": {
+          "200": {"description": "Moved category subtree", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryNodeResult"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/categories/reorder": {
+      "put": {
+        "operationId": "reorderCategories",
+        "summary": "Reorder category siblings",
+        "description": "Replaces the dense zero-based order for one sibling set. The request must contain every sibling, including archived nodes, exactly once.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReorderCategories"}}}},
+        "responses": {
+          "200": {"description": "Reordered category taxonomy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryTaxonomy"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
           "404": {"$ref": "#/components/responses/NotFound"},
           "409": {"$ref": "#/components/responses/Conflict"},
           "500": {"$ref": "#/components/responses/InternalServerError"}
@@ -120,12 +158,12 @@
       "post": {
         "operationId": "archiveCategory",
         "summary": "Archive a category",
-        "description": "Makes a category unavailable for new classifications while preserving its identity and historical use. The command requires the current expected_version and increments the version on the active-to-archived transition; repeating it against an already archived category at the current version is idempotent.",
+        "description": "Archives the node locally at the expected taxonomy version. Descendants become effectively archived without changing their own lifecycle values, while historical references remain valid.",
         "security": [{"bearerAuth": []}],
-        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"$ref":"#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}},
         "responses": {
-          "200": {"description": "Archived category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "200": {"description": "Archived category subtree", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryNodeResult"}}}},
           "400": {"$ref": "#/components/responses/BadRequest"},
           "401": {"$ref": "#/components/responses/Unauthorized"},
           "404": {"$ref": "#/components/responses/NotFound"},
@@ -138,16 +176,28 @@
       "post": {
         "operationId": "restoreCategory",
         "summary": "Restore an archived category",
-        "description": "Makes an archived category active and available for new classifications again without losing its history or identity. The command requires the current expected_version and increments the version on the archived-to-active transition. It conflicts when the version is stale or another active category already has the same name under case-insensitive comparison; repeating it against an already active category at the current version is idempotent.",
+        "description": "Restores the node's local lifecycle at the expected taxonomy version. It conflicts if the effective sibling name would no longer be unique; individually archived descendants remain archived.",
         "security": [{"bearerAuth": []}],
-        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+        "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"$ref":"#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExpectedVersion"}}}},
         "responses": {
-          "200": {"description": "Restored category", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Category"}}}},
+          "200": {"description": "Restored category subtree", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryNodeResult"}}}},
           "400": {"$ref": "#/components/responses/BadRequest"},
           "401": {"$ref": "#/components/responses/Unauthorized"},
           "404": {"$ref": "#/components/responses/NotFound"},
           "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/category-icons": {
+      "get": {
+        "operationId": "listCategoryIcons",
+        "summary": "List category icons",
+        "description": "Returns the ordered server-owned semantic icon catalog accepted by category mutations.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Category icon catalog", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/CategoryIcon"}}}}},
           "500": {"$ref": "#/components/responses/InternalServerError"}
         }
       }
@@ -243,23 +293,23 @@
       },
       "get": {
         "operationId": "listLedgerTransactions", "summary": "List transactions",
-        "description": "Lists tenant journal facts with stable reverse chronological cursor pagination. Supplying any Activity filter requires both half-open range parameters.",
-        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/AfterOccurredAt"},{"$ref":"#/components/parameters/AfterSequence"},{"$ref":"#/components/parameters/ActivityLimit"},{"$ref":"#/components/parameters/FromOccurredAt"},{"$ref":"#/components/parameters/BeforeOccurredAt"},{"$ref":"#/components/parameters/ActivityKind"}], "responses": {"200": {"description": "Transactions", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Journal"}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "description": "Lists tenant journal facts with stable reverse chronological cursor pagination. category_id includes the complete active and archived subtree; category_id and uncategorized=true are mutually exclusive. Supplying a time-range filter requires both half-open range parameters.",
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/AfterOccurredAt"},{"$ref":"#/components/parameters/AfterSequence"},{"$ref":"#/components/parameters/ActivityLimit"},{"$ref":"#/components/parameters/FromOccurredAt"},{"$ref":"#/components/parameters/BeforeOccurredAt"},{"$ref":"#/components/parameters/ActivityKind"},{"$ref":"#/components/parameters/CategoryIdFilter"},{"$ref":"#/components/parameters/UncategorizedFilter"}], "responses": {"200": {"description": "Transactions", "content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Journal"}}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/summary": {
       "get": {
         "operationId": "summarizeLedgerTransactions", "summary": "Summarize Activity transactions",
-        "description": "Returns exact transaction count, distinct category count, and cash-flow totals for one tenant-scoped half-open Activity range.",
-        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/RequiredFromOccurredAt"},{"$ref":"#/components/parameters/RequiredBeforeOccurredAt"},{"$ref":"#/components/parameters/ActivityKind"}], "responses": {"200": {"description": "Exact Activity summary", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ActivitySummary"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "description": "Returns exact transaction count, distinct category count, and cash-flow totals for one tenant-scoped half-open Activity range, independent of list pagination. category_id includes the complete active and archived subtree and historical assignments; category_id and uncategorized=true are mutually exclusive. Omitted or false uncategorized applies no restriction.",
+        "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/RequiredFromOccurredAt"},{"$ref":"#/components/parameters/RequiredBeforeOccurredAt"},{"$ref":"#/components/parameters/ActivityKind"},{"$ref":"#/components/parameters/CategoryIdFilter"},{"$ref":"#/components/parameters/UncategorizedFilter"}], "responses": {"200": {"description": "Exact Activity summary", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/ActivitySummary"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}": {
       "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {
         "operationId": "getLedgerTransaction", "summary": "Get a transaction",
-        "description": "Returns immutable postings, source, relations, timing, sequence, full effective annotation, and incoming supersession links for one tenant journal.",
-        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transaction detail", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/Journal"}}}}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+        "description": "Returns immutable journal fields and full annotation metadata together with assignment provenance, automation eligibility, and the current classification decision or suggestion.",
+        "security": [{"bearerAuth": []}], "responses": {"200": {"description": "Transaction detail", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/TransactionDetail"}}}}, "404": {"$ref": "#/components/responses/NotFound"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
       }
     },
     "/transactions/{id}/annotation": {
@@ -269,6 +319,24 @@
         "description": "Updates mutable transaction metadata at expected_version while keeping the journal and postings immutable.",
         "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AnnotationUpdate"}}}},
         "responses": {"200": {"description": "Annotation updated", "content":{"application/json":{"schema":{"$ref":"#/components/schemas/AnnotationResult"}}}}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/transactions/{id}/classification/retry": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "retryTransactionClassification",
+        "summary": "Retry transaction classification",
+        "description": "Re-enables automatic classification for an uncategorized suppressed transaction at the expected annotation version and durably queues new classification intake.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RetryClassification"}}}},
+        "responses": {
+          "202": {"description": "Classification retry accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CategoryAssignmentResult"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
       }
     },
     "/transactions/{id}/reversals": {
@@ -301,6 +369,72 @@
         "description": "Posts the explicit delta to an observed target display balance under a balance-version fence; zero deltas are rejected.",
         "security": [{"bearerAuth": []}], "parameters":[{"$ref":"#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BalanceCorrection"}}}},
         "responses": {"201": {"description": "Correction posted"}, "400": {"$ref": "#/components/responses/BadRequest"}, "409": {"$ref": "#/components/responses/Conflict"}, "500": {"$ref": "#/components/responses/InternalServerError"}}
+      }
+    },
+    "/classification/review-queue": {
+      "get": {
+        "operationId": "listClassificationReviewQueue",
+        "summary": "List classification review queue",
+        "description": "Returns pending classification suggestions oldest first. A stable cursor requires both after_created_at and after_decision_id; limit defaults to 50 and cannot exceed 100.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [
+          {"name":"after_created_at","in":"query","required":false,"schema":{"type":"string","format":"date-time"}},
+          {"name":"after_decision_id","in":"query","required":false,"schema":{"type":"string","format":"uuid"}},
+          {"name":"limit","in":"query","required":false,"schema":{"type":"integer","minimum":1,"maximum":100,"default":50}}
+        ],
+        "responses": {
+          "200": {"description": "Pending classification suggestions", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClassificationReviewPage"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/classification/decisions/{id}/resolve": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "post": {
+        "operationId": "resolveClassificationDecision",
+        "summary": "Resolve a classification decision",
+        "description": "Accepts, corrects, or rejects one pending suggestion under both decision and annotation version fences. Accepted and corrected outcomes become manual assignments; application completes asynchronously.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveClassificationDecision"}}}},
+        "responses": {
+          "202": {"description": "Resolution accepted and applying", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClassificationDecision"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/classification/backfills": {
+      "post": {
+        "operationId": "startClassificationBackfill",
+        "summary": "Start a classification backfill",
+        "description": "Starts or idempotently returns one user-owned backfill over a non-empty half-open UTC range. Only one active backfill per user is allowed.",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"$ref":"#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/StartClassificationBackfill"}}}},
+        "responses": {
+          "202": {"description": "Backfill accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClassificationBackfill"}}}},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
+      }
+    },
+    "/classification/backfills/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {
+        "operationId": "getClassificationBackfill",
+        "summary": "Get a classification backfill",
+        "description": "Returns state, newest-first scan cursor, outcome counters, optimistic version, and any UTC quota-resume time for one tenant-owned backfill.",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {"description": "Classification backfill", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClassificationBackfill"}}}},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "500": {"$ref": "#/components/responses/InternalServerError"}
+        }
       }
     },
     "/reconciliations": {
@@ -529,7 +663,9 @@
       "BeforeOccurredAt": {"name":"before_occurred_at","in":"query","required":false,"schema":{"type":"string","format":"date-time"}},
       "RequiredFromOccurredAt": {"name":"from_occurred_at","in":"query","required":true,"schema":{"type":"string","format":"date-time"}},
       "RequiredBeforeOccurredAt": {"name":"before_occurred_at","in":"query","required":true,"schema":{"type":"string","format":"date-time"}},
-      "ActivityKind": {"name":"kind","in":"query","required":false,"schema":{"type":"string","enum":["all","income","expense"],"default":"all"}}
+      "ActivityKind": {"name":"kind","in":"query","required":false,"schema":{"type":"string","enum":["all","income","expense"],"default":"all"}},
+      "CategoryIdFilter": {"name":"category_id","in":"query","required":false,"description":"Matches assignments to this category or any active or archived descendant.","schema":{"type":"string","format":"uuid"}},
+      "UncategorizedFilter": {"name":"uncategorized","in":"query","required":false,"description":"When true, returns only transactions without a category. Mutually exclusive with category_id.","schema":{"type":"boolean","default":false}}
     },
     "responses": {
       "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
@@ -554,19 +690,46 @@
       "CreateCategory": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "kind"],
+        "required": ["expected_version", "name", "kind"],
         "properties": {
+          "expected_version": {"type": "integer", "minimum": 1},
           "name": {"type": "string", "minLength": 1, "maxLength": 100},
-          "kind": {"type": "string", "enum": ["income", "expense", "both"]}
+          "kind": {"$ref": "#/components/schemas/CategoryKind"},
+          "parent_id": {"type": ["string", "null"], "format": "uuid"},
+          "position": {"type": "integer", "minimum": 0},
+          "color": {"type": ["string", "null"], "pattern": "^#[0-9A-Fa-f]{6}$"},
+          "icon": {"oneOf": [{"$ref": "#/components/schemas/CategoryIconKey"}, {"type": "null"}]}
         }
       },
-      "RenameCategory": {
+      "UpdateCategory": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "expected_version"],
+        "required": ["expected_version"],
         "properties": {
           "name": {"type": "string", "minLength": 1, "maxLength": 100},
-          "expected_version": {"type": "integer", "minimum": 1}
+          "expected_version": {"type": "integer", "minimum": 1},
+          "color": {"type": ["string", "null"], "pattern": "^#[0-9A-Fa-f]{6}$"},
+          "icon": {"oneOf": [{"$ref": "#/components/schemas/CategoryIconKey"}, {"type": "null"}]}
+        }
+      },
+      "MoveCategory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_version", "target_position"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 1},
+          "parent_id": {"type": ["string", "null"], "format": "uuid"},
+          "target_position": {"type": "integer", "minimum": 0}
+        }
+      },
+      "ReorderCategories": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["expected_version", "ordered_category_ids"],
+        "properties": {
+          "expected_version": {"type": "integer", "minimum": 1},
+          "parent_id": {"type": ["string", "null"], "format": "uuid"},
+          "ordered_category_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}
         }
       },
       "ExpectedVersion": {
@@ -575,17 +738,69 @@
         "required": ["expected_version"],
         "properties": {"expected_version": {"type": "integer", "minimum": 1}}
       },
-      "Category": {
+      "CategoryKind": {
+        "type": "string",
+        "enum": ["income", "expense", "both"]
+      },
+      "CategoryLifecycle": {
+        "type": "string",
+        "enum": ["active", "archived"]
+      },
+      "CategoryIconKey": {
+        "type": "string",
+        "enum": ["tag", "wallet-plus", "briefcase", "laptop", "chart-line", "circle-ellipsis", "wallet-minus", "house", "building", "bolt", "utensils", "shopping-basket", "coffee", "car", "bus", "fuel", "taxi", "heart-pulse", "pill", "shopping-bag", "clapperboard", "repeat", "plane", "graduation-cap", "gift", "receipt"]
+      },
+      "CategoryIcon": {
         "type": "object",
-        "required": ["id", "name", "kind", "lifecycle", "version", "created_at", "as_of"],
+        "additionalProperties": false,
+        "required": ["key", "label"],
+        "properties": {
+          "key": {"$ref": "#/components/schemas/CategoryIconKey"},
+          "label": {"type": "string", "minLength": 1}
+        }
+      },
+      "CategoryNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "parent_id", "name", "kind", "local_lifecycle", "effective_lifecycle", "position", "color", "effective_color", "icon", "effective_icon", "path", "depth", "assignable", "created_at", "updated_at", "children"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
+          "parent_id": {"type": ["string", "null"], "format": "uuid"},
           "name": {"type": "string"},
-          "kind": {"type": "string", "enum": ["income", "expense", "both"]},
-          "lifecycle": {"type": "string", "enum": ["active", "archived"]},
-          "version": {"type": "integer", "minimum": 1},
+          "kind": {"$ref": "#/components/schemas/CategoryKind"},
+          "local_lifecycle": {"$ref": "#/components/schemas/CategoryLifecycle"},
+          "effective_lifecycle": {"$ref": "#/components/schemas/CategoryLifecycle"},
+          "position": {"type": "integer", "minimum": 0},
+          "color": {"type": ["string", "null"], "pattern": "^#[0-9A-F]{6}$"},
+          "effective_color": {"type": "string", "pattern": "^#[0-9A-F]{6}$"},
+          "icon": {"oneOf": [{"$ref": "#/components/schemas/CategoryIconKey"}, {"type": "null"}]},
+          "effective_icon": {"$ref": "#/components/schemas/CategoryIconKey"},
+          "path": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string"}},
+          "depth": {"type": "integer", "minimum": 1, "maximum": 3},
+          "assignable": {"type": "boolean"},
           "created_at": {"type": "string", "format": "date-time"},
-          "as_of": {"type": "string", "format": "date-time"}
+          "updated_at": {"type": "string", "format": "date-time"},
+          "children": {"type": "array", "items": {"$ref": "#/components/schemas/CategoryNode"}}
+        }
+      },
+      "CategoryTaxonomy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "starter_template_version", "roots"],
+        "properties": {
+          "version": {"type": "integer", "minimum": 1},
+          "starter_template_version": {"type": ["integer", "null"], "minimum": 1},
+          "roots": {"type": "array", "items": {"$ref": "#/components/schemas/CategoryNode"}}
+        }
+      },
+      "CategoryNodeResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "starter_template_version", "node"],
+        "properties": {
+          "version": {"type": "integer", "minimum": 1},
+          "starter_template_version": {"type": ["integer", "null"], "minimum": 1},
+          "node": {"$ref": "#/components/schemas/CategoryNode"}
         }
       },
       "UpdatePreferences": {
@@ -634,15 +849,28 @@
       "AccountResult": {"type":"object","required":["account","opening_journal_id","replayed"],"properties":{"account":{"$ref":"#/components/schemas/LedgerAccount"},"opening_journal_id":{"type":["string","null"],"format":"uuid"},"replayed":{"type":"boolean"}}},
       "AccountEffect": {"type":"object","required":["account_id","currency","signed_amount","display_effect","signed_balance","display_balance","balance_version"],"properties":{"account_id":{"type":"string","format":"uuid"},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"signed_amount":{"$ref":"#/components/schemas/DecimalString"},"display_effect":{"$ref":"#/components/schemas/DecimalString"},"signed_balance":{"$ref":"#/components/schemas/DecimalString"},"display_balance":{"$ref":"#/components/schemas/DecimalString"},"balance_version":{"type":"integer","minimum":0}}},
       "Posting": {"type":"object","required":["id","account_id","account_kind","account_nature","account_authority","position","currency","signed_amount","display_effect"],"properties":{"id":{"type":"string","format":"uuid"},"account_id":{"type":"string","format":"uuid"},"account_kind":{"$ref":"#/components/schemas/AccountKind"},"account_nature":{"$ref":"#/components/schemas/AccountNature"},"account_authority":{"$ref":"#/components/schemas/AccountAuthority"},"position":{"type":"integer","minimum":0},"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"signed_amount":{"$ref":"#/components/schemas/DecimalString"},"display_effect":{"$ref":"#/components/schemas/DecimalString"}}},
-      "JournalAnnotation": {"type":"object","required":["version","description","category_id","note","tags","budget_visibility","created_at","updated_at"],"properties":{"version":{"type":"integer","minimum":1},"description":{"type":"string"},"category_id":{"type":["string","null"],"format":"uuid"},"note":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"budget_visibility":{"type":"string","enum":["included","excluded"]},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
+      "JournalAnnotation": {"type":"object","required":["version","description","category_id","assignment_origin","classification_decision_id","automation_state","note","tags","budget_visibility","created_at","updated_at"],"properties":{"version":{"type":"integer","minimum":1},"description":{"type":"string"},"category_id":{"type":["string","null"],"format":"uuid"},"assignment_origin":{"type":["string","null"],"enum":["manual","recurring","ai",null]},"classification_decision_id":{"type":["string","null"],"format":"uuid"},"automation_state":{"type":"string","enum":["eligible","suppressed","legacy_unknown"]},"note":{"type":["string","null"]},"tags":{"type":"array","items":{"type":"string"}},"budget_visibility":{"type":"string","enum":["included","excluded"]},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
       "JournalRelations": {"type":"object","required":["reverses_transaction_id","corrects_transaction_id","replaces_transaction_id"],"properties":{"reverses_transaction_id":{"type":["string","null"],"format":"uuid"},"corrects_transaction_id":{"type":["string","null"],"format":"uuid"},"replaces_transaction_id":{"type":["string","null"],"format":"uuid"}}},
       "JournalActor": {"type":"object","required":["kind"],"properties":{"kind":{"type":"string","enum":["user","system","external"]},"user_id":{"type":"string","format":"uuid"},"source_kind":{"type":"string"},"source_reference":{"type":"string"}}},
       "Correction": {"type":"object","required":["account_id","before_display_balance","target_display_balance","display_delta","observed_balance_version","reason","observed_at"],"properties":{"account_id":{"type":"string","format":"uuid"},"before_display_balance":{"$ref":"#/components/schemas/DecimalString"},"target_display_balance":{"$ref":"#/components/schemas/DecimalString"},"display_delta":{"$ref":"#/components/schemas/DecimalString"},"observed_balance_version":{"type":"integer","minimum":0},"reason":{"type":"string"},"observed_at":{"type":"string","format":"date-time"}}},
       "Journal": {"type":"object","required":["id","user_id","ledger_sequence","source","purpose","actor","description","occurred_at","recorded_at","correlation_id","relations","postings","annotation","reversed_by_journal_id","replaced_by_journal_id","correction"],"properties":{"id":{"type":"string","format":"uuid"},"user_id":{"type":"string","format":"uuid"},"ledger_sequence":{"type":"integer","format":"int64","minimum":1},"source":{"type":"string","enum":["manual","import","system","correction","reconciliation"]},"purpose":{"type":"string","enum":["ordinary","correction","reversal","approved_reconciliation"]},"actor":{"$ref":"#/components/schemas/JournalActor"},"description":{"type":"string"},"occurred_at":{"type":"string","format":"date-time"},"recorded_at":{"type":"string","format":"date-time"},"correlation_id":{"type":"string","format":"uuid"},"relations":{"$ref":"#/components/schemas/JournalRelations"},"postings":{"type":"array","minItems":2,"items":{"$ref":"#/components/schemas/Posting"}},"annotation":{"oneOf":[{"$ref":"#/components/schemas/JournalAnnotation"},{"type":"null"}]},"reversed_by_journal_id":{"type":["string","null"],"format":"uuid"},"replaced_by_journal_id":{"type":["string","null"],"format":"uuid"},"correction":{"oneOf":[{"$ref":"#/components/schemas/Correction"},{"type":"null"}]}}},
+      "TransactionClassification": {"type":"object","additionalProperties":false,"required":["assignment_origin","automation_state","decision","target"],"properties":{"assignment_origin":{"type":["string","null"],"enum":["manual","recurring","ai",null]},"automation_state":{"type":["string","null"],"enum":["eligible","suppressed","legacy_unknown",null]},"decision":{"oneOf":[{"$ref":"#/components/schemas/ClassificationDecision"},{"type":"null"}]},"target":{"oneOf":[{"$ref":"#/components/schemas/ClassificationTargetStatus"},{"type":"null"}]}}},
+      "ClassificationTargetStatus": {"type":"object","additionalProperties":false,"required":["target_id","state","outbound_attempts","next_attempt_at","last_error_code"],"properties":{"target_id":{"type":"string","format":"uuid"},"state":{"type":"string","enum":["pending","retry_due","quota_deferred","auto_apply_pending","review_pending","applying","abstained","completed","failed","stale"]},"outbound_attempts":{"type":"integer","minimum":0},"next_attempt_at":{"type":["string","null"],"format":"date-time"},"last_error_code":{"type":["string","null"]}}},
+      "TransactionDetail": {"allOf":[{"$ref":"#/components/schemas/Journal"},{"type":"object","required":["classification"],"properties":{"classification":{"$ref":"#/components/schemas/TransactionClassification"}}}]},
       "ActivityTotal": {"type":"object","required":["currency","amount"],"properties":{"currency":{"type":"string","pattern":"^[A-Z]{3}$"},"amount":{"$ref":"#/components/schemas/DecimalString"}}},
       "ActivitySummary": {"type":"object","required":["transaction_count","category_count","totals"],"properties":{"transaction_count":{"type":"integer","format":"int64","minimum":0},"category_count":{"type":"integer","format":"int64","minimum":0},"totals":{"type":"array","items":{"$ref":"#/components/schemas/ActivityTotal"}}}},
       "TransactionResult": {"type":"object","required":["journal_entry_id","effects","annotation_version","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"annotation_version":{"type":"integer","minimum":1},"replayed":{"type":"boolean"}}},
       "AnnotationResult": {"type":"object","required":["journal_entry_id","version","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"version":{"type":"integer","minimum":1},"replayed":{"type":"boolean"}}},
+      "CategoryAssignmentResult": {"type":"object","additionalProperties":false,"required":["journal_entry_id","version","disposition","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"version":{"type":"integer","minimum":1},"disposition":{"type":"string","enum":["applied","no_effect"]},"replayed":{"type":"boolean"}}},
+      "RetryClassification": {"type":"object","additionalProperties":false,"required":["expected_annotation_version"],"properties":{"expected_annotation_version":{"type":"integer","minimum":1}}},
+      "ResolveClassificationDecision": {"type":"object","additionalProperties":false,"required":["action","expected_decision_version","expected_annotation_version"],"properties":{"action":{"type":"string","enum":["accept","correct","reject"]},"category_id":{"type":["string","null"],"format":"uuid","description":"Required for correct; omit or use null for accept and reject."},"expected_decision_version":{"type":"integer","minimum":1},"expected_annotation_version":{"type":"integer","minimum":1}}},
+      "ClassificationReason": {"type":"string","enum":["merchant_match","mcc_match","description_match","amount_pattern","tenant_example","mixed_signals","insufficient_evidence"]},
+      "ClassificationDecision": {"type":"object","additionalProperties":false,"required":["decision_id","decision_version","journal_entry_id","state","candidate_category_id","chosen_category_id","confidence","reason_code","explanation","taxonomy_version","annotation_version","created_at","updated_at"],"properties":{"decision_id":{"type":"string","format":"uuid"},"decision_version":{"type":"integer","minimum":1},"journal_entry_id":{"type":"string","format":"uuid"},"state":{"type":"string","enum":["auto_apply_pending","review_pending","applying","applied","accepted","corrected","rejected","abstained","stale","failed"]},"candidate_category_id":{"type":["string","null"],"format":"uuid"},"chosen_category_id":{"type":["string","null"],"format":"uuid"},"confidence":{"type":"number","minimum":0,"maximum":1},"reason_code":{"$ref":"#/components/schemas/ClassificationReason"},"explanation":{"type":"string","maxLength":240},"taxonomy_version":{"type":"integer","minimum":1},"annotation_version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
+      "ClassificationReviewItem": {"type":"object","additionalProperties":false,"required":["decision_id","decision_version","journal_entry_id","candidate_category_id","confidence","reason_code","explanation","taxonomy_version","annotation_version","created_at"],"properties":{"decision_id":{"type":"string","format":"uuid"},"decision_version":{"type":"integer","minimum":1},"journal_entry_id":{"type":"string","format":"uuid"},"candidate_category_id":{"type":"string","format":"uuid"},"confidence":{"type":"number","minimum":0.6,"maximum":1},"reason_code":{"$ref":"#/components/schemas/ClassificationReason"},"explanation":{"type":"string","maxLength":240},"taxonomy_version":{"type":"integer","minimum":1},"annotation_version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"}}},
+      "ClassificationReviewCursor": {"type":"object","additionalProperties":false,"required":["created_at","decision_id"],"properties":{"created_at":{"type":"string","format":"date-time"},"decision_id":{"type":"string","format":"uuid"}}},
+      "ClassificationReviewPage": {"type":"object","additionalProperties":false,"required":["items","next_cursor"],"properties":{"items":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/ClassificationReviewItem"}},"next_cursor":{"oneOf":[{"$ref":"#/components/schemas/ClassificationReviewCursor"},{"type":"null"}]}}},
+      "StartClassificationBackfill": {"type":"object","additionalProperties":false,"required":["from","to"],"properties":{"from":{"type":"string","format":"date-time"},"to":{"type":"string","format":"date-time","description":"Exclusive UTC upper bound; must be later than from."}}},
+      "ClassificationBackfill": {"type":"object","additionalProperties":false,"required":["id","state","range_from","range_to","cursor_occurred_at","cursor_journal_entry_id","cursor_ledger_sequence","classified_count","review_count","abstained_count","failed_count","quota_resume_at","version","created_at","updated_at"],"properties":{"id":{"type":"string","format":"uuid"},"state":{"type":"string","enum":["requested","running","quota_deferred","completed","failed","cancelled"]},"range_from":{"type":"string","format":"date-time"},"range_to":{"type":"string","format":"date-time"},"cursor_occurred_at":{"type":["string","null"],"format":"date-time"},"cursor_journal_entry_id":{"type":["string","null"],"format":"uuid"},"cursor_ledger_sequence":{"type":["integer","null"],"format":"int64","minimum":1},"classified_count":{"type":"integer","format":"int64","minimum":0},"review_count":{"type":"integer","format":"int64","minimum":0},"abstained_count":{"type":"integer","format":"int64","minimum":0},"failed_count":{"type":"integer","format":"int64","minimum":0},"quota_resume_at":{"type":["string","null"],"format":"date-time"},"version":{"type":"integer","minimum":1},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}},
       "FinancialChangeResult": {"type":"object","required":["journal_entry_id","effects","replayed"],"properties":{"journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"replayed":{"type":"boolean"}}},
       "ReplacementResult": {"type":"object","required":["reversal_journal_entry_id","replacement_journal_entry_id","effects","replayed"],"properties":{"reversal_journal_entry_id":{"type":"string","format":"uuid"},"replacement_journal_entry_id":{"type":"string","format":"uuid"},"effects":{"type":"array","items":{"$ref":"#/components/schemas/AccountEffect"}},"replayed":{"type":"boolean"}}},
       "OpenAccount": {

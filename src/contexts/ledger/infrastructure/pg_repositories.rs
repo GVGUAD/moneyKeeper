@@ -16,11 +16,12 @@ use super::super::{
         ReconciliationStream, StoredReceipt,
     },
     domain::{
-        AccountNature, Actor, AnnotationId, AnnotationVersion, BalanceObservation, BalanceVersion,
-        BudgetVisibility, CategoryReference, JournalEntry, JournalEntryId, JournalSource,
-        LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags, ObservationId, Posting,
-        PostingId, PostingPurpose, ReconciliationCase, ReconciliationCaseId, ReconciliationStatus,
-        ReconciliationVersion, SourceReference, SystemAccountRole, TransactionAnnotation,
+        AccountNature, Actor, AnnotationId, AnnotationVersion, AssignmentOrigin, AutomationState,
+        BalanceObservation, BalanceVersion, BudgetVisibility, CategoryReference, JournalEntry,
+        JournalEntryId, JournalSource, LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags,
+        ObservationId, Posting, PostingId, PostingPurpose, ReconciliationCase,
+        ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion, SourceReference,
+        SystemAccountRole, TransactionAnnotation,
     },
 };
 use super::{pg_unit_of_work::PgLedgerTransaction, rows::AccountRow};
@@ -488,6 +489,9 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
             user_id: Uuid,
             description: String,
             category_id: Option<Uuid>,
+            assignment_origin: Option<String>,
+            classification_decision_id: Option<Uuid>,
+            automation_state: String,
             note: Option<String>,
             tags: Vec<String>,
             budget_visibility: String,
@@ -496,12 +500,14 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
             updated_at: chrono::DateTime<chrono::Utc>,
         }
         let sql = if lock {
-            "SELECT id, journal_entry_id, user_id, description, category_id, note, tags, \
+            "SELECT id, journal_entry_id, user_id, description, category_id, assignment_origin, \
+                    classification_decision_id, automation_state, note, tags, \
                     budget_visibility, version, created_at, updated_at \
              FROM ledger.transaction_annotations \
              WHERE journal_entry_id = $1 AND user_id = $2 FOR UPDATE"
         } else {
-            "SELECT id, journal_entry_id, user_id, description, category_id, note, tags, \
+            "SELECT id, journal_entry_id, user_id, description, category_id, assignment_origin, \
+                    classification_decision_id, automation_state, note, tags, \
                     budget_visibility, version, created_at, updated_at \
              FROM ledger.transaction_annotations WHERE journal_entry_id = $1 AND user_id = $2"
         };
@@ -518,6 +524,12 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
                 UserId::new(row.user_id),
                 row.description,
                 row.category_id.map(CategoryReference::new),
+                row.assignment_origin
+                    .as_deref()
+                    .map(AssignmentOrigin::parse)
+                    .transpose()?,
+                row.classification_decision_id,
+                AutomationState::parse(&row.automation_state)?,
                 row.note,
                 NormalizedTags::new(row.tags)?,
                 match row.budget_visibility.as_str() {
@@ -549,15 +561,19 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
             .collect();
         sqlx::query(
             "INSERT INTO ledger.transaction_annotations \
-             (id, journal_entry_id, user_id, description, category_id, note, tags, \
-              budget_visibility, version, created_at, updated_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+             (id, journal_entry_id, user_id, description, category_id, assignment_origin, \
+              classification_decision_id, automation_state, note, tags, budget_visibility, \
+              version, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(annotation.id().into_uuid())
         .bind(annotation.journal_entry_id().into_uuid())
         .bind(annotation.user_id().into_uuid())
         .bind(annotation.description())
         .bind(annotation.category().map(|id| id.into_uuid()))
+        .bind(annotation.assignment_origin().map(AssignmentOrigin::as_str))
+        .bind(annotation.classification_decision_id())
+        .bind(annotation.automation_state().as_str())
         .bind(annotation.note())
         .bind(&tags)
         .bind(annotation.budget_visibility().as_str())
@@ -581,15 +597,27 @@ impl AnnotationStore for PgLedgerTransaction<'_> {
             .map(String::as_str)
             .collect();
         let result = sqlx::query(
-            "UPDATE ledger.transaction_annotations SET description = $3, category_id = $4, note = $5, \
-             tags = $6, budget_visibility = $7, version = $8, updated_at = $9 \
-             WHERE journal_entry_id = $1 AND user_id = $2 AND version = $10",
-        ).bind(annotation.journal_entry_id().into_uuid()).bind(annotation.user_id().into_uuid())
-         .bind(annotation.description()).bind(annotation.category().map(|id| id.into_uuid()))
-         .bind(annotation.note()).bind(&tags).bind(annotation.budget_visibility().as_str())
-         .bind(annotation.version().get()).bind(annotation.updated_at())
-         .bind(annotation.version().get() - 1)
-         .execute(&mut *self.transaction).await.map_err(LedgerError::storage)?;
+            "UPDATE ledger.transaction_annotations SET description = $3, category_id = $4, \
+             assignment_origin = $5, classification_decision_id = $6, automation_state = $7, \
+             note = $8, tags = $9, budget_visibility = $10, version = $11, updated_at = $12 \
+             WHERE journal_entry_id = $1 AND user_id = $2 AND version = $13",
+        )
+        .bind(annotation.journal_entry_id().into_uuid())
+        .bind(annotation.user_id().into_uuid())
+        .bind(annotation.description())
+        .bind(annotation.category().map(|id| id.into_uuid()))
+        .bind(annotation.assignment_origin().map(AssignmentOrigin::as_str))
+        .bind(annotation.classification_decision_id())
+        .bind(annotation.automation_state().as_str())
+        .bind(annotation.note())
+        .bind(&tags)
+        .bind(annotation.budget_visibility().as_str())
+        .bind(annotation.version().get())
+        .bind(annotation.updated_at())
+        .bind(annotation.version().get() - 1)
+        .execute(&mut *self.transaction)
+        .await
+        .map_err(LedgerError::storage)?;
         if result.rows_affected() != 1 {
             return Err(LedgerError::version_conflict());
         }

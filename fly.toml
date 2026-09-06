@@ -15,9 +15,11 @@ primary_region = 'fra'
   BIND_ADDR    = "0.0.0.0:8080"
   RUST_LOG     = "moneykeeper=debug"
   LOG_FORMAT   = "json"
+  CLASSIFICATION_AUTO_APPLY = "false"
+  CLASSIFICATION_MODEL = "gpt-5.4-mini-2026-03-17"
 
 # DATABASE_URL, FINANCE_V2_ENCRYPTION_KEY_ID, FINANCE_V2_ENCRYPTION_KEY,
-# FINANCE_V2_WEBHOOK_DIGEST_KEY, and Gmail OAuth credentials are Fly secrets.
+# FINANCE_V2_WEBHOOK_DIGEST_KEY, OPENAI_API_KEY, and Gmail OAuth credentials are Fly secrets.
 # The V2 DATABASE_URL must name the separate moneykeeper_v2 database.
 
 [http_service]

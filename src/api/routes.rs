@@ -20,6 +20,9 @@ use crate::shared_kernel::UserId;
 pub fn router(contexts: ContextFacades, jwks: Arc<JwkSet>) -> Router {
     let banking = contexts.banking.clone();
     let mail = contexts.mail.clone();
+    let categories = contexts.categories.clone();
+    let classification = contexts.classification.clone();
+    let ledger = contexts.ledger.clone();
     let authenticated = Router::new()
         .merge(crate::contexts::portfolio::api::routes::router(
             contexts.portfolio,
@@ -30,9 +33,11 @@ pub fn router(contexts: ContextFacades, jwks: Arc<JwkSet>) -> Router {
         ))
         .merge(crate::contexts::ledger::api::routes::router(
             crate::api::state::LedgerApiState {
-                ledger: contexts.ledger,
+                ledger: ledger.clone(),
                 currencies: contexts.currencies.clone(),
                 banking: Some(banking.clone()),
+                categories: categories.clone(),
+                classification: classification.clone(),
             },
         ))
         .merge(crate::contexts::banking::api::routes::authenticated_router(
@@ -56,6 +61,13 @@ pub fn router(contexts: ContextFacades, jwks: Arc<JwkSet>) -> Router {
         ))
         .merge(crate::contexts::classification::api::routes::router(
             contexts.categories,
+        ))
+        .merge(crate::contexts::classification::api::automation::router(
+            crate::contexts::classification::api::automation::ClassificationApiState {
+                automation: classification,
+                categories,
+                ledger,
+            },
         ))
         .merge(crate::contexts::preferences::api::routes::router(
             contexts.preferences,
@@ -138,8 +150,11 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/categories"),
     ("GET", "/categories/{id}"),
     ("PATCH", "/categories/{id}"),
+    ("POST", "/categories/{id}/move"),
+    ("PUT", "/categories/reorder"),
     ("POST", "/categories/{id}/archive"),
     ("POST", "/categories/{id}/restore"),
+    ("GET", "/category-icons"),
     ("GET", "/preferences"),
     ("PATCH", "/preferences"),
     ("POST", "/accounts"),
@@ -154,10 +169,15 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("GET", "/transactions/summary"),
     ("GET", "/transactions/{id}"),
     ("PATCH", "/transactions/{id}/annotation"),
+    ("POST", "/transactions/{id}/classification/retry"),
     ("POST", "/transactions/{id}/reversals"),
     ("POST", "/transactions/{id}/replacements"),
     ("POST", "/transfers"),
     ("POST", "/accounts/{id}/balance-corrections"),
+    ("GET", "/classification/review-queue"),
+    ("POST", "/classification/decisions/{id}/resolve"),
+    ("POST", "/classification/backfills"),
+    ("GET", "/classification/backfills/{id}"),
     ("GET", "/reconciliations"),
     ("GET", "/reconciliations/{id}"),
     ("POST", "/reconciliations/{id}/approve"),

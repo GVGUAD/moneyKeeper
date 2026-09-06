@@ -103,6 +103,16 @@ pub struct ProviderEventReadyV1 {
     pub revision: i64,
 }
 
+/// Published after a provider revision has produced a new Ledger journal.
+pub const PROVIDER_TRANSACTION_IMPORTED_V1: &str = "banking.provider-transaction-imported.v1";
+
+/// Data-minimal fact used to trigger downstream transaction classification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderTransactionImportedV1 {
+    pub provider_event_id: ProviderEventId,
+    pub journal_entry_id: JournalEntryId,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncJobView {
     pub id: SyncJobId,
@@ -171,6 +181,33 @@ pub struct ProviderImportOutcome {
     pub lease_holder: Option<String>,
     #[serde(skip)]
     pub fencing_token: Option<i64>,
+}
+
+/// Provider-owned evidence that may be copied into a tenant-private classifier target.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderClassificationEvidence {
+    pub provider_event_id: ProviderEventId,
+    pub journal_entry_id: JournalEntryId,
+    pub provider: String,
+    pub operation_money: Money,
+    pub description: String,
+    pub merchant_mcc: Option<i32>,
+    pub effective_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for ProviderClassificationEvidence {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderClassificationEvidence")
+            .field("provider_event_id", &self.provider_event_id)
+            .field("journal_entry_id", &self.journal_entry_id)
+            .field("provider", &self.provider)
+            .field("operation_money", &"[REDACTED]")
+            .field("description", &"[REDACTED]")
+            .field("merchant_mcc", &self.merchant_mcc)
+            .field("effective_at", &self.effective_at)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

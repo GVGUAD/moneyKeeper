@@ -1,9 +1,11 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::contexts::classification::public::{ClassificationTargetStatus, DecisionSuggestion};
 use crate::contexts::ledger::public::{
-    AccountKind, AccountNature, ActivityKind, BudgetVisibility, ManualTransactionKind,
+    AccountKind, AccountNature, ActivityKind, AssignmentOrigin, AutomationState, BudgetVisibility,
+    JournalView, ManualTransactionKind,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -139,6 +141,8 @@ pub(crate) struct TransactionActivityQuery {
     pub(crate) from_occurred_at: Option<DateTime<Utc>>,
     pub(crate) before_occurred_at: Option<DateTime<Utc>>,
     pub(crate) kind: Option<ActivityKind>,
+    pub(crate) category_id: Option<Uuid>,
+    pub(crate) uncategorized: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -147,6 +151,23 @@ pub(crate) struct ActivitySummaryQuery {
     pub(crate) from_occurred_at: Option<DateTime<Utc>>,
     pub(crate) before_occurred_at: Option<DateTime<Utc>>,
     pub(crate) kind: Option<ActivityKind>,
+    pub(crate) category_id: Option<Uuid>,
+    pub(crate) uncategorized: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TransactionClassificationResponse {
+    pub(crate) target: Option<ClassificationTargetStatus>,
+    pub(crate) assignment_origin: Option<AssignmentOrigin>,
+    pub(crate) automation_state: Option<AutomationState>,
+    pub(crate) decision: Option<DecisionSuggestion>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TransactionDetailResponse {
+    #[serde(flatten)]
+    pub(crate) journal: JournalView,
+    pub(crate) classification: TransactionClassificationResponse,
 }
 
 #[derive(Debug, Deserialize)]

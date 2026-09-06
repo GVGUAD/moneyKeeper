@@ -1,6 +1,7 @@
 //! Classification owns user category taxonomy and lifecycle.
 
 mod application;
+pub(crate) mod automation;
 mod domain;
 mod infrastructure;
 
@@ -14,4 +15,8 @@ pub(crate) fn build(pool: &VerifiedDatabase) -> public::CategoryCatalogFacade {
     public::CategoryCatalogFacade::new(Arc::new(infrastructure::PgCategoryCatalog::new(
         pool.pool().clone(),
     )))
+}
+
+pub(crate) fn build_automation(pool: &VerifiedDatabase) -> public::ClassificationAutomationFacade {
+    public::ClassificationAutomationFacade::new(pool.pool().clone())
 }

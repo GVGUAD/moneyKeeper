@@ -10,6 +10,61 @@ async fn fresh_database() -> FreshDatabase {
     test_support::fresh_database().await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn insert_legacy_journal(
+    pool: &PgPool,
+    id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    asset_account_id: uuid::Uuid,
+    expense_account_id: uuid::Uuid,
+    command_name: &str,
+    source: &str,
+    purpose: &str,
+    description: &str,
+    idempotency_key: &str,
+) {
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO ledger.journal_entries( \
+         id,user_id,command_name,source,purpose,description,actor_kind,occurred_at,recorded_at, \
+         correlation_id,idempotency_key) \
+         VALUES($1,$2,$3,$4,$5,$6,'system','2026-08-01T12:00:00Z', \
+                '2026-08-01T12:00:01Z',$7,$8)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(command_name)
+    .bind(source)
+    .bind(purpose)
+    .bind(description)
+    .bind(uuid::Uuid::new_v4())
+    .bind(idempotency_key)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    for (account_id, account_nature, position, amount) in [
+        (asset_account_id, "asset", 1_i16, "-10"),
+        (expense_account_id, "expense", 2_i16, "10"),
+    ] {
+        sqlx::query(
+            "INSERT INTO ledger.postings( \
+             id,journal_entry_id,user_id,account_id,currency,account_nature,position,signed_amount) \
+             VALUES($1,$2,$3,$4,'UAH',$5,$6,$7::ledger.numeric_28_8)",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(id)
+        .bind(user_id)
+        .bind(account_id)
+        .bind(account_nature)
+        .bind(position)
+        .bind(amount)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    }
+    transaction.commit().await.unwrap();
+}
+
 async fn assert_rejected_before_migrations(database: &FreshDatabase) {
     let error = database
         .initialize()
@@ -203,6 +258,7 @@ async fn database_generation_wrong_lineage_marker_is_rejected_before_migration()
     .execute(&pool)
     .await
     .unwrap();
+
     pool.close().await;
 
     let error = database
@@ -256,6 +312,326 @@ async fn database_generation_partial_lineage_resumes_to_the_embedded_baseline() 
         .map(|migration| migration.version)
         .collect();
     assert_eq!(after, expected);
+}
+
+#[tokio::test]
+async fn category_classification_migrations_preserve_intent_and_repair_projections() {
+    let database = fresh_database().await;
+    let pool = PgPool::connect(database.database_url()).await.unwrap();
+    let before_categories = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            DATABASE_MIGRATOR
+                .iter()
+                .filter(|migration| migration.version < 17)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    before_categories.run(&pool).await.unwrap();
+
+    let user_id = uuid::Uuid::new_v4();
+    let food_id = uuid::Uuid::new_v4();
+    let archived_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO classification.categories(id,user_id,name,kind,lifecycle,version) \
+         VALUES($1,$3,'Food','expense','active',7),($2,$3,'Old','expense','archived',4)",
+    )
+    .bind(food_id)
+    .bind(archived_id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let asset_account_id = uuid::Uuid::new_v4();
+    let expense_account_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO ledger.accounts( \
+         id,user_id,name,currency,nature,kind,authority,visibility,system_role) \
+         VALUES($1,$3,'Checking','UAH','asset','cash','manual','user_visible',NULL), \
+               ($2,$3,'Uncategorized expense','UAH','expense','system','system','hidden', \
+                'uncategorized_expense')",
+    )
+    .bind(asset_account_id)
+    .bind(expense_account_id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let manual_id = uuid::Uuid::new_v4();
+    let recurring_id = uuid::Uuid::new_v4();
+    let ambiguous_recurring_id = uuid::Uuid::new_v4();
+    let clear_id = uuid::Uuid::new_v4();
+    let provider_import_id = uuid::Uuid::new_v4();
+    let manual_missing_id = uuid::Uuid::new_v4();
+    let unrelated_import_id = uuid::Uuid::new_v4();
+    for (id, command, source, description, key) in [
+        (
+            manual_id,
+            "record_manual_transaction",
+            "manual",
+            "Manual assigned",
+            "legacy-manual",
+        ),
+        (
+            recurring_id,
+            "record_manual_transaction",
+            "manual",
+            "Recurring assigned",
+            "legacy-recurring",
+        ),
+        (
+            ambiguous_recurring_id,
+            "record_manual_transaction",
+            "manual",
+            "Ambiguous recurring",
+            "legacy-ambiguous-recurring",
+        ),
+        (
+            clear_id,
+            "record_manual_transaction",
+            "manual",
+            "Legacy clear",
+            "legacy-clear",
+        ),
+        (
+            provider_import_id,
+            "import_provider_transaction",
+            "import",
+            "Provider import",
+            "legacy-provider-import",
+        ),
+        (
+            manual_missing_id,
+            "record_manual_transaction",
+            "manual",
+            "Manual without annotation",
+            "legacy-manual-missing",
+        ),
+        (
+            unrelated_import_id,
+            "other_import",
+            "import",
+            "Unrelated import",
+            "legacy-other-import",
+        ),
+    ] {
+        insert_legacy_journal(
+            &pool,
+            id,
+            user_id,
+            asset_account_id,
+            expense_account_id,
+            command,
+            source,
+            "ordinary",
+            description,
+            key,
+        )
+        .await;
+    }
+
+    for (journal_id, category_id, version, description) in [
+        (manual_id, Some(food_id), 3_i64, "Manual assigned"),
+        (recurring_id, Some(food_id), 4_i64, "Recurring assigned"),
+        (
+            ambiguous_recurring_id,
+            Some(food_id),
+            5_i64,
+            "Ambiguous recurring",
+        ),
+        (clear_id, None, 2_i64, "Legacy clear"),
+    ] {
+        sqlx::query(
+            "INSERT INTO ledger.transaction_annotations( \
+             id,journal_entry_id,user_id,description,category_id,version) \
+             VALUES($1,$1,$2,$3,$4,$5)",
+        )
+        .bind(journal_id)
+        .bind(user_id)
+        .bind(description)
+        .bind(category_id)
+        .bind(version)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let evidence_id = uuid::Uuid::new_v4();
+    let source_evidence_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO recurring.charge_evidence( \
+         id,user_id,source_context,source_evidence_id,kind,merchant,amount,currency,charged_at,recorded_at) \
+         VALUES($1,$2,'migration-test',$3,'renewal','Cafe',10,'UAH', \
+                '2026-08-01T12:00:00Z','2026-08-01T12:00:01Z')",
+    )
+    .bind(evidence_id)
+    .bind(user_id)
+    .bind(source_evidence_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO recurring.charge_matching( \
+         evidence_id,user_id,version,allocated_amount,state,updated_at) \
+         VALUES($1,$2,2,20,'matched','2026-08-01T12:00:01Z')",
+    )
+    .bind(evidence_id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (journal_id, produced_version) in [(recurring_id, 4_i64), (ambiguous_recurring_id, 4)] {
+        let match_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO recurring.match_records( \
+             id,user_id,evidence_id,matching_version,decision_source,category_id,created_at) \
+             VALUES($1,$2,$3,$4,'migration-test',$5,'2026-08-01T12:00:01Z')",
+        )
+        .bind(match_id)
+        .bind(user_id)
+        .bind(evidence_id)
+        .bind(if journal_id == recurring_id {
+            1_i64
+        } else {
+            2_i64
+        })
+        .bind(food_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO recurring.match_allocations(match_id,user_id,journal_entry_id,amount,currency) \
+             VALUES($1,$2,$3,10,'UAH')",
+        )
+        .bind(match_id)
+        .bind(user_id)
+        .bind(journal_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO recurring.categorization_targets( \
+             match_id,user_id,journal_entry_id,state,process_generation,produced_annotation_version,updated_at) \
+             VALUES($1,$2,$3,'posted',1,$4,'2026-08-01T12:00:01Z')",
+        )
+        .bind(match_id)
+        .bind(user_id)
+        .bind(journal_id)
+        .bind(produced_version)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::query(
+        "INSERT INTO reporting.cashflows( \
+         user_id,journal_entry_id,flow_kind,amount,currency,category_id,effective_at,source_sequence) \
+         VALUES($1,$2,'expense',10,'UAH',$3,'2026-08-01T12:00:00Z',10), \
+               ($1,$4,'expense',5,'UAH',$3,'2026-08-01T12:00:00Z',11)",
+    )
+    .bind(user_id)
+    .bind(manual_id)
+    .bind(archived_id)
+    .bind(clear_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let verified = database.initialize().await.unwrap();
+    let mut connection = verified.acquire().await.unwrap();
+
+    let taxonomy: (i64, Option<i32>) = sqlx::query_as(
+        "SELECT version,starter_template_version FROM classification.category_taxonomies \
+         WHERE user_id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(taxonomy, (1, None));
+    let migrated_categories: Vec<(uuid::Uuid, Option<uuid::Uuid>, i32, String, i64)> =
+        sqlx::query_as(
+            "SELECT id,parent_id,position,lifecycle,version FROM classification.categories \
+             WHERE user_id=$1 ORDER BY position",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *connection)
+        .await
+        .unwrap();
+    assert_eq!(migrated_categories.len(), 2);
+    assert_eq!(migrated_categories[0].1, None);
+    assert_eq!(migrated_categories[1].1, None);
+    assert_eq!(migrated_categories[0].2, 0);
+    assert_eq!(migrated_categories[1].2, 1);
+    assert!(
+        migrated_categories
+            .iter()
+            .any(|row| { row.0 == food_id && row.3 == "active" && row.4 == 7 })
+    );
+    assert!(
+        migrated_categories
+            .iter()
+            .any(|row| { row.0 == archived_id && row.3 == "archived" && row.4 == 4 })
+    );
+
+    for (journal_id, expected) in [
+        (manual_id, (Some(food_id), Some("manual"), "suppressed")),
+        (recurring_id, (Some(food_id), Some("recurring"), "eligible")),
+        (
+            ambiguous_recurring_id,
+            (Some(food_id), Some("manual"), "suppressed"),
+        ),
+        (clear_id, (None, None, "legacy_unknown")),
+        (provider_import_id, (None, None, "eligible")),
+    ] {
+        let actual: (Option<uuid::Uuid>, Option<String>, String) = sqlx::query_as(
+            "SELECT category_id,assignment_origin,automation_state \
+             FROM ledger.transaction_annotations WHERE user_id=$1 AND journal_entry_id=$2",
+        )
+        .bind(user_id)
+        .bind(journal_id)
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
+        assert_eq!((actual.0, actual.1.as_deref(), actual.2.as_str()), expected);
+    }
+    let generated_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM ledger.transaction_annotations WHERE user_id=$1 AND journal_entry_id=$2",
+    )
+    .bind(user_id)
+    .bind(provider_import_id)
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(generated_id, provider_import_id);
+    let unrelated_annotations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM ledger.transaction_annotations \
+         WHERE user_id=$1 AND journal_entry_id IN ($2,$3)",
+    )
+    .bind(user_id)
+    .bind(manual_missing_id)
+    .bind(unrelated_import_id)
+    .fetch_one(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(unrelated_annotations, 0);
+
+    let repaired: Vec<(uuid::Uuid, Option<uuid::Uuid>, i64)> = sqlx::query_as(
+        "SELECT journal_entry_id,category_id,category_annotation_version \
+         FROM reporting.cashflows WHERE user_id=$1 ORDER BY source_sequence",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *connection)
+    .await
+    .unwrap();
+    assert_eq!(
+        repaired,
+        vec![(manual_id, Some(food_id), 3), (clear_id, None, 2)]
+    );
 }
 
 #[tokio::test]
@@ -798,7 +1174,7 @@ async fn root_migration_seeds_and_constrains_reference_and_tenant_data() {
     let category_id = uuid::Uuid::new_v4();
     sqlx::query(
         "INSERT INTO classification.categories \
-         (id, user_id, name, kind) VALUES ($1, $2, 'Food', 'expense')",
+         (id, user_id, name, kind, position) VALUES ($1, $2, 'Food', 'expense', 0)",
     )
     .bind(category_id)
     .bind(user_id)
@@ -807,7 +1183,7 @@ async fn root_migration_seeds_and_constrains_reference_and_tenant_data() {
     .unwrap();
     let duplicate = sqlx::query(
         "INSERT INTO classification.categories \
-         (id, user_id, name, kind) VALUES ($1, $2, 'fOoD', 'expense')",
+         (id, user_id, name, kind, position) VALUES ($1, $2, 'fOoD', 'expense', 1)",
     )
     .bind(uuid::Uuid::new_v4())
     .bind(user_id)
@@ -823,8 +1199,8 @@ async fn root_migration_seeds_and_constrains_reference_and_tenant_data() {
     ] {
         let invalid_category = sqlx::query(
             "INSERT INTO classification.categories \
-             (id, user_id, name, kind, lifecycle, version) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
+             (id, user_id, name, kind, lifecycle, version, position) \
+             VALUES ($1, $2, $3, $4, $5, $6, 1)",
         )
         .bind(uuid::Uuid::new_v4())
         .bind(user_id)

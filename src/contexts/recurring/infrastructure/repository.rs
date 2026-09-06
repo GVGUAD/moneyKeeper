@@ -807,6 +807,9 @@ fn recurring_ledger_event_type(
         crate::contexts::ledger::public::LedgerEventFactV1::AnnotationChanged { .. } => {
             "ledger.annotation-changed.v1"
         }
+        crate::contexts::ledger::public::LedgerEventFactV1::CategoryAssignmentChanged {
+            ..
+        } => "ledger.category-assignment-changed.v1",
         _ => "ledger.event.v1",
     }
 }

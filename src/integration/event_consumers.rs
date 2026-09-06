@@ -15,11 +15,12 @@ use uuid::Uuid;
 use crate::{
     contexts::{
         ledger::public::{
-            JOURNAL_POSTED_V1, JOURNAL_REPLACED_V1, JOURNAL_REVERSED_V1, JournalEntryId,
-            LedgerEventFactV1, LedgerEventMetadataV1, LedgerEventV1, LedgerFacade, LedgerMoneyV1,
-            RECONCILIATION_APPROVED_V1, RECONCILIATION_DISMISSED_V1,
-            RECONCILIATION_IGNORED_OLDER_V1, RECONCILIATION_MATCHED_V1, RECONCILIATION_OBSERVED_V1,
-            RECONCILIATION_STALE_V1, RECONCILIATION_SUPERSEDED_V1,
+            CATEGORY_ASSIGNMENT_CHANGED_V1, JOURNAL_POSTED_V1, JOURNAL_REPLACED_V1,
+            JOURNAL_REVERSED_V1, JournalEntryId, LedgerEventFactV1, LedgerEventMetadataV1,
+            LedgerEventV1, LedgerFacade, LedgerMoneyV1, RECONCILIATION_APPROVED_V1,
+            RECONCILIATION_DISMISSED_V1, RECONCILIATION_IGNORED_OLDER_V1,
+            RECONCILIATION_MATCHED_V1, RECONCILIATION_OBSERVED_V1, RECONCILIATION_STALE_V1,
+            RECONCILIATION_SUPERSEDED_V1,
         },
         loans::public::{
             ACCOUNTING_REQUESTED_V1, AGREEMENT_CLOSED_V1, AGREEMENT_OPENED_V1, MOVEMENT_FAILED_V1,
@@ -315,6 +316,18 @@ impl ReportingEventConsumer {
                     .map_err(|_| ConsumerError::Consumer)?;
                 self.reporting
                     .apply_journal_export(EventId::new(event.event_id), event.sequence, journal)
+                    .await
+                    .map_err(ConsumerError::Reporting)?;
+                Ok(true)
+            }
+            CATEGORY_ASSIGNMENT_CHANGED_V1 => {
+                let fact: LedgerEventFactV1 = serde_json::from_value(json_to_tagged_fact(
+                    "category_assignment_changed",
+                    &event.payload,
+                ))
+                .map_err(|_| ConsumerError::InvalidPayload)?;
+                self.reporting
+                    .apply_ledger_event(ledger_event(event, event.occurred_at, fact))
                     .await
                     .map_err(ConsumerError::Reporting)?;
                 Ok(true)
@@ -751,6 +764,7 @@ fn is_reporting_event(event_type: &str) -> bool {
             | JOURNAL_POSTED_V1
             | JOURNAL_REVERSED_V1
             | JOURNAL_REPLACED_V1
+            | CATEGORY_ASSIGNMENT_CHANGED_V1
             | RECONCILIATION_OBSERVED_V1
             | RECONCILIATION_MATCHED_V1
             | RECONCILIATION_SUPERSEDED_V1

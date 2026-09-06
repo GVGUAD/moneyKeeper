@@ -10,9 +10,10 @@ use crate::shared_kernel::Clock;
 
 use super::super::{
     domain::{
-        AccountNature, Actor, JournalEntry, JournalEntryId, JournalRelations, JournalSource,
-        LedgerAccount, LedgerAccountId, LedgerError, Posting, PostingId, PostingPurpose,
-        SystemAccountRole,
+        AccountNature, Actor, AnnotationId, BudgetVisibility, JournalEntry, JournalEntryId,
+        JournalRelations, JournalSource, LedgerAccount, LedgerAccountId, LedgerError,
+        NormalizedTags, Posting, PostingId, PostingPurpose, SystemAccountRole,
+        TransactionAnnotation,
     },
     public::{
         AccountEffect, CancelOrReverseCashControlSettlement, CashFlowDirection,
@@ -218,6 +219,7 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
             role,
             command.amount,
             "Accrue loan interest or fee",
+            false,
         )
         .await
     }
@@ -287,6 +289,7 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
             role,
             command.amount,
             &command.reason,
+            false,
         )
         .await
     }
@@ -771,6 +774,7 @@ async fn import_provider<U: LedgerUnitOfWork, Q, P>(
         role,
         amount,
         &command.description,
+        true,
     )
     .await
 }
@@ -1185,6 +1189,7 @@ async fn post_with_system<U: LedgerUnitOfWork>(
     role: SystemAccountRole,
     amount: crate::shared_kernel::Money,
     description: &str,
+    create_eligible_annotation: bool,
 ) -> Result<InternalAccountingResult, LedgerError> {
     if amount.is_zero() || amount.amount().is_sign_negative() {
         return Err(LedgerError::invalid_money(
@@ -1264,11 +1269,26 @@ async fn post_with_system<U: LedgerUnitOfWork>(
             )?,
         ],
     )?;
+    let annotation = create_eligible_annotation
+        .then(|| {
+            TransactionAnnotation::new(
+                AnnotationId::new(journal.id().into_uuid()),
+                journal.id(),
+                metadata.user_id,
+                description,
+                None,
+                None,
+                NormalizedTags::empty(),
+                BudgetVisibility::Included,
+                journal.recorded_at(),
+            )
+        })
+        .transpose()?;
     commit_journal(
         &mut tx,
         scope,
         &journal,
-        None,
+        annotation.as_ref(),
         "ledger.internal-accounting-command-posted.v1",
     )
     .await?;

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use moneykeeper::bootstrap::build_contexts;
 use moneykeeper::contexts::classification::public::{
-    CategoryCatalog, CategoryCommand, CategoryKind,
+    CategoryCatalog, CategoryKind, CreateCategoryNode,
 };
 use moneykeeper::contexts::preferences::public::Preferences;
 use moneykeeper::contexts::reference_data::public::CurrencyCatalog;
@@ -143,17 +143,26 @@ async fn isolated_application_foundation_composes_end_to_end() {
         .unwrap();
     assert_eq!(uah.minor_unit, 2);
     let category = categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id,
                 name: "Foundation expense".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: moneykeeper::shared_kernel::IdempotencyKey::new(
+                    "foundation-category",
+                )
+                .unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             now,
         )
         .await
         .unwrap();
-    assert_eq!(category.version, 1);
+    assert_eq!(category.taxonomy_version, 2);
     let preference = preferences
         .set_base_currency(&currencies, user_id, uah.code, 0, now)
         .await

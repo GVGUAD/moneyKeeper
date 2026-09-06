@@ -1,6 +1,6 @@
 use chrono::{TimeZone, Utc};
 use moneykeeper::contexts::classification::public::{
-    CategoryCatalog, CategoryCommand, CategoryKind,
+    CategoryCatalog, CategoryKind, CategoryLifecycle, CreateCategoryNode, SetCategoryNodeLifecycle,
 };
 use moneykeeper::contexts::ledger::public::{
     AccountKind, AccountLifecycle, AccountNature, AccountVersion, ActivityCursor, ActivityFilter,
@@ -1045,16 +1045,24 @@ async fn manual_transaction_posts_income_and_expense_for_asset_and_liability() {
     let user = UserId::generate();
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Food".to_owned(),
                 kind: CategoryKind::Both,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let asset = ledger
         .open_account(open_command(
             user,
@@ -1190,28 +1198,44 @@ async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_repla
     let other = UserId::generate();
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Food".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let other_category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: other,
                 name: "Other".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let opened = ledger
         .open_account(open_command(
             user,
@@ -1273,7 +1297,16 @@ async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_repla
 
     contexts
         .categories
-        .archive(user, category.id, category.version, Utc::now())
+        .archive_node(
+            SetCategoryNodeLifecycle {
+                user_id: user,
+                id: category.id,
+                expected_version: 2,
+                lifecycle: CategoryLifecycle::Archived,
+                idempotency_key: IdempotencyKey::new("archive-test-category").unwrap(),
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let archived_category = ledger
@@ -1738,16 +1771,24 @@ async fn immutable_correction_reversal_and_annotation_changes_preserve_history()
 
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Adjusted".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let posting_count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM ledger.postings")
         .fetch_one(&pool)
         .await
@@ -2172,16 +2213,24 @@ async fn filtered_activity_and_summary_share_exact_range_kind_and_tenant_semanti
     let foreign_user = UserId::generate();
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Activity category".to_owned(),
                 kind: CategoryKind::Both,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let opened_at = Utc.with_ymd_and_hms(2026, 8, 4, 9, 0, 0).unwrap();
     let open = |owner: UserId, key: &str, name: &str, currency: &str| {
         let currency = CurrencyCode::new(currency).unwrap();
@@ -2320,7 +2369,7 @@ async fn filtered_activity_and_summary_share_exact_range_kind_and_tenant_semanti
 
     let all_filter = ActivityFilter::new(from, before, ActivityKind::All).unwrap();
     let first_page = ledger
-        .list_activity(user, all_filter, None, 2)
+        .list_activity(user, all_filter.clone(), None, 2)
         .await
         .unwrap();
     assert_eq!(first_page.len(), 2);
@@ -2328,7 +2377,7 @@ async fn filtered_activity_and_summary_share_exact_range_kind_and_tenant_semanti
     let second_page = ledger
         .list_activity(
             user,
-            all_filter,
+            all_filter.clone(),
             Some(ActivityCursor {
                 occurred_at: last.occurred_at,
                 ledger_sequence: last.ledger_sequence,
@@ -2369,7 +2418,7 @@ async fn filtered_activity_and_summary_share_exact_range_kind_and_tenant_semanti
 
     let income_filter = ActivityFilter::new(from, before, ActivityKind::Income).unwrap();
     let income = ledger
-        .list_activity(user, income_filter, None, 10)
+        .list_activity(user, income_filter.clone(), None, 10)
         .await
         .unwrap();
     assert_eq!(income.len(), 2);

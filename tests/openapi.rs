@@ -35,8 +35,11 @@ fn openapi_is_unversioned_and_has_exact_finance_routes() {
         "/currencies/{code}",
         "/categories",
         "/categories/{id}",
+        "/categories/{id}/move",
+        "/categories/reorder",
         "/categories/{id}/archive",
         "/categories/{id}/restore",
+        "/category-icons",
         "/preferences",
         "/accounts",
         "/accounts/{id}",
@@ -47,10 +50,15 @@ fn openapi_is_unversioned_and_has_exact_finance_routes() {
         "/transactions/summary",
         "/transactions/{id}",
         "/transactions/{id}/annotation",
+        "/transactions/{id}/classification/retry",
         "/transactions/{id}/reversals",
         "/transactions/{id}/replacements",
         "/transfers",
         "/accounts/{id}/balance-corrections",
+        "/classification/review-queue",
+        "/classification/decisions/{id}/resolve",
+        "/classification/backfills",
+        "/classification/backfills/{id}",
         "/reconciliations",
         "/reconciliations/{id}",
         "/reconciliations/{id}/approve",
@@ -161,7 +169,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 111);
+    assert_eq!(operation_count, 119);
 }
 
 #[test]
@@ -192,7 +200,10 @@ fn openapi_operations_match_the_default_router_manifest() {
 fn optimistic_concurrency_fields_are_required() {
     let document = contract();
     for schema in [
-        "RenameCategory",
+        "CreateCategory",
+        "UpdateCategory",
+        "MoveCategory",
+        "ReorderCategories",
         "ExpectedVersion",
         "UpdatePreferences",
         "RenameAccount",
@@ -223,6 +234,10 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
     let document = contract();
     let schemas = document["components"]["schemas"].as_object().unwrap();
     for schema in [
+        "CategoryNode",
+        "CategoryTaxonomy",
+        "CategoryNodeResult",
+        "CategoryIcon",
         "LedgerAccount",
         "AccountResult",
         "Posting",
@@ -262,6 +277,9 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
         "note",
         "tags",
         "budget_visibility",
+        "assignment_origin",
+        "classification_decision_id",
+        "automation_state",
         "created_at",
         "updated_at",
     ] {
@@ -289,7 +307,13 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
     let transaction_parameters = document["paths"]["/transactions"]["get"]["parameters"]
         .as_array()
         .unwrap();
-    for parameter in ["FromOccurredAt", "BeforeOccurredAt", "ActivityKind"] {
+    for parameter in [
+        "FromOccurredAt",
+        "BeforeOccurredAt",
+        "ActivityKind",
+        "CategoryIdFilter",
+        "UncategorizedFilter",
+    ] {
         assert!(
             transaction_parameters
                 .iter()
@@ -301,7 +325,17 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
         summary["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/ActivitySummary"
     );
-    for parameter in ["RequiredFromOccurredAt", "RequiredBeforeOccurredAt"] {
+    assert_eq!(
+        summary["responses"]["404"]["$ref"],
+        "#/components/responses/NotFound"
+    );
+    for parameter in [
+        "RequiredFromOccurredAt",
+        "RequiredBeforeOccurredAt",
+        "ActivityKind",
+        "CategoryIdFilter",
+        "UncategorizedFilter",
+    ] {
         assert!(
             summary["parameters"]
                 .as_array()
@@ -310,6 +344,75 @@ fn android_contract_is_fully_typed_and_cursor_paged() {
                 .any(|value| { value["$ref"] == format!("#/components/parameters/{parameter}") })
         );
     }
+}
+
+#[test]
+fn category_and_classification_contracts_are_tree_first_and_typed() {
+    let document = contract();
+    let schemas = document["components"]["schemas"].as_object().unwrap();
+
+    assert_eq!(
+        document["paths"]["/categories"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/CategoryTaxonomy"
+    );
+    assert_eq!(
+        document["paths"]["/categories/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/CategoryNodeResult"
+    );
+    assert_eq!(
+        schemas["CategoryNode"]["properties"]["children"]["items"]["$ref"],
+        "#/components/schemas/CategoryNode"
+    );
+    for field in [
+        "local_lifecycle",
+        "effective_lifecycle",
+        "effective_color",
+        "effective_icon",
+        "path",
+        "depth",
+        "assignable",
+        "children",
+    ] {
+        assert!(
+            schemas["CategoryNode"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == field),
+            "CategoryNode must require {field}"
+        );
+    }
+
+    assert_eq!(
+        document["paths"]["/transactions/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/TransactionDetail"
+    );
+    for schema in [
+        "TransactionClassification",
+        "ClassificationDecision",
+        "ClassificationReviewItem",
+        "ClassificationReviewPage",
+        "ResolveClassificationDecision",
+        "RetryClassification",
+        "ClassificationBackfill",
+        "StartClassificationBackfill",
+        "CategoryAssignmentResult",
+    ] {
+        assert!(schemas.contains_key(schema), "missing {schema} schema");
+    }
+    assert_eq!(
+        document["paths"]["/classification/decisions/{id}/resolve"]["post"]["responses"]["202"]["content"]
+            ["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ClassificationDecision"
+    );
+    assert_eq!(
+        document["paths"]["/classification/backfills"]["post"]["responses"]["202"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/ClassificationBackfill"
+    );
 }
 
 #[test]
@@ -346,6 +449,15 @@ fn every_android_financial_command_requires_an_idempotency_key() {
         ("post", "/accounts/{id}/restore"),
         ("post", "/transactions"),
         ("patch", "/transactions/{id}/annotation"),
+        ("post", "/transactions/{id}/classification/retry"),
+        ("post", "/categories"),
+        ("patch", "/categories/{id}"),
+        ("post", "/categories/{id}/move"),
+        ("put", "/categories/reorder"),
+        ("post", "/categories/{id}/archive"),
+        ("post", "/categories/{id}/restore"),
+        ("post", "/classification/decisions/{id}/resolve"),
+        ("post", "/classification/backfills"),
         ("post", "/transactions/{id}/reversals"),
         ("post", "/transactions/{id}/replacements"),
         ("post", "/provider-connections/monobank"),

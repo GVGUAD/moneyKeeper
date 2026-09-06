@@ -22,7 +22,9 @@ use crate::contexts::banking::{
     adapters::{Aes256CredentialCipher, MonobankClient},
     public::BankingFacade,
 };
-use crate::contexts::classification::public::CategoryCatalogFacade;
+use crate::contexts::classification::public::{
+    CategoryCatalogFacade, ClassificationAutomationFacade,
+};
 use crate::contexts::ledger::public::LedgerFacade;
 use crate::contexts::loans::public::LoansFacade;
 use crate::contexts::mail::public::MailFacade;
@@ -40,6 +42,9 @@ pub struct RuntimeSecrets {
     banking_key_id: String,
     banking_key: [u8; 32],
     webhook_digest_key: [u8; 32],
+    openai_api_key: String,
+    classification_model: String,
+    classification_auto_apply: bool,
 }
 
 impl std::fmt::Debug for RuntimeSecrets {
@@ -49,6 +54,9 @@ impl std::fmt::Debug for RuntimeSecrets {
             .field("banking_key_id", &self.banking_key_id)
             .field("banking_key", &"[REDACTED]")
             .field("webhook_digest_key", &"[REDACTED]")
+            .field("openai_api_key", &"[REDACTED]")
+            .field("classification_model", &self.classification_model)
+            .field("classification_auto_apply", &self.classification_auto_apply)
             .finish()
     }
 }
@@ -63,10 +71,30 @@ impl RuntimeSecrets {
                 && !banking_key_id.chars().any(char::is_control),
             "FINANCE_V2_ENCRYPTION_KEY_ID is invalid"
         );
+        let classification_model = std::env::var("CLASSIFICATION_MODEL").unwrap_or_else(|_| {
+            crate::contexts::classification::automation::DEFAULT_OPENAI_MODEL.to_owned()
+        });
+        anyhow::ensure!(
+            classification_model.trim() == classification_model
+                && !classification_model.is_empty()
+                && classification_model.len() <= 200
+                && !classification_model.chars().any(char::is_control),
+            "CLASSIFICATION_MODEL is invalid"
+        );
+        let classification_auto_apply = match std::env::var("CLASSIFICATION_AUTO_APPLY") {
+            Ok(value) if value.eq_ignore_ascii_case("true") => true,
+            Ok(value) if value.eq_ignore_ascii_case("false") => false,
+            Ok(_) => anyhow::bail!("CLASSIFICATION_AUTO_APPLY must be true or false"),
+            Err(std::env::VarError::NotPresent) => false,
+            Err(error) => return Err(error).context("read CLASSIFICATION_AUTO_APPLY"),
+        };
         Ok(Self {
             banking_key_id,
             banking_key: decode_key("FINANCE_V2_ENCRYPTION_KEY")?,
             webhook_digest_key: decode_key("FINANCE_V2_WEBHOOK_DIGEST_KEY")?,
+            openai_api_key: required_environment("OPENAI_API_KEY")?,
+            classification_model,
+            classification_auto_apply,
         })
     }
 
@@ -79,7 +107,23 @@ impl RuntimeSecrets {
             banking_key_id: "ephemeral-moneykeeper".to_owned(),
             banking_key,
             webhook_digest_key,
+            openai_api_key: "ephemeral-openai-key".to_owned(),
+            classification_model: crate::contexts::classification::automation::DEFAULT_OPENAI_MODEL
+                .to_owned(),
+            classification_auto_apply: false,
         }
+    }
+
+    pub(crate) fn openai_api_key(&self) -> &str {
+        &self.openai_api_key
+    }
+
+    pub(crate) fn classification_model(&self) -> &str {
+        &self.classification_model
+    }
+
+    pub(crate) const fn classification_auto_apply(&self) -> bool {
+        self.classification_auto_apply
     }
 }
 
@@ -230,6 +274,7 @@ mod webhook_base_url_tests {
 pub struct ContextFacades {
     pub currencies: CurrencyCatalogFacade,
     pub categories: CategoryCatalogFacade,
+    pub classification: ClassificationAutomationFacade,
     pub preferences: PreferencesFacade,
     pub ledger: LedgerFacade,
     pub banking: BankingFacade,
@@ -252,6 +297,7 @@ pub fn build_contexts_with_secrets(
     secrets: &RuntimeSecrets,
 ) -> ContextFacades {
     let categories = crate::contexts::classification::build(pool);
+    let classification = crate::contexts::classification::build_automation(pool);
     let currencies = crate::contexts::reference_data::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories.clone());
     let banking = crate::contexts::banking::build_with_ledger(
@@ -268,6 +314,7 @@ pub fn build_contexts_with_secrets(
     ContextFacades {
         currencies,
         categories: categories.clone(),
+        classification,
         preferences: crate::contexts::preferences::build(pool),
         ledger,
         banking,
@@ -444,6 +491,27 @@ pub fn event_consumers(pool: &VerifiedDatabase) -> EventConsumers {
             crate::contexts::reporting::build(pool),
         ),
     }
+}
+
+/// Classification intake, provider, application, and historical workers.
+pub(crate) fn classification_runtime(
+    pool: &VerifiedDatabase,
+    contexts: &ContextFacades,
+    secrets: &RuntimeSecrets,
+) -> anyhow::Result<crate::integration::classification::ClassificationRuntime> {
+    let classifier = crate::contexts::classification::automation::OpenAiResponsesClassifier::new(
+        secrets.openai_api_key().to_owned(),
+        Some(secrets.classification_model().to_owned()),
+    )?;
+    crate::integration::classification::ClassificationRuntime::new(
+        pool.pool().clone(),
+        contexts.ledger.clone(),
+        contexts.banking.clone(),
+        contexts.categories.clone(),
+        contexts.classification.clone(),
+        Arc::new(classifier),
+        secrets.classification_auto_apply(),
+    )
 }
 
 /// Loan accounting process managers coordinated through public contracts.

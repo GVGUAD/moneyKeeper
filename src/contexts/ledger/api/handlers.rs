@@ -1,13 +1,13 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::api::state::LedgerApiState;
 use crate::api::{ApiError, ApiJson, AuthenticatedUser};
-use crate::contexts::classification::public::CategoryId;
+use crate::contexts::classification::public::{CategoryCatalog, CategoryId, ClassificationError};
 use crate::contexts::ledger::public::{
     AccountVersion, ActivityCursor, ActivityFilter, ActivityKind, AnnotationChanges,
     AnnotationVersion, ApproveReconciliation, ArchiveAccount, BalanceVersion, CategoryReference,
@@ -23,7 +23,8 @@ use super::dto::{
     ActivityQuery, ActivitySummaryQuery, AnnotationRequest, ApproveReconciliationRequest,
     BalanceCorrectionRequest, DismissReconciliationRequest, ExpectedAccountVersionRequest,
     MoneyRequest, OpenAccountRequest, RecordTransactionRequest, RenameAccountRequest,
-    ReplaceRequest, ReverseRequest, TransactionActivityQuery, TransferRequest,
+    ReplaceRequest, ReverseRequest, TransactionActivityQuery, TransactionClassificationResponse,
+    TransactionDetailResponse, TransferRequest,
 };
 
 pub(crate) async fn open_account(
@@ -231,26 +232,59 @@ pub(crate) async fn list_transactions(
     Query(query): Query<TransactionActivityQuery>,
 ) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
     let after = cursor_values(query.after_occurred_at, query.after_sequence)?;
-    let result = match (query.from_occurred_at, query.before_occurred_at, query.kind) {
-        (None, None, None) => {
-            state
-                .ledger
-                .list_journals(user_id, after, query.limit.unwrap_or(50))
+    if query.category_id.is_some() && query.uncategorized == Some(true) {
+        return Err(ApiError::bad_request(
+            "category_id and uncategorized=true are mutually exclusive",
+        ));
+    }
+    if query.from_occurred_at.is_some() != query.before_occurred_at.is_some() {
+        return Err(ApiError::bad_request(
+            "from_occurred_at and before_occurred_at must be provided together",
+        ));
+    }
+    if query.kind.is_some() && query.from_occurred_at.is_none() {
+        return Err(ApiError::bad_request(
+            "kind filtering requires an activity date range",
+        ));
+    }
+    let filtered = query.from_occurred_at.is_some()
+        || query.kind.is_some()
+        || query.category_id.is_some()
+        || query.uncategorized == Some(true);
+    let result = if filtered {
+        let mut filter = ActivityFilter::new(
+            query.from_occurred_at.unwrap_or_else(|| {
+                DateTime::<Utc>::from_timestamp(-62_135_596_800, 0)
+                    .expect("year 1 is representable")
+            }),
+            query.before_occurred_at.unwrap_or_else(|| {
+                DateTime::<Utc>::from_timestamp(253_402_300_799, 0)
+                    .expect("year 9999 is representable")
+            }),
+            query.kind.unwrap_or(ActivityKind::All),
+        )
+        .map_err(map_ledger_error)?;
+        if let Some(category_id) = query.category_id {
+            let category_ids = state
+                .categories
+                .resolve_subtree(user_id, CategoryId::new(category_id))
                 .await
-        }
-        (Some(from), Some(before), kind) => {
-            let filter = ActivityFilter::new(from, before, kind.unwrap_or(ActivityKind::All))
+                .map_err(map_classification_error)?;
+            filter = filter
+                .with_category_ids(category_ids)
                 .map_err(map_ledger_error)?;
-            state
-                .ledger
-                .list_activity(user_id, filter, after, query.limit.unwrap_or(50))
-                .await
+        } else if query.uncategorized == Some(true) {
+            filter = filter.with_uncategorized().map_err(map_ledger_error)?;
         }
-        _ => {
-            return Err(ApiError::bad_request(
-                "filtered activity requires from_occurred_at and before_occurred_at",
-            ));
-        }
+        state
+            .ledger
+            .list_activity(user_id, filter, after, query.limit.unwrap_or(50))
+            .await
+    } else {
+        state
+            .ledger
+            .list_journals(user_id, after, query.limit.unwrap_or(50))
+            .await
     };
     result.map(Json).map_err(map_ledger_error)
 }
@@ -260,13 +294,30 @@ pub(crate) async fn summarize_transactions(
     State(state): State<LedgerApiState>,
     Query(query): Query<ActivitySummaryQuery>,
 ) -> Result<Json<crate::contexts::ledger::public::ActivitySummary>, ApiError> {
+    if query.category_id.is_some() && query.uncategorized == Some(true) {
+        return Err(ApiError::bad_request(
+            "category_id and uncategorized=true are mutually exclusive",
+        ));
+    }
     let (Some(from), Some(before)) = (query.from_occurred_at, query.before_occurred_at) else {
         return Err(ApiError::bad_request(
             "activity summary requires from_occurred_at and before_occurred_at",
         ));
     };
-    let filter = ActivityFilter::new(from, before, query.kind.unwrap_or(ActivityKind::All))
+    let mut filter = ActivityFilter::new(from, before, query.kind.unwrap_or(ActivityKind::All))
         .map_err(map_ledger_error)?;
+    if let Some(category_id) = query.category_id {
+        let category_ids = state
+            .categories
+            .resolve_subtree(user_id, CategoryId::new(category_id))
+            .await
+            .map_err(map_classification_error)?;
+        filter = filter
+            .with_category_ids(category_ids)
+            .map_err(map_ledger_error)?;
+    } else if query.uncategorized == Some(true) {
+        filter = filter.with_uncategorized().map_err(map_ledger_error)?;
+    }
     state
         .ledger
         .summarize_activity(user_id, filter)
@@ -279,13 +330,47 @@ pub(crate) async fn get_transaction(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<crate::contexts::ledger::public::JournalView>, ApiError> {
-    state
+) -> Result<Json<TransactionDetailResponse>, ApiError> {
+    let journal = state
         .ledger
         .get_journal(user_id, JournalEntryId::new(id))
         .await
-        .map(Json)
-        .map_err(map_ledger_error)
+        .map_err(map_ledger_error)?;
+    let decision = state
+        .classification
+        .decision_for_transaction(user_id, id)
+        .await
+        .map_err(|_error| {
+            ApiError::internal(
+                "classification.persistence",
+                "classification suggestion query failed",
+            )
+        })?;
+    let classification = TransactionClassificationResponse {
+        target: state
+            .classification
+            .target_for_transaction(user_id, id)
+            .await
+            .map_err(|_| {
+                ApiError::internal(
+                    "classification.persistence",
+                    "classification target query failed",
+                )
+            })?,
+        assignment_origin: journal
+            .annotation
+            .as_ref()
+            .and_then(|annotation| annotation.assignment_origin),
+        automation_state: journal
+            .annotation
+            .as_ref()
+            .map(|annotation| annotation.automation_state),
+        decision,
+    };
+    Ok(Json(TransactionDetailResponse {
+        journal,
+        classification,
+    }))
 }
 
 pub(crate) async fn update_annotation(
@@ -652,5 +737,18 @@ fn map_ledger_error(error: LedgerError) -> ApiError {
         ApiError::internal("ledger.persistence", "ledger storage operation failed")
     } else {
         ApiError::bad_request("invalid ledger request")
+    }
+}
+
+fn map_classification_error(error: ClassificationError) -> ApiError {
+    if error.is_not_found() {
+        ApiError::not_found("category was not found")
+    } else if error.is_persistence() {
+        ApiError::internal(
+            "classification.persistence",
+            "classification storage operation failed",
+        )
+    } else {
+        ApiError::bad_request("invalid category filter")
     }
 }

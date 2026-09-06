@@ -118,11 +118,11 @@ mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
+    use axum::Router;
     use axum::body::Bytes;
     use axum::http::{HeaderValue, Request, StatusCode};
     use axum::middleware;
     use axum::routing::post;
-    use axum::Router;
     use axum_test::TestServer;
     use tracing_subscriber::fmt::MakeWriter;
 

@@ -13,10 +13,10 @@ use crate::shared_kernel::{CorrelationId, CurrencyCode, Money, UserId};
 use super::super::{
     application::ports::LedgerQueryPort,
     domain::{
-        AccountAuthority, AccountKind, AccountNature, Actor, AnnotationVersion, BalanceVersion,
-        JournalEntryId, JournalRelations, JournalSource, LedgerAccountId, LedgerError,
-        ObservationId, PostingId, PostingPurpose, ReconciliationCaseId, ReconciliationStatus,
-        ReconciliationVersion, SourceReference,
+        AccountAuthority, AccountKind, AccountNature, Actor, AnnotationVersion, AssignmentOrigin,
+        AutomationState, BalanceVersion, JournalEntryId, JournalRelations, JournalSource,
+        LedgerAccountId, LedgerError, ObservationId, PostingId, PostingPurpose,
+        ReconciliationCaseId, ReconciliationStatus, ReconciliationVersion, SourceReference,
     },
     public::{
         AccountView, ActivityCursor, ActivityFilter, ActivitySummary, ActivityTotal,
@@ -50,6 +50,9 @@ struct JournalRow {
     annotation_version: Option<i64>,
     annotation_description: Option<String>,
     category_id: Option<Uuid>,
+    assignment_origin: Option<String>,
+    classification_decision_id: Option<Uuid>,
+    automation_state: Option<String>,
     annotation_note: Option<String>,
     annotation_tags: Option<Vec<String>>,
     annotation_budget_visibility: Option<String>,
@@ -197,6 +200,11 @@ impl PgLedgerQueries {
                 "activity limit must be 1 to 200",
             ));
         }
+        let category_ids = filter
+            .category_ids()
+            .iter()
+            .map(|id| id.into_uuid())
+            .collect::<Vec<_>>();
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT j.id FROM ledger.journal_entries j \
              WHERE j.user_id = $1 \
@@ -209,13 +217,25 @@ impl PgLedgerQueries {
                    HAVING ($4 = 'income' AND -SUM(flow.signed_amount) > 0) \
                        OR ($4 = 'expense' AND -SUM(flow.signed_amount) < 0) \
                )) \
-               AND ($5::timestamptz IS NULL OR (j.occurred_at, j.ledger_sequence) < ($5, $6)) \
-             ORDER BY j.occurred_at DESC, j.ledger_sequence DESC LIMIT $7",
+               AND (cardinality($5::uuid[]) = 0 OR EXISTS ( \
+                   SELECT 1 FROM ledger.transaction_annotations selected \
+                   WHERE selected.user_id=j.user_id AND selected.journal_entry_id=j.id \
+                     AND selected.category_id=ANY($5) \
+               )) \
+               AND (NOT $6 OR NOT EXISTS ( \
+                   SELECT 1 FROM ledger.transaction_annotations categorized \
+                   WHERE categorized.user_id=j.user_id AND categorized.journal_entry_id=j.id \
+                     AND categorized.category_id IS NOT NULL \
+               )) \
+               AND ($7::timestamptz IS NULL OR (j.occurred_at, j.ledger_sequence) < ($7, $8)) \
+             ORDER BY j.occurred_at DESC, j.ledger_sequence DESC LIMIT $9",
         )
         .bind(user_id.into_uuid())
         .bind(filter.from_occurred_at())
         .bind(filter.before_occurred_at())
         .bind(filter.kind().as_str())
+        .bind(&category_ids)
+        .bind(filter.uncategorized())
         .bind(after.map(|cursor| cursor.occurred_at))
         .bind(after.map(|cursor| cursor.ledger_sequence))
         .bind(i64::from(limit))
@@ -230,6 +250,11 @@ impl PgLedgerQueries {
         user_id: UserId,
         filter: ActivityFilter,
     ) -> Result<ActivitySummary, LedgerError> {
+        let category_ids = filter
+            .category_ids()
+            .iter()
+            .map(|id| id.into_uuid())
+            .collect::<Vec<_>>();
         let rows = sqlx::query_as::<_, ActivitySummaryRow>(
             "WITH matching_journals AS ( \
                  SELECT j.id FROM ledger.journal_entries j \
@@ -242,6 +267,16 @@ impl PgLedgerQueries {
                        GROUP BY flow.currency \
                        HAVING ($4 = 'income' AND -SUM(flow.signed_amount) > 0) \
                            OR ($4 = 'expense' AND -SUM(flow.signed_amount) < 0) \
+                   )) \
+                   AND (cardinality($5::uuid[]) = 0 OR EXISTS ( \
+                       SELECT 1 FROM ledger.transaction_annotations selected \
+                       WHERE selected.user_id=j.user_id AND selected.journal_entry_id=j.id \
+                         AND selected.category_id=ANY($5) \
+                   )) \
+                   AND (NOT $6 OR NOT EXISTS ( \
+                       SELECT 1 FROM ledger.transaction_annotations categorized \
+                       WHERE categorized.user_id=j.user_id AND categorized.journal_entry_id=j.id \
+                         AND categorized.category_id IS NOT NULL \
                    )) \
              ), counts AS ( \
                  SELECT COUNT(*)::bigint AS transaction_count, \
@@ -264,6 +299,8 @@ impl PgLedgerQueries {
         .bind(filter.from_occurred_at())
         .bind(filter.before_occurred_at())
         .bind(filter.kind().as_str())
+        .bind(&category_ids)
+        .bind(filter.uncategorized())
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
@@ -314,7 +351,8 @@ impl PgLedgerQueries {
             "SELECT j.id, j.user_id, j.ledger_sequence, j.source, j.purpose, j.description, j.actor_kind, j.actor_reference, j.occurred_at, \
                     j.recorded_at, j.correlation_id, j.reverses_transaction_id, \
                     j.corrects_transaction_id, j.replaces_transaction_id, a.version AS annotation_version, \
-                    a.description AS annotation_description, a.category_id, a.note AS annotation_note, \
+                    a.description AS annotation_description, a.category_id, a.assignment_origin, \
+                    a.classification_decision_id, a.automation_state, a.note AS annotation_note, \
                     a.tags AS annotation_tags, a.budget_visibility AS annotation_budget_visibility, \
                     a.created_at AS annotation_created_at, a.updated_at AS annotation_updated_at, \
                     reversed.id AS reversed_by_journal_id, replacement.id AS replaced_by_journal_id, \
@@ -496,6 +534,19 @@ impl JournalRow {
                     category_id: self
                         .category_id
                         .map(crate::contexts::classification::public::CategoryId::new),
+                    assignment_origin: self
+                        .assignment_origin
+                        .as_deref()
+                        .map(AssignmentOrigin::parse)
+                        .transpose()?,
+                    classification_decision_id: self.classification_decision_id,
+                    automation_state: AutomationState::parse(
+                        self.automation_state.as_deref().ok_or_else(|| {
+                            LedgerError::persistence(
+                                "stored transaction annotation automation state is missing",
+                            )
+                        })?,
+                    )?,
                     note: self.annotation_note,
                     tags,
                     budget_visibility: match budget_visibility.as_str() {

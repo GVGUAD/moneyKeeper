@@ -12,9 +12,10 @@ use super::{
     AccountingProcessView, BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork,
     BalanceObservationView, BindExistingResource, ConnectProvider, ConnectionResult,
     CreateAndMapResource, DeactivateResourceMapping, ExternalResourceView, IntakeProviderEvent,
-    ProviderAccountSummary, ProviderConnectionView, ProviderEventReceipt, ProviderEventView,
-    ProviderImportOutcome, ProviderImportWork, RecordBalanceObservation, ReplaceProviderCredential,
-    ResourceMappingResult, RotateWebhookCredential, WebhookReceiptOutcome, WebhookRotationResult,
+    ProviderAccountSummary, ProviderClassificationEvidence, ProviderConnectionView,
+    ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
+    RecordBalanceObservation, ReplaceProviderCredential, ResourceMappingResult,
+    RotateWebhookCredential, WebhookReceiptOutcome, WebhookRotationResult,
 };
 use crate::contexts::banking::domain::BankingError;
 use crate::shared_kernel::UserId;
@@ -220,6 +221,28 @@ impl BankingFacade {
         id: super::super::domain::ProviderEventId,
     ) -> Result<ProviderEventView, BankingError> {
         self.provider_events.get_provider_event(user_id, id).await
+    }
+
+    /// Returns the provider-owned portion of evidence for an imported journal.
+    pub async fn classification_evidence(
+        &self,
+        user_id: UserId,
+        id: super::super::domain::ProviderEventId,
+    ) -> Result<ProviderClassificationEvidence, BankingError> {
+        self.provider_events
+            .classification_evidence(user_id, id)
+            .await
+    }
+
+    /// Returns provider evidence when the journal originated in Banking.
+    pub async fn classification_evidence_for_journal(
+        &self,
+        user_id: UserId,
+        journal_entry_id: crate::contexts::ledger::public::JournalEntryId,
+    ) -> Result<Option<ProviderClassificationEvidence>, BankingError> {
+        self.provider_events
+            .classification_evidence_for_journal(user_id, journal_entry_id)
+            .await
     }
     pub async fn list_provider_event_conflicts(
         &self,

@@ -29,6 +29,10 @@ pub const REQUIRED_WORKERS: &[&str] = &[
     "process-manager-retries",
     "reporting-projections",
     "reference-data-sync",
+    "classification-intake",
+    "classification-model",
+    "classification-application",
+    "classification-backfill",
 ];
 
 /// Application readiness shared by the HTTP gate and startup/shutdown logic.
@@ -367,6 +371,9 @@ pub fn production(
     ));
     let maintenance = Arc::new(super::runtime::context_maintenance_workers(pool, secrets));
     let event_consumers = Arc::new(super::runtime::event_consumers(pool));
+    let classification = Arc::new(super::runtime::classification_runtime(
+        pool, contexts, secrets,
+    )?);
     let loan_accounting = Arc::new(super::runtime::loan_accounting_workers(pool));
     let portfolio_settlement = Arc::new(super::runtime::portfolio_settlement_runner(pool));
     let sharing_workflows = Arc::new(super::runtime::sharing_workflow_runner(contexts));
@@ -438,6 +445,74 @@ pub fn production(
             move || {
                 let event_consumers = Arc::clone(&event_consumers);
                 async move { event_consumers.run_reporting_once().await }
+            }
+        }),
+        WorkerDefinition::new_reported("classification-intake", interval, {
+            let classification = Arc::clone(&classification);
+            move || {
+                let classification = Arc::clone(&classification);
+                async move {
+                    let report = classification.run_intake_once().await?;
+                    Ok(WorkerRunReport {
+                        claimed: report.claimed,
+                        records: report.records,
+                        retry_scheduled: report.retry_scheduled,
+                        fenced: report.fenced,
+                        dead_lettered: u32::from(report.failed),
+                        ..WorkerRunReport::default()
+                    })
+                }
+            }
+        }),
+        WorkerDefinition::new_reported("classification-model", interval, {
+            let classification = Arc::clone(&classification);
+            move || {
+                let classification = Arc::clone(&classification);
+                async move {
+                    let report = classification.run_classifier_once().await?;
+                    Ok(WorkerRunReport {
+                        claimed: report.claimed,
+                        records: report.records,
+                        retry_scheduled: report.retry_scheduled,
+                        fenced: report.fenced,
+                        dead_lettered: u32::from(report.failed),
+                        ..WorkerRunReport::default()
+                    })
+                }
+            }
+        }),
+        WorkerDefinition::new_reported("classification-application", interval, {
+            let classification = Arc::clone(&classification);
+            move || {
+                let classification = Arc::clone(&classification);
+                async move {
+                    let report = classification.run_application_once().await?;
+                    Ok(WorkerRunReport {
+                        claimed: report.claimed,
+                        records: report.records,
+                        retry_scheduled: report.retry_scheduled,
+                        fenced: report.fenced,
+                        dead_lettered: u32::from(report.failed),
+                        ..WorkerRunReport::default()
+                    })
+                }
+            }
+        }),
+        WorkerDefinition::new_reported("classification-backfill", interval, {
+            let classification = Arc::clone(&classification);
+            move || {
+                let classification = Arc::clone(&classification);
+                async move {
+                    let report = classification.run_backfill_once().await?;
+                    Ok(WorkerRunReport {
+                        claimed: report.claimed,
+                        records: report.records,
+                        retry_scheduled: report.retry_scheduled,
+                        fenced: report.fenced,
+                        dead_lettered: u32::from(report.failed),
+                        ..WorkerRunReport::default()
+                    })
+                }
             }
         }),
         WorkerDefinition::new_reported("reference-data-sync", interval, move || {

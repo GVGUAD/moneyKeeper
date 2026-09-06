@@ -1,0 +1,157 @@
+@startuml classification-tactical-model
+title Classification — Conceptual Tactical Model
+
+legend bottom
+  Design vocabulary, not a generated code inventory.
+  Classification facts are persisted transitions, not published outbox events.
+  See bounded-context-classification.md for implementation choices.
+endlegend
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+
+package "CategoryTaxonomy Aggregate" <<Aggregate>> {
+  class CategoryTaxonomy <<(A,orchid) Aggregate Root>> {
+    -user_id: UserId
+    -version: TaxonomyVersion
+    -starter_template_version: Option<StarterTemplateVersion>
+    -nodes: Vec<CategoryNode>
+    +{static} rehydrate(user_id: UserId, version: TaxonomyVersion, starter_template_version: Option<StarterTemplateVersion>, nodes: Vec<CategoryNode>): Result<CategoryTaxonomy, ClassificationError>
+    +create_node(input: CreateCategoryNode, now: DateTime<Utc>): Result<CategoryId, ClassificationError>
+    +edit_node(id: CategoryId, changes: CategoryNodeChanges, now: DateTime<Utc>): Result<(), ClassificationError>
+    +move_node(id: CategoryId, placement: CategoryPlacement, now: DateTime<Utc>): Result<(), ClassificationError>
+    +reorder_siblings(parent_id: Option<CategoryId>, ordered_ids: Vec<CategoryId>, now: DateTime<Utc>): Result<(), ClassificationError>
+    +archive_node(id: CategoryId, now: DateTime<Utc>): Result<(), ClassificationError>
+    +restore_node(id: CategoryId, now: DateTime<Utc>): Result<(), ClassificationError>
+    +require_assignable(id: CategoryId, cash_flow_kind: CashFlowKind): Result<CategoryNodeView, ClassificationError>
+  }
+
+  class CategoryNode <<(E,skyblue) Entity>> {
+    -id: CategoryId
+    -parent_id: Option<CategoryId>
+    -name: CategoryName
+    -kind: CategoryKind
+    -lifecycle: CategoryLifecycle
+    -position: SiblingPosition
+    -color: Option<CategoryColor>
+    -icon: Option<IconKey>
+    -created_at: DateTime<Utc>
+    -updated_at: DateTime<Utc>
+  }
+}
+
+package "ClassificationDecision Aggregate" <<Aggregate>> {
+  class ClassificationDecision <<(A,orchid) Aggregate Root>> {
+    -id: ClassificationDecisionId
+    -user_id: UserId
+    -journal_entry_id: JournalEntryId
+    -version: DecisionVersion
+    -status: DecisionStatus
+    -prediction: ClassificationPrediction
+    -observed_taxonomy_version: TaxonomyVersion
+    -observed_annotation_version: AnnotationVersion
+    +{static} record(id: ClassificationDecisionId, evidence: ClassificationEvidence, prediction: ClassificationPrediction, observed: ObservedVersions, now: DateTime<Utc>): Result<ClassificationDecision, ClassificationError>
+    +request_resolution(resolution: ClassificationResolution, expected_version: DecisionVersion, now: DateTime<Utc>): Result<(), ClassificationError>
+    +mark_applied(expected_version: DecisionVersion, now: DateTime<Utc>): Result<(), ClassificationError>
+    +mark_stale(expected_version: DecisionVersion, now: DateTime<Utc>): Result<(), ClassificationError>
+    +mark_failed(expected_version: DecisionVersion, now: DateTime<Utc>): Result<(), ClassificationError>
+  }
+}
+
+class CategoryId <<(V,lightgreen) Value Object>>
+class UserId <<(V,lightgreen) Value Object>>
+class JournalEntryId <<(V,lightgreen) Value Object>>
+class TaxonomyVersion <<(V,lightgreen) Value Object>>
+class StarterTemplateVersion <<(V,lightgreen) Value Object>>
+class DecisionVersion <<(V,lightgreen) Value Object>>
+class AnnotationVersion <<(V,lightgreen) Value Object>>
+class CategoryName <<(V,lightgreen) Value Object>>
+class CategoryColor <<(V,lightgreen) Value Object>>
+class IconKey <<(V,lightgreen) Value Object>>
+class SiblingPosition <<(V,lightgreen) Value Object>>
+class CategoryKind <<(V,lightgreen) Value Object>>
+class CategoryLifecycle <<(V,lightgreen) Value Object>>
+class CashFlowKind <<(V,lightgreen) Value Object>>
+class DecisionStatus <<(V,lightgreen) Value Object>>
+class CreateCategoryNode <<(V,lightgreen) Value Object>>
+class CategoryNodeChanges <<(V,lightgreen) Value Object>>
+class CategoryPlacement <<(V,lightgreen) Value Object>>
+class CategoryNodeView <<(V,lightgreen) Value Object>>
+class Confidence <<(V,lightgreen) Value Object>>
+class ClassificationEvidence <<(V,lightgreen) Value Object>>
+class ClassificationPrediction <<(V,lightgreen) Value Object>> {
+  +category_id: Option<CategoryId>
+  +confidence: Confidence
+  +reason_code: PredictionReason
+  +explanation: String
+}
+class PredictionReason <<(V,lightgreen) Value Object>>
+class ObservedVersions <<(V,lightgreen) Value Object>> {
+  +taxonomy: TaxonomyVersion
+  +annotation: AnnotationVersion
+}
+class ClassificationResolution <<(V,lightgreen) Value Object>>
+
+class CategoryTaxonomyChanged <<(D,gold) Domain Event>>
+class ClassificationSuggested <<(D,gold) Domain Event>>
+class ClassificationAbstained <<(D,gold) Domain Event>>
+class CategoryApplicationRequested <<(D,gold) Domain Event>>
+class ClassificationResolutionRequested <<(D,gold) Domain Event>>
+
+class CategoryTaxonomyStore <<(R) Repository>> {
+  +load_for_update(user_id: UserId): Result<CategoryTaxonomy, ClassificationError>
+  +save(taxonomy: CategoryTaxonomy): Result<(), ClassificationError>
+}
+class ClassificationDecisionStore <<(R) Repository>> {
+  +load_for_update(user_id: UserId, id: ClassificationDecisionId): Result<ClassificationDecision, ClassificationError>
+  +save(decision: ClassificationDecision): Result<(), ClassificationError>
+}
+interface TransactionClassifier {
+  +classify(request: ClassificationRequest): Future<Result<ClassificationPrediction, ClassifierError>>
+}
+class ClassificationRequest <<(V,lightgreen) Value Object>>
+class ClassifierError
+class ClassificationDecisionId <<(V,lightgreen) Value Object>>
+class ClassificationError
+
+CategoryTaxonomy "1" *-- "0..*" CategoryNode : owns
+CategoryTaxonomy --> UserId
+CategoryNode --> CategoryId
+CategoryTaxonomy ..> CategoryTaxonomyChanged : records
+CategoryTaxonomyStore ..> CategoryTaxonomy : manages
+ClassificationDecision --> ClassificationDecisionId
+ClassificationDecision --> UserId
+ClassificationDecision --> JournalEntryId : references by identity
+ClassificationDecision --> ClassificationPrediction
+ClassificationDecision --> ObservedVersions
+ClassificationDecision ..> ClassificationSuggested
+ClassificationDecision ..> ClassificationAbstained
+ClassificationDecision ..> CategoryApplicationRequested
+ClassificationDecision ..> ClassificationResolutionRequested
+ClassificationDecisionStore ..> ClassificationDecision : manages
+TransactionClassifier ..> ClassificationRequest
+TransactionClassifier ..> ClassificationPrediction
+TransactionClassifier ..> ClassifierError
+
+note right of CategoryTaxonomy
+  Aggregate invariants:
+  * maximum depth is three
+  * no cycles
+  * child kind is contained by parent kind
+  * active sibling names are case-insensitively unique
+  * sibling positions are dense and unique
+  * one mutation compares and increments the global version
+end note
+
+note right of ClassificationDecision
+  The decision references Ledger state by identity/version only.
+  Applying it is a separate transaction coordinated by an event policy.
+  A stale observed version can never overwrite current user intent.
+end note
+
+note bottom of CategoryTaxonomyStore
+  One repository per aggregate root. PostgreSQL implementations stay private.
+  One transaction modifies one aggregate; cross-context effects use events.
+end note
+
+@enduml

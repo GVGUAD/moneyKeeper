@@ -7,6 +7,7 @@ pub enum ProjectionAction {
     JournalReversed,
     JournalReplaced,
     Annotation,
+    CategoryAssignment,
     Balance,
     Reconciliation,
     AccountingProcess,
@@ -51,6 +52,7 @@ pub fn classify(event: &LedgerEventV1) -> Result<ProjectionAction, &'static str>
         LedgerEventFactV1::EntryReversed { .. } => ProjectionAction::JournalReversed,
         LedgerEventFactV1::EntryReplaced { .. } => ProjectionAction::JournalReplaced,
         LedgerEventFactV1::AnnotationChanged { .. } => ProjectionAction::Annotation,
+        LedgerEventFactV1::CategoryAssignmentChanged { .. } => ProjectionAction::CategoryAssignment,
         LedgerEventFactV1::BalanceChanged { .. } => ProjectionAction::Balance,
         LedgerEventFactV1::ReconciliationObserved { .. }
         | LedgerEventFactV1::ReconciliationMatched { .. }

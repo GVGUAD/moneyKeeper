@@ -26,6 +26,75 @@ impl CategoryReference {
     }
 }
 
+/// Provenance of the category currently attached to a transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignmentOrigin {
+    Manual,
+    Recurring,
+    Ai,
+}
+
+impl AssignmentOrigin {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Recurring => "recurring",
+            Self::Ai => "ai",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "manual" => Ok(Self::Manual),
+            "recurring" => Ok(Self::Recurring),
+            "ai" => Ok(Self::Ai),
+            _ => Err(LedgerError::persistence(
+                "stored category assignment origin is invalid",
+            )),
+        }
+    }
+}
+
+/// Whether automatic classification may currently change an uncategorized transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationState {
+    Eligible,
+    Suppressed,
+    LegacyUnknown,
+}
+
+impl AutomationState {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Eligible => "eligible",
+            Self::Suppressed => "suppressed",
+            Self::LegacyUnknown => "legacy_unknown",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Result<Self, LedgerError> {
+        match value {
+            "eligible" => Ok(Self::Eligible),
+            "suppressed" => Ok(Self::Suppressed),
+            "legacy_unknown" => Ok(Self::LegacyUnknown),
+            _ => Err(LedgerError::persistence(
+                "stored automatic classification state is invalid",
+            )),
+        }
+    }
+}
+
+/// Complete category-assignment state captured for restart-safe compensation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryAssignmentSnapshot {
+    pub category: Option<CategoryReference>,
+    pub origin: Option<AssignmentOrigin>,
+    pub classification_decision_id: Option<Uuid>,
+    pub automation_state: AutomationState,
+}
+
 /// Optimistic annotation version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -142,6 +211,9 @@ pub struct TransactionAnnotation {
     user_id: UserId,
     description: String,
     category: Option<CategoryReference>,
+    assignment_origin: Option<AssignmentOrigin>,
+    classification_decision_id: Option<Uuid>,
+    automation_state: AutomationState,
     note: Option<String>,
     tags: NormalizedTags,
     budget_visibility: BudgetVisibility,
@@ -165,12 +237,20 @@ impl TransactionAnnotation {
         budget_visibility: BudgetVisibility,
         now: DateTime<Utc>,
     ) -> Result<Self, LedgerError> {
+        let (assignment_origin, automation_state) = if category.is_some() {
+            (Some(AssignmentOrigin::Manual), AutomationState::Suppressed)
+        } else {
+            (None, AutomationState::Eligible)
+        };
         Ok(Self {
             id,
             journal_entry_id,
             user_id,
             description: validate_description(description.into())?,
             category,
+            assignment_origin,
+            classification_decision_id: None,
+            automation_state,
             note: validate_note(note)?,
             tags,
             budget_visibility,
@@ -188,6 +268,9 @@ impl TransactionAnnotation {
         user_id: UserId,
         description: String,
         category: Option<CategoryReference>,
+        assignment_origin: Option<AssignmentOrigin>,
+        classification_decision_id: Option<Uuid>,
+        automation_state: AutomationState,
         note: Option<String>,
         tags: NormalizedTags,
         budget_visibility: BudgetVisibility,
@@ -195,12 +278,34 @@ impl TransactionAnnotation {
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
     ) -> Result<Self, LedgerError> {
+        let assignment_is_valid = match assignment_origin {
+            None => category.is_none() && classification_decision_id.is_none(),
+            Some(AssignmentOrigin::Manual) => automation_state == AutomationState::Suppressed,
+            Some(AssignmentOrigin::Recurring) => {
+                category.is_some()
+                    && classification_decision_id.is_none()
+                    && automation_state == AutomationState::Eligible
+            }
+            Some(AssignmentOrigin::Ai) => {
+                category.is_some()
+                    && classification_decision_id.is_some()
+                    && automation_state == AutomationState::Eligible
+            }
+        };
+        if !assignment_is_valid {
+            return Err(LedgerError::persistence(
+                "stored category assignment provenance is invalid",
+            ));
+        }
         Ok(Self {
             id,
             journal_entry_id,
             user_id,
             description: validate_description(description)?,
             category,
+            assignment_origin,
+            classification_decision_id,
+            automation_state,
             note: validate_note(note)?,
             tags,
             budget_visibility,
@@ -226,12 +331,28 @@ impl TransactionAnnotation {
             return Err(LedgerError::tenant_mismatch());
         }
 
+        let category_touched = changes.category.is_some();
         let description = changes
             .description
             .map(validate_description)
             .transpose()?
             .unwrap_or_else(|| self.description.clone());
         let category = changes.category.unwrap_or(self.category);
+        let assignment_origin = if category_touched {
+            Some(AssignmentOrigin::Manual)
+        } else {
+            self.assignment_origin
+        };
+        let classification_decision_id = if category_touched {
+            None
+        } else {
+            self.classification_decision_id
+        };
+        let automation_state = if category_touched {
+            AutomationState::Suppressed
+        } else {
+            self.automation_state
+        };
         let note = changes
             .note
             .map(validate_note)
@@ -242,6 +363,9 @@ impl TransactionAnnotation {
 
         if description == self.description
             && category == self.category
+            && assignment_origin == self.assignment_origin
+            && classification_decision_id == self.classification_decision_id
+            && automation_state == self.automation_state
             && note == self.note
             && tags == self.tags
             && budget_visibility == self.budget_visibility
@@ -251,6 +375,9 @@ impl TransactionAnnotation {
 
         self.description = description;
         self.category = category;
+        self.assignment_origin = assignment_origin;
+        self.classification_decision_id = classification_decision_id;
+        self.automation_state = automation_state;
         self.note = note;
         self.tags = tags;
         self.budget_visibility = budget_visibility;
@@ -267,6 +394,137 @@ impl TransactionAnnotation {
         Ok(true)
     }
 
+    /// Applies a version-fenced system assignment while enforcing Manual > Recurring > AI.
+    pub fn apply_system_assignment(
+        &mut self,
+        category: Option<CategoryReference>,
+        origin: AssignmentOrigin,
+        classification_decision_id: Option<Uuid>,
+        expected_version: AnnotationVersion,
+        now: DateTime<Utc>,
+    ) -> Result<bool, LedgerError> {
+        if self.version != expected_version {
+            return Err(LedgerError::version_conflict());
+        }
+        if origin == AssignmentOrigin::Ai
+            && (classification_decision_id.is_none() || category.is_none())
+        {
+            return Err(LedgerError::invalid_annotation(
+                "AI assignments require a category and classification decision",
+            ));
+        }
+        if origin == AssignmentOrigin::Recurring
+            && (classification_decision_id.is_some() || category.is_none())
+        {
+            return Err(LedgerError::invalid_annotation(
+                "Recurring assignments require a category without an AI decision",
+            ));
+        }
+        if origin == AssignmentOrigin::Manual && classification_decision_id.is_none() {
+            return Err(LedgerError::invalid_annotation(
+                "system-applied manual assignments require a classification decision",
+            ));
+        }
+        if origin != AssignmentOrigin::Manual
+            && (self.automation_state == AutomationState::Suppressed
+                || self.assignment_origin == Some(AssignmentOrigin::Manual))
+        {
+            return Ok(false);
+        }
+        if origin == AssignmentOrigin::Ai
+            && (self.category.is_some() || self.automation_state != AutomationState::Eligible)
+        {
+            return Ok(false);
+        }
+        if origin == AssignmentOrigin::Recurring
+            && self.assignment_origin == Some(AssignmentOrigin::Recurring)
+            && self.category == category
+        {
+            return Ok(false);
+        }
+
+        self.category = category;
+        self.assignment_origin = Some(origin);
+        self.classification_decision_id =
+            if matches!(origin, AssignmentOrigin::Ai | AssignmentOrigin::Manual) {
+                classification_decision_id
+            } else {
+                None
+            };
+        self.automation_state = if origin == AssignmentOrigin::Manual {
+            AutomationState::Suppressed
+        } else {
+            AutomationState::Eligible
+        };
+        self.record_change(Actor::System, now)?;
+        Ok(true)
+    }
+
+    /// Restores a complete pre-Recurring assignment snapshot during compensation.
+    pub fn restore_assignment(
+        &mut self,
+        snapshot: CategoryAssignmentSnapshot,
+        expected_version: AnnotationVersion,
+        now: DateTime<Utc>,
+    ) -> Result<bool, LedgerError> {
+        if self.version != expected_version {
+            return Err(LedgerError::version_conflict());
+        }
+        if self.assignment_origin != Some(AssignmentOrigin::Recurring) {
+            return Ok(false);
+        }
+        if self.assignment_snapshot() == snapshot {
+            return Ok(false);
+        }
+        self.category = snapshot.category;
+        self.assignment_origin = snapshot.origin;
+        self.classification_decision_id = snapshot.classification_decision_id;
+        self.automation_state = snapshot.automation_state;
+        self.record_change(Actor::System, now)?;
+        Ok(true)
+    }
+
+    /// Re-enables AI classification after an explicit user retry.
+    pub fn enable_automatic_classification(
+        &mut self,
+        expected_version: AnnotationVersion,
+        actor: Actor,
+        now: DateTime<Utc>,
+    ) -> Result<bool, LedgerError> {
+        if self.version != expected_version {
+            return Err(LedgerError::version_conflict());
+        }
+        if matches!(actor, Actor::User(actor_id) if actor_id != self.user_id) {
+            return Err(LedgerError::tenant_mismatch());
+        }
+        if self.category.is_some() {
+            return Err(LedgerError::invalid_annotation(
+                "automatic classification can only be retried while uncategorized",
+            ));
+        }
+        // An explicit retry creates a new generation even after an eligible
+        // transaction previously abstained or exhausted provider retries.
+        self.assignment_origin = None;
+        self.classification_decision_id = None;
+        self.automation_state = AutomationState::Eligible;
+        self.record_change(actor, now)?;
+        Ok(true)
+    }
+
+    fn record_change(&mut self, actor: Actor, now: DateTime<Utc>) -> Result<(), LedgerError> {
+        self.version = self.version.next()?;
+        self.updated_at = now;
+        self.audit_events.push(AnnotationChanged {
+            annotation_id: self.id,
+            journal_entry_id: self.journal_entry_id,
+            user_id: self.user_id,
+            version: self.version,
+            actor,
+            changed_at: now,
+        });
+        Ok(())
+    }
+
     pub const fn id(&self) -> AnnotationId {
         self.id
     }
@@ -281,6 +539,23 @@ impl TransactionAnnotation {
     }
     pub const fn category(&self) -> Option<CategoryReference> {
         self.category
+    }
+    pub const fn assignment_origin(&self) -> Option<AssignmentOrigin> {
+        self.assignment_origin
+    }
+    pub const fn classification_decision_id(&self) -> Option<Uuid> {
+        self.classification_decision_id
+    }
+    pub const fn automation_state(&self) -> AutomationState {
+        self.automation_state
+    }
+    pub const fn assignment_snapshot(&self) -> CategoryAssignmentSnapshot {
+        CategoryAssignmentSnapshot {
+            category: self.category,
+            origin: self.assignment_origin,
+            classification_decision_id: self.classification_decision_id,
+            automation_state: self.automation_state,
+        }
     }
     pub fn note(&self) -> Option<&str> {
         self.note.as_deref()

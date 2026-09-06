@@ -1,0 +1,17 @@
+# Categories and transaction classification
+
+Apply migrations `0017`–`0019` with the normal guarded database initializer. Existing category IDs and assignments survive; users with any category rows do not receive starter nodes. Empty taxonomies initialize template 1 lazily. Category API clients must migrate to the tree contract in `static/openapi.json`: mutations use one taxonomy version and an `Idempotency-Key`.
+
+Set `OPENAI_API_KEY` and optionally `CLASSIFICATION_MODEL` (default `gpt-5.4-mini-2026-03-17`). Ship with `CLASSIFICATION_AUTO_APPLY=false`. Four supervised workers perform intake, model calls, assignment application, and backfill enumeration. Recording/importing a transaction and acknowledging a consumed event do not wait for model responses.
+
+Every outbound attempt reserves one of 100 tenant calls per UTC day before I/O. Reservations survive crashes. Quota-deferred targets resume at UTC midnight. Provider failures retry with exponential backoff for up to five attempts; transaction details expose target state and a redacted error code. An explicit classification retry advances the annotation version and creates fresh work without removing an existing category.
+
+Automatic application requires both the configuration flag and observed rollout evidence: at least 200 resolved predictions with confidence >=0.90, at least 95% accepted, and fewer than 5% unsuccessful outbound attempts. The gate uses durable production decisions and attempt outcomes, never checked-in synthetic counters. An unfinished attempt is conservatively unsuccessful. Until qualified, all predictions >=0.60 enter review; lower predictions abstain. Changing the flag affects new predictions after worker restart, leaving existing review items in review. Returning it to false also returns unapplied automatic decisions to review; it does not undo prior assignments.
+
+`tests/fixtures/classification_eval.json` contains authored evaluation cases, including ambiguous evidence and prompt injection. It contains no measured predictions and does not certify model precision. Expand it with reviewed cases when assessing model or prompt changes; do not substitute authored labels for observed acceptance measurements.
+
+Explicit backfills use half-open UTC ranges and process newest transactions first. They can enable `legacy_unknown` annotations, but preserve manual suppression and every existing category. Only one job per tenant may be active. Normal intake never opts legacy annotations in.
+
+Provider input includes description, exact amount/currency, timestamp, kind, provider/MCC, account label, compatible category paths/IDs, and up to 20 tenant-private examples. Notes, tags, account IDs, provider transaction IDs, user IDs, and credentials are excluded. Persisted attempt metadata and logs contain no raw requests/responses. The Responses adapter sends strict Structured Outputs, no tools, and `store:false`. This disables Responses application-state storage; it does not eliminate standard abuse-monitoring retention. See [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data).
+
+Category assignments are Ledger commands with optimistic annotation versions and manual > recurring > AI precedence. Application holds a Classification-owned taxonomy read guard through Ledger commit and decision completion, so a taxonomy mutation cannot invalidate an assignment midway. Reporting consumes a separate category-only event and annotation/source versions, without reapplying balances.

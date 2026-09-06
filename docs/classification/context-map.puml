@@ -1,0 +1,36 @@
+@startuml classification-context-map
+title Moneykeeper — Categories and Classification Context Map
+
+skinparam rectangle {
+  BackgroundColor<<core>> LightYellow
+  BackgroundColor<<supporting>> White
+  BackgroundColor<<generic>> WhiteSmoke
+  BorderColor<<core>> GoldenRod
+  BorderThickness<<core>> 2
+}
+skinparam shadowing false
+
+rectangle "Ledger\n(Core)" as Ledger <<core>>
+rectangle "Classification" as Classification <<supporting>>
+rectangle "Banking" as Banking <<supporting>>
+rectangle "Recurring" as Recurring <<supporting>>
+rectangle "Reporting" as Reporting <<supporting>>
+rectangle "Integration Runtime" as Integration <<generic>>
+rectangle "OpenAI Responses API" as OpenAI <<generic>>
+
+Banking "U (OHS+PL)" --> "D" Integration : published import facts
+Ledger "U (OHS+PL)" --> "D" Integration : published journal / assignment facts
+Integration "U" --> "D" Classification : Customer-Supplier
+Classification "U" --> "D" Ledger : assignment intent
+Recurring "U" --> "D" Ledger : recurring assignment intent
+Ledger "U (OHS+PL)" --> "D" Reporting : applied assignment facts
+OpenAI "U" -[#crimson,dashed]-> "D (ACL)" Classification : Anticorruption Layer
+
+legend right
+  U = upstream; D = downstream
+  OHS+PL = Open Host Service + Published Language
+  dashed crimson = Anticorruption Layer
+endlegend
+
+@enduml
+

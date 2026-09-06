@@ -331,27 +331,6 @@ async fn replace_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
             "replacement amount must be positive",
         ));
     }
-    let category = match command.category_id {
-        Some(id) => {
-            let category = categories
-                .require_active(command.user_id, id)
-                .await
-                .map_err(|_| LedgerError::invalid_annotation("category is missing or archived"))?;
-            let allowed = matches!(category.kind, CategoryKind::Both)
-                || matches!(
-                    (command.kind, category.kind),
-                    (ManualTransactionKind::Income, CategoryKind::Income)
-                        | (ManualTransactionKind::Expense, CategoryKind::Expense)
-                );
-            if !allowed {
-                return Err(LedgerError::invalid_annotation(
-                    "category kind is incompatible",
-                ));
-            }
-            Some(CategoryReference::new(id.into_uuid()))
-        }
-        None => None,
-    };
     let request = json!({
         "original": command.original_journal_entry_id, "account": command.account_id,
         "kind": command.kind, "amount": command.amount, "description": command.description,
@@ -373,6 +352,27 @@ async fn replace_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
         tx.rollback().await?;
         return Ok(result);
     }
+    let category = match command.category_id {
+        Some(id) => {
+            categories
+                .require_assignable(
+                    command.user_id,
+                    id,
+                    match command.kind {
+                        ManualTransactionKind::Income => CategoryKind::Income,
+                        ManualTransactionKind::Expense => CategoryKind::Expense,
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    LedgerError::invalid_annotation(
+                        "category is missing, archived, not a leaf, or incompatible",
+                    )
+                })?;
+            Some(CategoryReference::new(id.into_uuid()))
+        }
+        None => None,
+    };
     let outcome = async {
         let original = tx
             .find_journal(command.user_id, command.original_journal_entry_id, true)

@@ -177,6 +177,30 @@ impl PgReportingStore {
                 .execute(&mut *transaction)
                 .await?;
             }
+            LedgerEventFactV1::CategoryAssignmentChanged {
+                journal_entry_id,
+                annotation_version,
+                category_id,
+                ..
+            } => {
+                sqlx::query(
+                    r#"
+                    UPDATE reporting.cashflows SET
+                        category_id = $3,
+                        category_annotation_version = $4,
+                        category_source_sequence = $5
+                    WHERE user_id = $1 AND journal_entry_id = $2
+                      AND (category_annotation_version, category_source_sequence) < ($4, $5)
+                    "#,
+                )
+                .bind(user_id)
+                .bind(journal_entry_id.into_uuid())
+                .bind(category_id.map(|id| id.into_uuid()))
+                .bind(annotation_version)
+                .bind(sequence)
+                .execute(&mut *transaction)
+                .await?;
+            }
             _ => {}
         }
 
@@ -330,10 +354,12 @@ impl PgReportingStore {
         }
         if journal.relations.reverses().is_none() {
             for ((flow_kind, currency), amount) in flows {
-                sqlx::query("INSERT INTO reporting.cashflows(user_id,journal_entry_id,flow_kind,amount,currency,category_id,effective_at,reversed,source_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8) ON CONFLICT(user_id,journal_entry_id,flow_kind) DO UPDATE SET amount=EXCLUDED.amount,currency=EXCLUDED.currency,category_id=EXCLUDED.category_id,effective_at=EXCLUDED.effective_at,source_sequence=EXCLUDED.source_sequence WHERE reporting.cashflows.source_sequence<EXCLUDED.source_sequence")
+                sqlx::query("INSERT INTO reporting.cashflows(user_id,journal_entry_id,flow_kind,amount,currency,category_id,effective_at,reversed,source_sequence,category_annotation_version,category_source_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,$9,$8) ON CONFLICT(user_id,journal_entry_id,flow_kind) DO UPDATE SET amount=EXCLUDED.amount,currency=EXCLUDED.currency,category_id=CASE WHEN reporting.cashflows.category_annotation_version<=EXCLUDED.category_annotation_version THEN EXCLUDED.category_id ELSE reporting.cashflows.category_id END,effective_at=EXCLUDED.effective_at,source_sequence=EXCLUDED.source_sequence,category_annotation_version=GREATEST(reporting.cashflows.category_annotation_version,EXCLUDED.category_annotation_version),category_source_sequence=CASE WHEN reporting.cashflows.category_annotation_version<=EXCLUDED.category_annotation_version THEN EXCLUDED.category_source_sequence ELSE reporting.cashflows.category_source_sequence END WHERE reporting.cashflows.source_sequence<EXCLUDED.source_sequence")
                     .bind(user_id).bind(journal_id).bind(flow_kind).bind(amount).bind(currency)
                     .bind(journal.annotation.as_ref().and_then(|annotation| annotation.category_id).map(|id|id.into_uuid())).bind(journal.occurred_at)
-                    .bind(sequence).execute(&mut *transaction).await?;
+                    .bind(sequence)
+                    .bind(journal.annotation.as_ref().map(|annotation| annotation.version.get()).unwrap_or(0))
+                    .execute(&mut *transaction).await?;
             }
         }
         save_checkpoint(&mut transaction, "reporting-ledger-journals-v1", sequence).await?;
@@ -532,6 +558,9 @@ fn ledger_event_type(fact: &LedgerEventFactV1) -> &'static str {
         LedgerEventFactV1::EntryReversed { .. } => "ledger.journal-reversed.v1",
         LedgerEventFactV1::EntryReplaced { .. } => "ledger.journal-replaced.v1",
         LedgerEventFactV1::AnnotationChanged { .. } => "ledger.annotation-changed.v1",
+        LedgerEventFactV1::CategoryAssignmentChanged { .. } => {
+            "ledger.category-assignment-changed.v1"
+        }
         LedgerEventFactV1::BalanceChanged { .. } => "ledger.balance-changed.v1",
         LedgerEventFactV1::ReconciliationObserved { .. } => "ledger.reconciliation-observed.v1",
         LedgerEventFactV1::ReconciliationMatched { .. } => "ledger.reconciliation-matched.v1",

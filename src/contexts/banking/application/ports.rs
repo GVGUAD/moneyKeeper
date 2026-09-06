@@ -16,13 +16,15 @@ use super::{
     AccountingProcessView, BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork,
     BalanceObservationView, BeginSyncPage, BindExistingResource, CompleteSyncPage, ConnectProvider,
     ConnectionResult, CreateAndMapResource, DeactivateResourceMapping, ExternalResourceView,
-    IntakeProviderEvent, ProviderAccountSummary, ProviderConnectionView, ProviderEventConflictView,
-    ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
-    RecordBalanceObservation, ReplaceProviderCredential, RequestSyncJob, ResourceMappingResult,
-    RotateWebhookCredential, SyncJobView, SyncPageView, WebhookReceiptOutcome,
-    WebhookRotationResult,
+    IntakeProviderEvent, ProviderAccountSummary, ProviderClassificationEvidence,
+    ProviderConnectionView, ProviderEventConflictView, ProviderEventReceipt, ProviderEventView,
+    ProviderImportOutcome, ProviderImportWork, RecordBalanceObservation, ReplaceProviderCredential,
+    RequestSyncJob, ResourceMappingResult, RotateWebhookCredential, SyncJobView, SyncPageView,
+    WebhookReceiptOutcome, WebhookRotationResult,
 };
-use crate::contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId};
+use crate::contexts::ledger::public::{
+    AccountKind, AccountNature, JournalEntryId, LedgerAccountId,
+};
 use chrono::{DateTime, Utc};
 
 /// Provider-neutral account resource produced by an anti-corruption adapter.
@@ -319,6 +321,16 @@ pub(crate) trait ProviderEventRepository: Send + Sync {
         user_id: UserId,
         id: uuid::Uuid,
     ) -> Result<AccountingProcessView, BankingError>;
+    async fn classification_evidence(
+        &self,
+        user_id: UserId,
+        id: ProviderEventId,
+    ) -> Result<ProviderClassificationEvidence, BankingError>;
+    async fn classification_evidence_for_journal(
+        &self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+    ) -> Result<Option<ProviderClassificationEvidence>, BankingError>;
     async fn intake_provider_event(
         &self,
         command: IntakeProviderEvent,

@@ -18,11 +18,12 @@ use super::application::capabilities::{
 pub use super::domain::{
     AccountAuthority, AccountKind, AccountLifecycle, AccountNature, AccountVersion,
     AccountVisibility, Actor, AnnotationChanged, AnnotationChanges, AnnotationId,
-    AnnotationVersion, BalanceObservation, BalanceVersion, BudgetVisibility, CategoryReference,
-    JournalEntry, JournalEntryId, JournalRelations, JournalSource, LedgerAccount, LedgerAccountId,
-    LedgerError, NormalizedTags, ObservationId, Posting, PostingId, PostingPurpose,
-    ReconciliationCase, ReconciliationCaseId, ReconciliationEvent, ReconciliationStatus,
-    ReconciliationVersion, SourceReference, SystemAccountRole, TransactionAnnotation,
+    AnnotationVersion, AssignmentOrigin, AutomationState, BalanceObservation, BalanceVersion,
+    BudgetVisibility, CategoryAssignmentSnapshot, CategoryReference, JournalEntry, JournalEntryId,
+    JournalRelations, JournalSource, LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags,
+    ObservationId, Posting, PostingId, PostingPurpose, ReconciliationCase, ReconciliationCaseId,
+    ReconciliationEvent, ReconciliationStatus, ReconciliationVersion, SourceReference,
+    SystemAccountRole, TransactionAnnotation,
 };
 
 /// Concrete, cloneable Ledger contract with type-erased application services.
@@ -92,6 +93,24 @@ impl LedgerFacade {
         command: UpdateTransactionAnnotation,
     ) -> Result<AnnotationResult, LedgerError> {
         self.commands.update_annotation(command).await
+    }
+    pub async fn apply_category_assignment(
+        &self,
+        command: ApplyCategoryAssignment,
+    ) -> Result<CategoryAssignmentResult, LedgerError> {
+        self.commands.apply_category_assignment(command).await
+    }
+    pub async fn restore_category_assignment(
+        &self,
+        command: RestoreCategoryAssignment,
+    ) -> Result<CategoryAssignmentResult, LedgerError> {
+        self.commands.restore_category_assignment(command).await
+    }
+    pub async fn enable_automatic_classification(
+        &self,
+        command: EnableAutomaticClassification,
+    ) -> Result<CategoryAssignmentResult, LedgerError> {
+        self.commands.enable_automatic_classification(command).await
     }
     pub async fn correct_balance(
         &self,
@@ -342,6 +361,7 @@ pub const CONTEXT_NAME: &str = "ledger";
 pub const JOURNAL_POSTED_V1: &str = "ledger.journal-posted.v1";
 pub const JOURNAL_REVERSED_V1: &str = "ledger.journal-reversed.v1";
 pub const JOURNAL_REPLACED_V1: &str = "ledger.journal-replaced.v1";
+pub const CATEGORY_ASSIGNMENT_CHANGED_V1: &str = "ledger.category-assignment-changed.v1";
 pub const RECONCILIATION_OBSERVED_V1: &str = "ledger.reconciliation-observed.v1";
 pub const RECONCILIATION_MATCHED_V1: &str = "ledger.reconciliation-matched.v1";
 pub const RECONCILIATION_SUPERSEDED_V1: &str = "ledger.reconciliation-superseded.v1";
@@ -638,6 +658,60 @@ pub struct UpdateTransactionAnnotation {
     pub occurred_at: DateTime<Utc>,
 }
 
+/// Applies a category on behalf of a trusted automatic policy.
+#[derive(Clone, Debug)]
+pub struct ApplyCategoryAssignment {
+    pub user_id: UserId,
+    pub journal_entry_id: JournalEntryId,
+    pub category_id: Option<CategoryId>,
+    pub origin: AssignmentOrigin,
+    pub classification_decision_id: Option<uuid::Uuid>,
+    pub expected_version: AnnotationVersion,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Restores the category state captured before a Recurring assignment.
+#[derive(Clone, Debug)]
+pub struct RestoreCategoryAssignment {
+    pub user_id: UserId,
+    pub journal_entry_id: JournalEntryId,
+    pub snapshot: CategoryAssignmentSnapshot,
+    pub expected_version: AnnotationVersion,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Explicitly re-enables classification after a manual clear or legacy state.
+#[derive(Clone, Debug)]
+pub struct EnableAutomaticClassification {
+    pub user_id: UserId,
+    pub journal_entry_id: JournalEntryId,
+    pub expected_version: AnnotationVersion,
+    pub idempotency_key: IdempotencyKey,
+    pub correlation_id: CorrelationId,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Whether an automatic assignment changed the annotation or lost precedence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryAssignmentDisposition {
+    Applied,
+    NoEffect,
+}
+
+/// Durable result returned by category-assignment policy commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CategoryAssignmentResult {
+    pub journal_entry_id: JournalEntryId,
+    pub version: AnnotationVersion,
+    pub disposition: CategoryAssignmentDisposition,
+    pub replayed: bool,
+}
+
 /// Result of a transaction annotation mutation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnotationResult {
@@ -674,11 +748,13 @@ impl ActivityKind {
 }
 
 /// Validated half-open Activity range and optional cash-flow classification.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivityFilter {
     from_occurred_at: DateTime<Utc>,
     before_occurred_at: DateTime<Utc>,
     kind: ActivityKind,
+    category_ids: Vec<CategoryId>,
+    uncategorized: bool,
 }
 
 impl ActivityFilter {
@@ -696,19 +772,51 @@ impl ActivityFilter {
             from_occurred_at,
             before_occurred_at,
             kind,
+            category_ids: Vec::new(),
+            uncategorized: false,
         })
     }
 
-    pub const fn from_occurred_at(self) -> DateTime<Utc> {
+    /// Restricts the range to categories pre-resolved by Classification.
+    pub fn with_category_ids(mut self, category_ids: Vec<CategoryId>) -> Result<Self, LedgerError> {
+        if category_ids.is_empty() || self.uncategorized {
+            return Err(LedgerError::invalid_state(
+                "category filter must contain ids and cannot be combined with uncategorized",
+            ));
+        }
+        self.category_ids = category_ids;
+        Ok(self)
+    }
+
+    /// Restricts the range to transactions with no category assignment.
+    pub fn with_uncategorized(mut self) -> Result<Self, LedgerError> {
+        if !self.category_ids.is_empty() {
+            return Err(LedgerError::invalid_state(
+                "uncategorized cannot be combined with a category filter",
+            ));
+        }
+        self.uncategorized = true;
+        Ok(self)
+    }
+
+    pub const fn from_occurred_at(&self) -> DateTime<Utc> {
         self.from_occurred_at
     }
 
-    pub const fn before_occurred_at(self) -> DateTime<Utc> {
+    pub const fn before_occurred_at(&self) -> DateTime<Utc> {
         self.before_occurred_at
     }
 
-    pub const fn kind(self) -> ActivityKind {
+    pub const fn kind(&self) -> ActivityKind {
         self.kind
+    }
+
+    pub fn category_ids(&self) -> &[CategoryId] {
+        &self.category_ids
+    }
+
+    pub const fn uncategorized(&self) -> bool {
+        self.uncategorized
     }
 }
 
@@ -750,6 +858,9 @@ pub struct JournalAnnotationView {
     pub version: AnnotationVersion,
     pub description: String,
     pub category_id: Option<CategoryId>,
+    pub assignment_origin: Option<AssignmentOrigin>,
+    pub classification_decision_id: Option<uuid::Uuid>,
+    pub automation_state: AutomationState,
     pub note: Option<String>,
     pub tags: Vec<String>,
     pub budget_visibility: BudgetVisibility,
@@ -1146,6 +1257,19 @@ pub enum LedgerEventFactV1 {
     AnnotationChanged {
         journal_entry_id: JournalEntryId,
         version: i64,
+    },
+    CategoryAssignmentChanged {
+        journal_entry_id: JournalEntryId,
+        annotation_id: AnnotationId,
+        annotation_version: i64,
+        category_id: Option<CategoryId>,
+        assignment_origin: Option<AssignmentOrigin>,
+        classification_decision_id: Option<uuid::Uuid>,
+        automation_state: AutomationState,
+        previous_category_id: Option<CategoryId>,
+        previous_assignment_origin: Option<AssignmentOrigin>,
+        previous_classification_decision_id: Option<uuid::Uuid>,
+        previous_automation_state: AutomationState,
     },
     BalanceChanged {
         account_id: LedgerAccountId,

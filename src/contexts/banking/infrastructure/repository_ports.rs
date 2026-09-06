@@ -7,7 +7,7 @@ use super::PgBankingStore;
 use crate::{
     contexts::{
         banking::{application::*, domain::*},
-        ledger::public::LedgerAccountId,
+        ledger::public::{JournalEntryId, LedgerAccountId},
     },
     shared_kernel::UserId,
 };
@@ -172,6 +172,20 @@ impl ProviderEventRepository for PgBankingStore {
         id: uuid::Uuid,
     ) -> Result<AccountingProcessView, BankingError> {
         PgBankingStore::get_accounting_process(self, user_id, id).await
+    }
+    async fn classification_evidence(
+        &self,
+        user_id: UserId,
+        id: ProviderEventId,
+    ) -> Result<ProviderClassificationEvidence, BankingError> {
+        PgBankingStore::classification_evidence(self, user_id, id).await
+    }
+    async fn classification_evidence_for_journal(
+        &self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+    ) -> Result<Option<ProviderClassificationEvidence>, BankingError> {
+        PgBankingStore::classification_evidence_for_journal(self, user_id, journal_entry_id).await
     }
     async fn intake_provider_event(
         &self,
