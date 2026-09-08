@@ -61,6 +61,11 @@ Required startup configuration:
   Banking. Never log or publish the complete callback URL.
 - `RUST_LOG`: use structured informational logging by default. Do not enable
   SQL/body/header tracing in an environment with real provider credentials.
+- `LOG_FORMAT`: `compact` locally and `json` on Fly. Unknown values stop startup
+  before application initialization. Use the returned `x-request-id` and logged
+  correlation/internal work IDs to trace an operation; never add raw paths,
+  query strings, bodies, headers, tokens, provider identifiers, amounts,
+  descriptions, or merchant data to logs.
 
 The rehearsed candidate polls worker entry points every second. Mail,
 Recurring, and Reference Data claims use 30-second leases; retries and backoff

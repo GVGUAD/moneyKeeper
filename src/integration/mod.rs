@@ -4,6 +4,7 @@
 //! Dispatch is at least once, so consumers use the inbox to make local effects
 //! exactly once within the PostgreSQL transaction that owns those effects.
 
+pub(crate) mod classification;
 pub(crate) mod event_consumers;
 pub mod inbox;
 pub mod outbox;

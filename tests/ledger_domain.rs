@@ -1,11 +1,12 @@
 use chrono::{TimeZone, Utc};
 use moneykeeper::contexts::ledger::public::{
     AccountAuthority, AccountKind, AccountLifecycle, AccountNature, AccountVersion, Actor,
-    AnnotationChanges, AnnotationId, AnnotationVersion, BalanceObservation, BalanceVersion,
-    BudgetVisibility, CategoryReference, JournalEntry, JournalEntryId, JournalRelations,
-    JournalSource, LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags, ObservationId,
-    Posting, PostingId, PostingPurpose, ReconciliationCase, ReconciliationCaseId,
-    ReconciliationStatus, SourceReference, TransactionAnnotation,
+    AnnotationChanges, AnnotationId, AnnotationVersion, AssignmentOrigin, AutomationState,
+    BalanceObservation, BalanceVersion, BudgetVisibility, CategoryAssignmentSnapshot,
+    CategoryReference, JournalEntry, JournalEntryId, JournalRelations, JournalSource,
+    LedgerAccount, LedgerAccountId, LedgerError, NormalizedTags, ObservationId, Posting, PostingId,
+    PostingPurpose, ReconciliationCase, ReconciliationCaseId, ReconciliationStatus,
+    SourceReference, TransactionAnnotation,
 };
 use moneykeeper::shared_kernel::{
     CausationId, Clock, CorrelationId, CurrencyCode, FixedClock, IdempotencyKey, Money, UserId,
@@ -441,6 +442,197 @@ fn annotations_are_versioned_without_touching_postings() {
             .unwrap_err()
             .is_version_conflict()
     );
+}
+
+#[test]
+fn category_assignment_precedence_is_manual_then_recurring_then_ai() {
+    let user = UserId::generate();
+    let mut annotation = TransactionAnnotation::new(
+        AnnotationId::generate(),
+        JournalEntryId::generate(),
+        user,
+        "Lunch",
+        None,
+        None,
+        NormalizedTags::empty(),
+        BudgetVisibility::Included,
+        clock().now(),
+    )
+    .unwrap();
+    assert_eq!(annotation.assignment_origin(), None);
+    assert_eq!(annotation.automation_state(), AutomationState::Eligible);
+
+    let ai_category = CategoryReference::new(Uuid::new_v4());
+    let decision_id = Uuid::new_v4();
+    assert!(
+        annotation
+            .apply_system_assignment(
+                Some(ai_category),
+                AssignmentOrigin::Ai,
+                Some(decision_id),
+                AnnotationVersion::INITIAL,
+                clock().now(),
+            )
+            .unwrap()
+    );
+    assert_eq!(annotation.assignment_origin(), Some(AssignmentOrigin::Ai));
+
+    let recurring_category = CategoryReference::new(Uuid::new_v4());
+    assert!(
+        annotation
+            .apply_system_assignment(
+                Some(recurring_category),
+                AssignmentOrigin::Recurring,
+                None,
+                AnnotationVersion::new(2).unwrap(),
+                clock().now(),
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        annotation.assignment_origin(),
+        Some(AssignmentOrigin::Recurring)
+    );
+    assert_eq!(annotation.category(), Some(recurring_category));
+
+    let manual_category = CategoryReference::new(Uuid::new_v4());
+    annotation
+        .update(
+            AnnotationChanges {
+                category: Some(Some(manual_category)),
+                ..AnnotationChanges::default()
+            },
+            AnnotationVersion::new(3).unwrap(),
+            Actor::User(user),
+            clock().now(),
+        )
+        .unwrap();
+    assert_eq!(
+        annotation.assignment_origin(),
+        Some(AssignmentOrigin::Manual)
+    );
+    assert_eq!(annotation.automation_state(), AutomationState::Suppressed);
+    assert!(
+        !annotation
+            .apply_system_assignment(
+                Some(ai_category),
+                AssignmentOrigin::Ai,
+                Some(Uuid::new_v4()),
+                AnnotationVersion::new(4).unwrap(),
+                clock().now(),
+            )
+            .unwrap()
+    );
+    assert!(
+        !annotation
+            .apply_system_assignment(
+                Some(recurring_category),
+                AssignmentOrigin::Recurring,
+                None,
+                AnnotationVersion::new(4).unwrap(),
+                clock().now(),
+            )
+            .unwrap()
+    );
+    assert_eq!(annotation.version().get(), 4);
+    assert_eq!(annotation.category(), Some(manual_category));
+}
+
+#[test]
+fn manual_clear_and_review_resolution_suppress_future_automation() {
+    let user = UserId::generate();
+    let mut annotation = TransactionAnnotation::new(
+        AnnotationId::generate(),
+        JournalEntryId::generate(),
+        user,
+        "Coffee",
+        None,
+        None,
+        NormalizedTags::empty(),
+        BudgetVisibility::Included,
+        clock().now(),
+    )
+    .unwrap();
+    let decision_id = Uuid::new_v4();
+    assert!(
+        annotation
+            .apply_system_assignment(
+                None,
+                AssignmentOrigin::Manual,
+                Some(decision_id),
+                AnnotationVersion::INITIAL,
+                clock().now(),
+            )
+            .unwrap()
+    );
+    assert_eq!(annotation.category(), None);
+    assert_eq!(
+        annotation.assignment_origin(),
+        Some(AssignmentOrigin::Manual)
+    );
+    assert_eq!(annotation.classification_decision_id(), Some(decision_id));
+    assert_eq!(annotation.automation_state(), AutomationState::Suppressed);
+
+    annotation
+        .update(
+            AnnotationChanges {
+                note: Some(Some("reviewed".to_owned())),
+                ..AnnotationChanges::default()
+            },
+            AnnotationVersion::new(2).unwrap(),
+            Actor::User(user),
+            clock().now(),
+        )
+        .unwrap();
+    assert_eq!(annotation.classification_decision_id(), Some(decision_id));
+    assert_eq!(annotation.automation_state(), AutomationState::Suppressed);
+
+    annotation
+        .enable_automatic_classification(
+            AnnotationVersion::new(3).unwrap(),
+            Actor::User(user),
+            clock().now(),
+        )
+        .unwrap();
+    assert_eq!(annotation.assignment_origin(), None);
+    assert_eq!(annotation.classification_decision_id(), None);
+    assert_eq!(annotation.automation_state(), AutomationState::Eligible);
+}
+
+#[test]
+fn recurring_compensation_restores_the_complete_provenance_snapshot() {
+    let user = UserId::generate();
+    let category = CategoryReference::new(Uuid::new_v4());
+    let mut annotation = TransactionAnnotation::new(
+        AnnotationId::generate(),
+        JournalEntryId::generate(),
+        user,
+        "Rent",
+        None,
+        None,
+        NormalizedTags::empty(),
+        BudgetVisibility::Included,
+        clock().now(),
+    )
+    .unwrap();
+    let prior = annotation.assignment_snapshot();
+    annotation
+        .apply_system_assignment(
+            Some(category),
+            AssignmentOrigin::Recurring,
+            None,
+            AnnotationVersion::INITIAL,
+            clock().now(),
+        )
+        .unwrap();
+    annotation
+        .restore_assignment(
+            CategoryAssignmentSnapshot { ..prior },
+            AnnotationVersion::new(2).unwrap(),
+            clock().now(),
+        )
+        .unwrap();
+    assert_eq!(annotation.assignment_snapshot(), prior);
 }
 
 #[test]

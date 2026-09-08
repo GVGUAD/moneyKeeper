@@ -114,7 +114,19 @@ Optional variables:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `BIND_ADDR` | `0.0.0.0:8080` | HTTP listener socket address |
-| `RUST_LOG` | tracing library default | Log filtering, for example `moneykeeper=info` |
+| `RUST_LOG` | `moneykeeper=info` | Log filtering, for example `moneykeeper=debug` for temporary local diagnosis |
+| `LOG_FORMAT` | `compact` | `compact` for readable terminal output or `json` for structured aggregation; other values fail startup |
+
+Every HTTP response includes an `x-request-id`. A client-supplied identifier is
+accepted only when it contains 1–64 ASCII letters, digits, `.`, `_`, or `-`;
+otherwise the server generates a UUID. Command logs also carry the durable
+correlation ID used by background workflows.
+
+Logs intentionally contain route templates and internal operational UUIDs, not
+raw request targets. Do not add request/response bodies, headers, access tokens,
+OAuth state or codes, webhook callback URLs, provider identifiers, financial
+amounts, descriptions, or merchant data to tracing events. SQL/body/header
+tracing must remain disabled in environments with real data.
 
 `PUBLIC_URL` is present in the deployment file but is not read by the current Rust runtime.
 

@@ -1,12 +1,13 @@
 //! NBU anti-corruption adapter and one bounded, fenced synchronization step.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
+use tracing::Instrument as _;
 
 use super::super::{
     application::FxObservationRepository,
@@ -64,7 +65,8 @@ impl NbuSource for NbuClient {
             rate: serde_json::Value,
             exchangedate: String,
         }
-        let wire: Vec<WireRate> = self
+        let started = Instant::now();
+        let response = self
             .client
             .get(format!(
                 "{}/NBUStatService/v1/statdirectory/exchange",
@@ -75,11 +77,46 @@ impl NbuSource for NbuClient {
                 ("json", String::new()),
             ])
             .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        wire.into_iter()
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    event.name = "provider.request.completed",
+                    provider = "nbu",
+                    operation = "exchange_rates",
+                    outcome = transport_outcome(&error),
+                    duration_ms = elapsed_ms(started.elapsed()),
+                    "Provider request completed"
+                );
+                anyhow::anyhow!("NBU exchange-rate request failed")
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            tracing::warn!(
+                event.name = "provider.request.completed",
+                provider = "nbu",
+                operation = "exchange_rates",
+                outcome = "http_error",
+                http.status = status.as_u16(),
+                duration_ms = elapsed_ms(started.elapsed()),
+                "Provider request completed"
+            );
+            anyhow::bail!("NBU exchange-rate endpoint rejected the request");
+        }
+        let wire: Vec<WireRate> = response.json().await.map_err(|_| {
+            tracing::warn!(
+                event.name = "provider.request.completed",
+                provider = "nbu",
+                operation = "exchange_rates",
+                outcome = "decode_error",
+                http.status = status.as_u16(),
+                duration_ms = elapsed_ms(started.elapsed()),
+                "Provider request completed"
+            );
+            anyhow::anyhow!("NBU exchange-rate response was invalid")
+        })?;
+        let records = u64::try_from(wire.len()).unwrap_or(u64::MAX);
+        let normalized: anyhow::Result<Vec<_>> = wire
+            .into_iter()
             .map(|row| {
                 let rate_text = row
                     .rate
@@ -98,8 +135,49 @@ impl NbuSource for NbuClient {
                     .expect("UTC has one local representation");
                 normalize(&row.cc, rate, effective_at).map_err(anyhow::Error::from)
             })
-            .collect()
+            .collect();
+        match normalized {
+            Ok(normalized) => {
+                tracing::info!(
+                    event.name = "provider.request.completed",
+                    provider = "nbu",
+                    operation = "exchange_rates",
+                    outcome = "success",
+                    http.status = status.as_u16(),
+                    records,
+                    duration_ms = elapsed_ms(started.elapsed()),
+                    "Provider request completed"
+                );
+                Ok(normalized)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    event.name = "provider.request.completed",
+                    provider = "nbu",
+                    operation = "exchange_rates",
+                    outcome = "invalid_response",
+                    http.status = status.as_u16(),
+                    duration_ms = elapsed_ms(started.elapsed()),
+                    "Provider request completed"
+                );
+                anyhow::bail!("NBU exchange-rate response could not be normalized")
+            }
+        }
     }
+}
+
+fn transport_outcome(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect_error"
+    } else {
+        "transport_error"
+    }
+}
+
+pub fn elapsed_ms(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -163,7 +241,24 @@ where
         let Some(claim) = self.claim().await? else {
             return Ok(FxSyncReport::default());
         };
-        let rates = match self.source.fetch_date(claim.date).await {
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "reference_data.nbu_sync",
+            effective_date = %claim.date,
+        );
+        item_span.in_scope(|| {
+            tracing::info!(
+                event.name = "worker.item.claimed",
+                outcome = "claimed",
+                "Worker item claimed"
+            );
+        });
+        let rates = match self
+            .source
+            .fetch_date(claim.date)
+            .instrument(item_span)
+            .await
+        {
             Ok(rates) => rates,
             Err(_) => {
                 let retry_scheduled = self.fail(&claim).await?;

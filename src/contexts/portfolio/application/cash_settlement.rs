@@ -3,6 +3,7 @@
 use std::error::Error as _;
 
 use chrono::{DateTime, Utc};
+use tracing::Instrument as _;
 
 use super::ports::{
     CashSettlementAction, CashSettlementCompletion, CashSettlementServiceError,
@@ -43,6 +44,19 @@ where
         let Some(work) = self.repository.claim_next().await? else {
             return Ok(PortfolioCashWorkerReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "portfolio.cash_settlement",
+            transaction_id = %work.transaction_id,
+            correlation_id = %work.correlation_id,
+        );
+        item_span.in_scope(|| {
+            tracing::info!(
+                event.name = "worker.item.claimed",
+                outcome = "claimed",
+                "Worker item claimed"
+            );
+        });
         let control = self
             .ledger
             .ensure_typed_control_account(EnsureTypedControlAccount {
@@ -67,6 +81,7 @@ where
                 subject_reference: "portfolio".into(),
                 currency: work.currency.clone(),
             })
+            .instrument(item_span)
             .await
             .map_err(CashSettlementServiceError::ledger)?;
 

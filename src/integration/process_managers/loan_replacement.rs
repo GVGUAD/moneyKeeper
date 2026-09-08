@@ -1,5 +1,7 @@
 //! Durable reverse-then-post replacement workflow state.
 
+use tracing::Instrument as _;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplacementState {
     ReplacementRequested,
@@ -33,6 +35,14 @@ impl LoanReplacementWorker {
         let Some(p) = self.loans.pending_replacements(1).await?.into_iter().next() else {
             return Ok(LoanReplacementReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "loans.replacement",
+            loan_id = %p.replacement.movement.agreement_id,
+            movement_id = %p.replacement.movement.id,
+            correlation_id = %p.replacement.movement.correlation_id,
+        );
+        item_span.in_scope(log_claimed);
         let result = self
             .ledger
             .reverse_transaction(crate::contexts::ledger::public::ReverseTransaction {
@@ -47,6 +57,7 @@ impl LoanReplacementWorker {
                 causation_id: None,
                 occurred_at: p.replacement.movement.requested_at,
             })
+            .instrument(item_span)
             .await;
         match result {
             Ok(result) => {
@@ -66,6 +77,14 @@ impl LoanReplacementWorker {
             }),
         }
     }
+}
+
+fn log_claimed() {
+    tracing::info!(
+        event.name = "worker.item.claimed",
+        outcome = "claimed",
+        "Worker item claimed"
+    );
 }
 pub fn reversal_key(
     original: crate::contexts::loans::public::LoanMovementId,

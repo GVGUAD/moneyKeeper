@@ -1,29 +1,30 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::api::state::LedgerApiState;
 use crate::api::{ApiError, ApiJson, AuthenticatedUser};
-use crate::contexts::classification::public::CategoryId;
+use crate::contexts::classification::public::{CategoryCatalog, CategoryId, ClassificationError};
 use crate::contexts::ledger::public::{
-    AccountVersion, ActivityCursor, AnnotationChanges, AnnotationVersion, ApproveReconciliation,
-    ArchiveAccount, BalanceVersion, CategoryReference, CorrectBalance, DismissReconciliation,
-    JournalEntryId, LedgerAccountId, LedgerError, NormalizedTags, OpenAccount,
-    ReconciliationCaseId, ReconciliationVersion, RecordManualTransaction, RenameAccount,
-    ReplaceTransaction, RestoreAccount, ReverseTransaction, TransferFee, TransferFunds,
-    UpdateTransactionAnnotation,
+    AccountVersion, ActivityCursor, ActivityFilter, ActivityKind, AnnotationChanges,
+    AnnotationVersion, ApproveReconciliation, ArchiveAccount, BalanceVersion, CategoryReference,
+    CorrectBalance, DismissReconciliation, JournalEntryId, LedgerAccountId, LedgerError,
+    NormalizedTags, OpenAccount, ReconciliationCaseId, ReconciliationVersion,
+    RecordManualTransaction, RenameAccount, ReplaceTransaction, RestoreAccount, ReverseTransaction,
+    TransferFee, TransferFunds, UpdateTransactionAnnotation,
 };
 use crate::contexts::reference_data::public::{CurrencyCatalog, CurrencyError};
-use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money};
+use crate::shared_kernel::{CurrencyCode, IdempotencyKey, Money};
 
 use super::dto::{
-    ActivityQuery, AnnotationRequest, ApproveReconciliationRequest, BalanceCorrectionRequest,
-    DismissReconciliationRequest, ExpectedAccountVersionRequest, MoneyRequest, OpenAccountRequest,
-    RecordTransactionRequest, RenameAccountRequest, ReplaceRequest, ReverseRequest,
-    TransferRequest,
+    ActivityQuery, ActivitySummaryQuery, AnnotationRequest, ApproveReconciliationRequest,
+    BalanceCorrectionRequest, DismissReconciliationRequest, ExpectedAccountVersionRequest,
+    MoneyRequest, OpenAccountRequest, RecordTransactionRequest, RenameAccountRequest,
+    ReplaceRequest, ReverseRequest, TransactionActivityQuery, TransactionClassificationResponse,
+    TransactionDetailResponse, TransferRequest,
 };
 
 pub(crate) async fn open_account(
@@ -51,7 +52,7 @@ pub(crate) async fn open_account(
             nature: request.nature,
             opening_balance: money,
             idempotency_key: key,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -86,7 +87,12 @@ pub(crate) async fn get_account(
         let summary = banking
             .provider_account_summary(user_id, account.id)
             .await
-            .map_err(|_| ApiError::internal())?;
+            .map_err(|_| {
+                ApiError::internal(
+                    "banking.persistence",
+                    "provider account summary query failed",
+                )
+            })?;
         account.provider_reported = summary.provider_reported;
         account.available = summary.available;
         account.reconciliation_difference = summary
@@ -109,7 +115,7 @@ pub(crate) async fn rename_account(
         name: request.name,
         expected_version: account_version(request.expected_version)?,
         idempotency_key: idempotency_key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
     };
     state
@@ -134,7 +140,7 @@ pub(crate) async fn archive_account(
             account_id: LedgerAccountId::new(id),
             expected_version: account_version(request.expected_version)?,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -156,7 +162,7 @@ pub(crate) async fn restore_account(
             account_id: LedgerAccountId::new(id),
             expected_version: account_version(request.expected_version)?,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -211,7 +217,7 @@ pub(crate) async fn record_transaction(
             tags,
             budget_visibility: request.budget_visibility,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -223,11 +229,98 @@ pub(crate) async fn record_transaction(
 pub(crate) async fn list_transactions(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
-    Query(query): Query<ActivityQuery>,
+    Query(query): Query<TransactionActivityQuery>,
 ) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
+    let after = cursor_values(query.after_occurred_at, query.after_sequence)?;
+    if query.category_id.is_some() && query.uncategorized == Some(true) {
+        return Err(ApiError::bad_request(
+            "category_id and uncategorized=true are mutually exclusive",
+        ));
+    }
+    if query.from_occurred_at.is_some() != query.before_occurred_at.is_some() {
+        return Err(ApiError::bad_request(
+            "from_occurred_at and before_occurred_at must be provided together",
+        ));
+    }
+    if query.kind.is_some() && query.from_occurred_at.is_none() {
+        return Err(ApiError::bad_request(
+            "kind filtering requires an activity date range",
+        ));
+    }
+    let filtered = query.from_occurred_at.is_some()
+        || query.kind.is_some()
+        || query.category_id.is_some()
+        || query.uncategorized == Some(true);
+    let result = if filtered {
+        let mut filter = ActivityFilter::new(
+            query.from_occurred_at.unwrap_or_else(|| {
+                DateTime::<Utc>::from_timestamp(-62_135_596_800, 0)
+                    .expect("year 1 is representable")
+            }),
+            query.before_occurred_at.unwrap_or_else(|| {
+                DateTime::<Utc>::from_timestamp(253_402_300_799, 0)
+                    .expect("year 9999 is representable")
+            }),
+            query.kind.unwrap_or(ActivityKind::All),
+        )
+        .map_err(map_ledger_error)?;
+        if let Some(category_id) = query.category_id {
+            let category_ids = state
+                .categories
+                .resolve_subtree(user_id, CategoryId::new(category_id))
+                .await
+                .map_err(map_classification_error)?;
+            filter = filter
+                .with_category_ids(category_ids)
+                .map_err(map_ledger_error)?;
+        } else if query.uncategorized == Some(true) {
+            filter = filter.with_uncategorized().map_err(map_ledger_error)?;
+        }
+        state
+            .ledger
+            .list_activity(user_id, filter, after, query.limit.unwrap_or(50))
+            .await
+    } else {
+        state
+            .ledger
+            .list_journals(user_id, after, query.limit.unwrap_or(50))
+            .await
+    };
+    result.map(Json).map_err(map_ledger_error)
+}
+
+pub(crate) async fn summarize_transactions(
+    AuthenticatedUser(user_id): AuthenticatedUser,
+    State(state): State<LedgerApiState>,
+    Query(query): Query<ActivitySummaryQuery>,
+) -> Result<Json<crate::contexts::ledger::public::ActivitySummary>, ApiError> {
+    if query.category_id.is_some() && query.uncategorized == Some(true) {
+        return Err(ApiError::bad_request(
+            "category_id and uncategorized=true are mutually exclusive",
+        ));
+    }
+    let (Some(from), Some(before)) = (query.from_occurred_at, query.before_occurred_at) else {
+        return Err(ApiError::bad_request(
+            "activity summary requires from_occurred_at and before_occurred_at",
+        ));
+    };
+    let mut filter = ActivityFilter::new(from, before, query.kind.unwrap_or(ActivityKind::All))
+        .map_err(map_ledger_error)?;
+    if let Some(category_id) = query.category_id {
+        let category_ids = state
+            .categories
+            .resolve_subtree(user_id, CategoryId::new(category_id))
+            .await
+            .map_err(map_classification_error)?;
+        filter = filter
+            .with_category_ids(category_ids)
+            .map_err(map_ledger_error)?;
+    } else if query.uncategorized == Some(true) {
+        filter = filter.with_uncategorized().map_err(map_ledger_error)?;
+    }
     state
         .ledger
-        .list_journals(user_id, cursor(&query)?, query.limit.unwrap_or(50))
+        .summarize_activity(user_id, filter)
         .await
         .map(Json)
         .map_err(map_ledger_error)
@@ -237,13 +330,47 @@ pub(crate) async fn get_transaction(
     AuthenticatedUser(user_id): AuthenticatedUser,
     State(state): State<LedgerApiState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<crate::contexts::ledger::public::JournalView>, ApiError> {
-    state
+) -> Result<Json<TransactionDetailResponse>, ApiError> {
+    let journal = state
         .ledger
         .get_journal(user_id, JournalEntryId::new(id))
         .await
-        .map(Json)
-        .map_err(map_ledger_error)
+        .map_err(map_ledger_error)?;
+    let decision = state
+        .classification
+        .decision_for_transaction(user_id, id)
+        .await
+        .map_err(|_error| {
+            ApiError::internal(
+                "classification.persistence",
+                "classification suggestion query failed",
+            )
+        })?;
+    let classification = TransactionClassificationResponse {
+        target: state
+            .classification
+            .target_for_transaction(user_id, id)
+            .await
+            .map_err(|_| {
+                ApiError::internal(
+                    "classification.persistence",
+                    "classification target query failed",
+                )
+            })?,
+        assignment_origin: journal
+            .annotation
+            .as_ref()
+            .and_then(|annotation| annotation.assignment_origin),
+        automation_state: journal
+            .annotation
+            .as_ref()
+            .map(|annotation| annotation.automation_state),
+        decision,
+    };
+    Ok(Json(TransactionDetailResponse {
+        journal,
+        classification,
+    }))
 }
 
 pub(crate) async fn update_annotation(
@@ -292,7 +419,7 @@ pub(crate) async fn update_annotation(
             expected_version: AnnotationVersion::new(request.expected_version)
                 .map_err(map_ledger_error)?,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -320,7 +447,7 @@ pub(crate) async fn reverse_transaction(
             journal_entry_id: JournalEntryId::new(id),
             reason: request.reason,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -358,7 +485,7 @@ pub(crate) async fn replace_transaction(
             tags,
             budget_visibility: request.budget_visibility,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -405,7 +532,7 @@ pub(crate) async fn transfer(
             implied_rate,
             description: request.description,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -438,7 +565,7 @@ pub(crate) async fn correct_balance(
             reason: request.reason,
             observed_at: request.observed_at,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -490,7 +617,7 @@ pub(crate) async fn approve_reconciliation(
                 .map_err(map_ledger_error)?,
             reason: request.reason,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             causation_id: None,
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
@@ -515,7 +642,7 @@ pub(crate) async fn dismiss_reconciliation(
                 .map_err(map_ledger_error)?,
             reason: request.reason,
             idempotency_key: idempotency_key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             occurred_at: request.occurred_at.unwrap_or_else(Utc::now),
         })
         .await
@@ -565,7 +692,14 @@ fn account_version(value: i64) -> Result<AccountVersion, ApiError> {
 }
 
 fn cursor(query: &ActivityQuery) -> Result<Option<ActivityCursor>, ApiError> {
-    match (query.after_occurred_at, query.after_sequence) {
+    cursor_values(query.after_occurred_at, query.after_sequence)
+}
+
+fn cursor_values(
+    after_occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    after_sequence: Option<i64>,
+) -> Result<Option<ActivityCursor>, ApiError> {
+    match (after_occurred_at, after_sequence) {
         (None, None) => Ok(None),
         (Some(occurred_at), Some(ledger_sequence)) if ledger_sequence > 0 => {
             Ok(Some(ActivityCursor {
@@ -583,7 +717,10 @@ fn map_currency_error(error: CurrencyError) -> ApiError {
     if error.is_not_found() || error.is_disabled() {
         ApiError::bad_request("currency is unknown or inactive")
     } else {
-        ApiError::internal()
+        ApiError::internal(
+            "reference_data.persistence",
+            "currency storage operation failed",
+        )
     }
 }
 
@@ -597,8 +734,21 @@ fn map_ledger_error(error: LedgerError) -> ApiError {
     {
         ApiError::conflict("ledger conflict")
     } else if error.is_persistence() {
-        ApiError::internal()
+        ApiError::internal("ledger.persistence", "ledger storage operation failed")
     } else {
         ApiError::bad_request("invalid ledger request")
+    }
+}
+
+fn map_classification_error(error: ClassificationError) -> ApiError {
+    if error.is_not_found() {
+        ApiError::not_found("category was not found")
+    } else if error.is_persistence() {
+        ApiError::internal(
+            "classification.persistence",
+            "classification storage operation failed",
+        )
+    } else {
+        ApiError::bad_request("invalid category filter")
     }
 }

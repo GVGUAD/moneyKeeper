@@ -15,7 +15,7 @@ use super::{dto::*, routes::SharingApiState};
 use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::reference_data::public::CurrencyCatalog;
 use crate::contexts::sharing::public::*;
-use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money};
+use crate::shared_kernel::{CurrencyCode, IdempotencyKey, Money};
 
 fn metadata(
     user_id: crate::shared_kernel::UserId,
@@ -32,7 +32,7 @@ fn metadata(
         idempotency_key: IdempotencyKey::new(value)
             .map_err(|_| ApiError::bad_request("invalid Idempotency-Key"))?,
         request_hash: hash,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         occurred_at,
     })
 }
@@ -408,7 +408,9 @@ fn map_domain(error: SharingError) -> ApiError {
         | SharingError::IdempotencyConflict
         | SharingError::ActiveSettlements
         | SharingError::AccountingPending => ApiError::conflict("sharing conflict"),
-        SharingError::Persistence(_) => ApiError::internal(),
+        SharingError::Persistence(_) => {
+            ApiError::internal("sharing.persistence", "sharing storage operation failed")
+        }
         _ => ApiError::bad_request("invalid sharing command"),
     }
 }

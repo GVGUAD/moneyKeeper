@@ -6,6 +6,11 @@ use async_trait::async_trait;
 use chrono::Duration;
 use chrono::Utc;
 use moneykeeper::contexts::banking::adapters::Aes256CredentialCipher;
+use moneykeeper::contexts::classification::public::CategoryCatalog;
+use moneykeeper::contexts::ledger::public::{
+    AnnotationChanges, AssignmentOrigin, AutomationState, CategoryReference,
+    UpdateTransactionAnnotation,
+};
 use moneykeeper::contexts::{
     banking::{self, public::*},
     ledger::public::{AccountKind, AccountNature, OpenAccount},
@@ -357,6 +362,28 @@ async fn provider_revisions_post_once_and_corrections_and_reversals_remain_visib
         ledger.list_journals(user, None, 100).await.unwrap().len(),
         1
     );
+    let original = ledger
+        .list_journals(user, None, 100)
+        .await
+        .unwrap()
+        .remove(0);
+    let taxonomy = supporting.categories.taxonomy(user, now).await.unwrap();
+    let groceries = taxonomy.roots[1].children[1].children[0].category.id;
+    ledger
+        .update_annotation(UpdateTransactionAnnotation {
+            user_id: user,
+            journal_entry_id: original.id,
+            changes: AnnotationChanges {
+                category: Some(Some(CategoryReference::new(groceries.into_uuid()))),
+                ..Default::default()
+            },
+            expected_version: original.annotation.unwrap().version,
+            idempotency_key: IdempotencyKey::new("assign-import-manually").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            occurred_at: now,
+        })
+        .await
+        .unwrap();
     let corrected = banking
         .intake_provider_event(add(
             3,
@@ -378,6 +405,17 @@ async fn provider_revisions_post_once_and_corrections_and_reversals_remain_visib
         ledger.list_journals(user, None, 100).await.unwrap().len(),
         3
     );
+    let corrected_journal = ledger
+        .list_journals(user, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|journal| journal.id != original.id && journal.annotation.is_some())
+        .unwrap();
+    let annotation = corrected_journal.annotation.unwrap();
+    assert_eq!(annotation.category_id, Some(groceries));
+    assert_eq!(annotation.assignment_origin, Some(AssignmentOrigin::Manual));
+    assert_eq!(annotation.automation_state, AutomationState::Suppressed);
     let reversed = banking
         .intake_provider_event(add(
             4,

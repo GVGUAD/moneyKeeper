@@ -1,7 +1,5 @@
 //! PostgreSQL Banking store.
 
-use std::collections::BTreeMap;
-
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -14,13 +12,14 @@ use crate::{
             BeginSyncPage, BindExistingResource, CompleteSyncPage, ConnectProvider,
             ConnectionResult, CreateAndMapResource, CredentialBinding, CredentialCipher,
             DeactivateResourceMapping, ExternalResourceView, IntakeProviderEvent,
-            NormalizedResource, ProviderAccountSummary, ProviderClient, ProviderConnectionView,
-            ProviderCredential, ProviderEventIntakeOutcome, ProviderEventReadyV1,
-            ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
-            RecordBalanceObservation, ReplaceProviderCredential, RequestSyncJob, ResourceBinding,
-            ResourceMappingResult, ResourceMappingView, RotateWebhookCredential, SyncJobView,
-            SyncPageView, WebhookCredential, WebhookReceiptOutcome, WebhookRegistrationWork,
-            WebhookRotationResult, WebhookSecrets,
+            NormalizedResource, ProviderAccountSummary, ProviderClassificationEvidence,
+            ProviderClient, ProviderConnectionView, ProviderCredential, ProviderCurrencyMap,
+            ProviderEventIntakeOutcome, ProviderEventReadyV1, ProviderEventReceipt,
+            ProviderEventView, ProviderImportOutcome, ProviderImportWork,
+            ProviderTransactionImportedV1, RecordBalanceObservation, ReplaceProviderCredential,
+            RequestSyncJob, ResourceBinding, ResourceMappingResult, ResourceMappingView,
+            RotateWebhookCredential, SyncJobView, SyncPageView, WebhookCredential,
+            WebhookReceiptOutcome, WebhookRegistrationWork, WebhookRotationResult, WebhookSecrets,
         },
         domain::{
             BalanceBasis, BalanceComparability, BalanceObservationId, BankingError,
@@ -222,7 +221,7 @@ impl PgBankingStore {
         connection_id: ProviderConnectionId,
         cipher: &dyn CredentialCipher,
         provider_client: &dyn ProviderClient,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedResource>, BankingError> {
         let row = self.connection_row(user_id, connection_id).await?;
         let candidate = row.state == "pending_credential_validation";
@@ -444,6 +443,69 @@ impl PgBankingStore {
             version: row.get("process_version"),
             next_wake_at: row.get("next_retry_at"),
         })
+    }
+
+    pub(crate) async fn classification_evidence(
+        &self,
+        user_id: UserId,
+        id: ProviderEventId,
+    ) -> Result<ProviderClassificationEvidence, BankingError> {
+        let row = sqlx::query(
+            "SELECT connection.provider,event.operation_amount,event.operation_currency,
+                    event.description,event.merchant_mcc,event.effective_at,
+                    process.ledger_journal_entry_id
+             FROM banking.provider_events event
+             JOIN banking.provider_connections connection
+               ON connection.id=event.connection_id AND connection.user_id=event.user_id
+             JOIN banking.provider_event_processes process
+               ON process.provider_event_id=event.id AND process.user_id=event.user_id
+             WHERE event.id=$1 AND event.user_id=$2 AND process.state='posted'
+               AND process.ledger_journal_entry_id IS NOT NULL",
+        )
+        .bind(id.into_uuid())
+        .bind(user_id.into_uuid())
+        .fetch_optional(&self.uow.pool)
+        .await
+        .map_err(database)?
+        .ok_or(BankingError::InvalidState)?;
+        let currency = CurrencyCode::new(row.get::<String, _>("operation_currency"))
+            .map_err(|_| BankingError::InvalidValue("stored event currency invalid"))?;
+        Ok(ProviderClassificationEvidence {
+            provider_event_id: id,
+            journal_entry_id: JournalEntryId::new(row.get("ledger_journal_entry_id")),
+            provider: row.get("provider"),
+            operation_money: Money::new(row.get("operation_amount"), currency, 8)
+                .map_err(|_| BankingError::InvalidValue("stored event money invalid"))?,
+            description: row.get("description"),
+            merchant_mcc: row.get("merchant_mcc"),
+            effective_at: row.get("effective_at"),
+        })
+    }
+
+    pub(crate) async fn classification_evidence_for_journal(
+        &self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+    ) -> Result<Option<ProviderClassificationEvidence>, BankingError> {
+        let provider_event_id = sqlx::query_scalar::<_, uuid::Uuid>(
+            "SELECT process.provider_event_id
+             FROM banking.provider_event_processes process
+             WHERE process.user_id=$1 AND process.ledger_journal_entry_id=$2
+               AND process.state='posted'
+             ORDER BY process.updated_at DESC,process.provider_event_id DESC LIMIT 1",
+        )
+        .bind(user_id.into_uuid())
+        .bind(journal_entry_id.into_uuid())
+        .fetch_optional(&self.uow.pool)
+        .await
+        .map_err(database)?;
+        match provider_event_id {
+            Some(id) => self
+                .classification_evidence(user_id, ProviderEventId::new(id))
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
     }
 
     pub(crate) async fn get_balance_observation(
@@ -1096,23 +1158,85 @@ impl PgBankingStore {
             .as_deref()
             .ok_or(BankingError::LeaseFenced)?;
         let token = outcome.fencing_token.ok_or(BankingError::LeaseFenced)?;
-        let row=sqlx::query("UPDATE banking.provider_event_processes SET state=$2,ledger_journal_entry_id=$3,last_error=NULL,lease_holder=NULL,lease_expires_at=NULL,process_version=process_version+1,updated_at=clock_timestamp() WHERE provider_event_id=$1 AND user_id=(SELECT user_id FROM banking.provider_events WHERE id=$1) AND state='posting' AND lease_holder=$4 AND lease_token=$5 AND lease_expires_at>clock_timestamp() RETURNING state,ledger_journal_entry_id").bind(outcome.provider_event_id.into_uuid()).bind(&outcome.state).bind(outcome.ledger_journal_entry_id.map(JournalEntryId::into_uuid)).bind(holder).bind(token).fetch_optional(&self.uow.pool).await.map_err(database)?;
-        match row {
-            Some(row) => Ok(ProviderImportOutcome {
-                provider_event_id: outcome.provider_event_id,
-                state: row.get("state"),
-                ledger_journal_entry_id: row
-                    .get::<Option<uuid::Uuid>, _>("ledger_journal_entry_id")
-                    .map(JournalEntryId::new),
-                replayed: false,
-                lease_holder: None,
-                fencing_token: None,
-            }),
-            None => Ok(ProviderImportOutcome {
+        let mut tx = self.uow.pool.begin().await.map_err(database)?;
+        let row = sqlx::query(
+            "UPDATE banking.provider_event_processes
+             SET state=$2,ledger_journal_entry_id=$3,last_error=NULL,lease_holder=NULL,
+                 lease_expires_at=NULL,process_version=process_version+1,
+                 updated_at=clock_timestamp()
+             WHERE provider_event_id=$1
+               AND user_id=(SELECT user_id FROM banking.provider_events WHERE id=$1)
+               AND state='posting' AND lease_holder=$4 AND lease_token=$5
+               AND lease_expires_at>clock_timestamp()
+             RETURNING state,ledger_journal_entry_id,user_id,process_version,updated_at",
+        )
+        .bind(outcome.provider_event_id.into_uuid())
+        .bind(&outcome.state)
+        .bind(
+            outcome
+                .ledger_journal_entry_id
+                .map(JournalEntryId::into_uuid),
+        )
+        .bind(holder)
+        .bind(token)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(database)?;
+        let Some(row) = row else {
+            tx.rollback().await.map_err(database)?;
+            return Ok(ProviderImportOutcome {
                 replayed: true,
                 ..outcome
-            }),
+            });
+        };
+        let state: String = row.get("state");
+        let journal_entry_id = row
+            .get::<Option<uuid::Uuid>, _>("ledger_journal_entry_id")
+            .map(JournalEntryId::new);
+        let event_user = UserId::new(row.get("user_id"));
+        let process_version: i64 = row.get("process_version");
+        let recorded_at: chrono::DateTime<chrono::Utc> = row.get("updated_at");
+        if state == "posted"
+            && let Some(journal_entry_id) = journal_entry_id
+        {
+            let payload = ProviderTransactionImportedV1 {
+                provider_event_id: outcome.provider_event_id,
+                journal_entry_id,
+            };
+            let envelope = EventEnvelope::new(
+                EventId::generate(),
+                "banking",
+                outcome.provider_event_id.to_string(),
+                u64::try_from(process_version).map_err(|_| {
+                    BankingError::InvalidValue("provider process version is invalid")
+                })?,
+                super::super::application::PROVIDER_TRANSACTION_IMPORTED_V1,
+                1,
+                event_user,
+                recorded_at,
+                crate::shared_kernel::CorrelationId::new(outcome.provider_event_id.into_uuid()),
+                None,
+            )
+            .map_err(|_| BankingError::InvalidValue("cannot create import event envelope"))?;
+            PgOutboxWriter::from_transaction(&mut tx)
+                .append(&IntegrationEvent::new(
+                    envelope,
+                    serde_json::to_value(payload).map_err(|_| {
+                        BankingError::InvalidValue("cannot serialize provider import event")
+                    })?,
+                ))
+                .await
+                .map_err(|_| BankingError::InvalidValue("cannot append provider import event"))?;
         }
+        tx.commit().await.map_err(database)?;
+        Ok(ProviderImportOutcome {
+            provider_event_id: outcome.provider_event_id,
+            state,
+            ledger_journal_entry_id: journal_entry_id,
+            replayed: false,
+            lease_holder: None,
+            fencing_token: None,
+        })
     }
 
     pub(crate) async fn record_balance_observation(

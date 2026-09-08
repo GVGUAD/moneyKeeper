@@ -48,27 +48,6 @@ async fn record_manual_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
             "manual transaction amount must be positive",
         ));
     }
-    let category = match command.category_id {
-        Some(id) => {
-            let category = categories
-                .require_active(command.user_id, id)
-                .await
-                .map_err(|_| LedgerError::invalid_annotation("category is missing or archived"))?;
-            let allowed = matches!(category.kind, CategoryKind::Both)
-                || matches!(
-                    (command.kind, category.kind),
-                    (ManualTransactionKind::Income, CategoryKind::Income)
-                        | (ManualTransactionKind::Expense, CategoryKind::Expense)
-                );
-            if !allowed {
-                return Err(LedgerError::invalid_annotation(
-                    "category kind is incompatible with the transaction",
-                ));
-            }
-            Some(CategoryReference::new(id.into_uuid()))
-        }
-        None => None,
-    };
     let request = json!({
         "account_id": command.account_id,
         "kind": command.kind,
@@ -98,6 +77,31 @@ async fn record_manual_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
         tx.rollback().await?;
         return Ok(result);
     }
+
+    // A valid idempotent replay must not start failing merely because its
+    // category was later archived or turned into a group. Validate only after
+    // the durable receipt lookup for a genuinely new command.
+    let category = match command.category_id {
+        Some(id) => {
+            categories
+                .require_assignable(
+                    command.user_id,
+                    id,
+                    match command.kind {
+                        ManualTransactionKind::Income => CategoryKind::Income,
+                        ManualTransactionKind::Expense => CategoryKind::Expense,
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    LedgerError::invalid_annotation(
+                        "category is missing, archived, not a leaf, or incompatible",
+                    )
+                })?;
+            Some(CategoryReference::new(id.into_uuid()))
+        }
+        None => None,
+    };
 
     let outcome = async {
         let account = tx

@@ -3,6 +3,7 @@
 
 use chrono::Utc;
 use rust_decimal::Decimal;
+use tracing::Instrument as _;
 
 use crate::contexts::ledger::public::{
     ControlAccountRole, ControlDirection, EnsureTypedControlAccount, ImportProviderTransaction,
@@ -35,7 +36,15 @@ impl LoanAccountingWorker {
         let Some(pending) = self.loans.pending_accounting(1).await?.into_iter().next() else {
             return Ok(LoanAccountingReport::default());
         };
-        match self.post(&pending).await {
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "loans.accounting",
+            loan_id = %pending.movement.agreement_id,
+            movement_id = %pending.movement.id,
+            correlation_id = %pending.movement.correlation_id,
+        );
+        item_span.in_scope(log_claimed);
+        match self.post(&pending).instrument(item_span).await {
             Ok(journal) => {
                 self.loans
                     .confirm_accounting(
@@ -266,6 +275,14 @@ impl LoanAccountingWorker {
             .await?
             .journal_entry_id)
     }
+}
+
+fn log_claimed() {
+    tracing::info!(
+        event.name = "worker.item.claimed",
+        outcome = "claimed",
+        "Worker item claimed"
+    );
 }
 
 fn metadata(p: &PendingLoanMovement, suffix: &str) -> anyhow::Result<InternalCommandMetadata> {

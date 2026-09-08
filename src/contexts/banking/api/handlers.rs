@@ -10,7 +10,7 @@ use super::dto::*;
 use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::banking::public::*;
 use crate::contexts::ledger::public::LedgerAccountId;
-use crate::shared_kernel::{CorrelationId, IdempotencyKey};
+use crate::shared_kernel::IdempotencyKey;
 
 pub(crate) async fn connect(
     AuthenticatedUser(user): AuthenticatedUser,
@@ -24,7 +24,7 @@ pub(crate) async fn connect(
             provider: "monobank".to_owned(),
             credential: ProviderCredential::new(request.x_token).map_err(map)?,
             idempotency_key: key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             requested_at: Utc::now(),
         })
         .await
@@ -81,7 +81,7 @@ pub(crate) async fn replace_credential(
             credential: ProviderCredential::new(request.x_token).map_err(map)?,
             expected_version: ConnectionVersion::new(request.expected_version).map_err(map)?,
             idempotency_key: key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             requested_at: Utc::now(),
         })
         .await
@@ -143,7 +143,7 @@ pub(crate) async fn map_resource(
                 ledger_account_id: LedgerAccountId::new(account),
                 expected_resource_version: request.expected_version,
                 idempotency_key: key(&headers)?,
-                correlation_id: CorrelationId::generate(),
+                correlation_id: crate::api::request_correlation_id(),
                 requested_at: Utc::now(),
             })
             .await
@@ -157,7 +157,7 @@ pub(crate) async fn map_resource(
                     .ok_or_else(|| ApiError::bad_request("account_name is required"))?,
                 expected_resource_version: request.expected_version,
                 idempotency_key: key(&headers)?,
-                correlation_id: CorrelationId::generate(),
+                correlation_id: crate::api::request_correlation_id(),
                 requested_at: Utc::now(),
             })
             .await
@@ -187,7 +187,7 @@ pub(crate) async fn deactivate_mapping(
             expected_resource_version: request.expected_version,
             reason: request.reason,
             idempotency_key: key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             requested_at: Utc::now(),
         })
         .await
@@ -216,7 +216,7 @@ pub(crate) async fn replace_mapping(
             expected_resource_version: request.expected_version,
             reason: request.reason,
             idempotency_key: key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
             requested_at: Utc::now(),
         })
         .await
@@ -229,7 +229,7 @@ pub(crate) async fn replace_mapping(
                 ledger_account_id: LedgerAccountId::new(account),
                 expected_resource_version: request.expected_version + 1,
                 idempotency_key: key(&headers)?,
-                correlation_id: CorrelationId::generate(),
+                correlation_id: crate::api::request_correlation_id(),
                 requested_at: Utc::now(),
             })
             .await
@@ -243,7 +243,7 @@ pub(crate) async fn replace_mapping(
                     .ok_or_else(|| ApiError::bad_request("account_name is required"))?,
                 expected_resource_version: request.expected_version + 1,
                 idempotency_key: key(&headers)?,
-                correlation_id: CorrelationId::generate(),
+                correlation_id: crate::api::request_correlation_id(),
                 requested_at: Utc::now(),
             })
             .await
@@ -267,7 +267,7 @@ pub(crate) async fn request_sync(
             requested_to: request.requested_to,
             overlap_seconds: request.overlap_seconds,
             idempotency_key: key(&headers)?,
-            correlation_id: CorrelationId::generate(),
+            correlation_id: crate::api::request_correlation_id(),
         })
         .await
         .map_err(map)?;

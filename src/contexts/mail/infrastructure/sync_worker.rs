@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Row, Transaction};
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 use crate::contexts::mail::application::ports::{GmailMessage, GmailOAuth, GmailSource};
@@ -79,6 +80,19 @@ where
         let Some(claim) = self.claim().await? else {
             return Ok(SyncReport::default());
         };
+        let item_span = tracing::info_span!(
+            "worker.item",
+            operation = "mail.sync",
+            mail_job_id = %claim.job_id,
+            connection_id = %claim.connection_id,
+        );
+        item_span.in_scope(|| {
+            tracing::info!(
+                event.name = "worker.item.claimed",
+                outcome = "claimed",
+                "Worker item claimed"
+            );
+        });
         let token = match self.crypto.decrypt(
             &claim.credential_ciphertext,
             &claim.credential_nonce,
@@ -116,7 +130,12 @@ where
                     ..SyncReport::default()
                 });
             };
-            let refreshed = match self.oauth.refresh(refresh_token).await {
+            let refreshed = match self
+                .oauth
+                .refresh(refresh_token)
+                .instrument(item_span.clone())
+                .await
+            {
                 Ok(refreshed) => refreshed,
                 Err(error)
                     if matches!(
@@ -162,6 +181,7 @@ where
         let page = match self
             .source
             .fetch_page(&credential.access_token, claim.cursor.as_deref())
+            .instrument(item_span)
             .await
         {
             Ok(page) => page,

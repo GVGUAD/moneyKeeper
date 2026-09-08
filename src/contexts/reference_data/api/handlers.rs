@@ -48,7 +48,10 @@ pub(crate) async fn fx_rate(
         Err(error) if error.is_not_found() => Ok(Json(
             serde_json::json!({"status":"missing","as_of":query.as_of}),
         )),
-        Err(_) => Err(ApiError::internal()),
+        Err(_) => Err(ApiError::internal(
+            "reference_data.persistence",
+            "FX rate query failed",
+        )),
     }
 }
 
@@ -56,6 +59,9 @@ fn map_error(error: CurrencyError) -> ApiError {
     if error.is_not_found() || error.is_disabled() {
         ApiError::not_found("currency was not found")
     } else {
-        ApiError::internal()
+        ApiError::internal(
+            "reference_data.persistence",
+            "currency storage operation failed",
+        )
     }
 }

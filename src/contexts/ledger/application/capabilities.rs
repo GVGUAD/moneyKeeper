@@ -29,6 +29,18 @@ pub(crate) trait LedgerCommandCapability: Send + Sync {
         &self,
         command: UpdateTransactionAnnotation,
     ) -> Result<AnnotationResult, LedgerError>;
+    async fn apply_category_assignment(
+        &self,
+        command: ApplyCategoryAssignment,
+    ) -> Result<CategoryAssignmentResult, LedgerError>;
+    async fn restore_category_assignment(
+        &self,
+        command: RestoreCategoryAssignment,
+    ) -> Result<CategoryAssignmentResult, LedgerError>;
+    async fn enable_automatic_classification(
+        &self,
+        command: EnableAutomaticClassification,
+    ) -> Result<CategoryAssignmentResult, LedgerError>;
     async fn correct_balance(
         &self,
         command: CorrectBalance,
@@ -68,6 +80,18 @@ pub(crate) trait LedgerQueryCapability: Send + Sync {
         after: Option<ActivityCursor>,
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError>;
     async fn get_journal(
         &self,
         user_id: UserId,
@@ -170,7 +194,7 @@ pub(crate) trait LedgerInternalAccountingCapability: Send + Sync {
 impl<U, Q, P> LedgerCommandCapability for LedgerApplication<U, Q, P>
 where
     U: LedgerUnitOfWork + Send + Sync,
-    Q: Send + Sync,
+    Q: LedgerQueryPort + Send + Sync,
     P: Send + Sync,
 {
     async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError> {
@@ -205,6 +229,24 @@ where
         command: UpdateTransactionAnnotation,
     ) -> Result<AnnotationResult, LedgerError> {
         LedgerApplication::update_annotation(self, command).await
+    }
+    async fn apply_category_assignment(
+        &self,
+        command: ApplyCategoryAssignment,
+    ) -> Result<CategoryAssignmentResult, LedgerError> {
+        LedgerApplication::apply_category_assignment(self, command).await
+    }
+    async fn restore_category_assignment(
+        &self,
+        command: RestoreCategoryAssignment,
+    ) -> Result<CategoryAssignmentResult, LedgerError> {
+        LedgerApplication::restore_category_assignment(self, command).await
+    }
+    async fn enable_automatic_classification(
+        &self,
+        command: EnableAutomaticClassification,
+    ) -> Result<CategoryAssignmentResult, LedgerError> {
+        LedgerApplication::enable_automatic_classification(self, command).await
     }
     async fn correct_balance(
         &self,
@@ -265,6 +307,22 @@ where
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError> {
         LedgerApplication::list_journals(self, user_id, after, limit).await
+    }
+    async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        LedgerApplication::list_activity(self, user_id, filter, after, limit).await
+    }
+    async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError> {
+        LedgerApplication::summarize_activity(self, user_id, filter).await
     }
     async fn get_journal(
         &self,

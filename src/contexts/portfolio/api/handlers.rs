@@ -2,7 +2,7 @@ use super::dto::*;
 use crate::api::{ApiError, ApiJson, AuthenticatedUser};
 use crate::contexts::ledger::public::LedgerAccountId;
 use crate::contexts::portfolio::public::*;
-use crate::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey};
+use crate::shared_kernel::{CurrencyCode, IdempotencyKey};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -49,7 +49,7 @@ pub(crate) async fn create_ovdp(
         maturity_date: b.maturity_date,
         coupon_terms,
         idempotency_key: key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         occurred_at: Utc::now(),
     };
     Ok((
@@ -67,7 +67,7 @@ pub(crate) async fn open_account(
         user_id: user,
         name: b.name,
         idempotency_key: key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         occurred_at: Utc::now(),
     };
     Ok((
@@ -205,7 +205,7 @@ pub(crate) async fn record_valuation(
         source: b.source,
         quoted_at: b.quoted_at,
         idempotency_key: key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         recorded_at: Utc::now(),
     };
     Ok((
@@ -321,7 +321,7 @@ pub(crate) async fn record_transaction(
         cash_settlement: cash,
         actor_id: PortfolioActorId::new(user.into_uuid()),
         idempotency_key: key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         recorded_at: Utc::now(),
     };
     Ok((
@@ -344,7 +344,7 @@ pub(crate) async fn reverse_transaction(
         reason: b.reason,
         actor_id: PortfolioActorId::new(user.into_uuid()),
         idempotency_key: key(&headers)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         recorded_at: Utc::now(),
     };
     Ok((
@@ -365,7 +365,7 @@ fn change(
         expected_version: expected,
         name,
         idempotency_key: key(h)?,
-        correlation_id: CorrelationId::generate(),
+        correlation_id: crate::api::request_correlation_id(),
         occurred_at: Utc::now(),
     })
 }

@@ -1,6 +1,9 @@
 //! Moneykeeper composition root and application lifecycle.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use axum::extract::{Request, State};
@@ -19,7 +22,9 @@ use crate::contexts::banking::{
     adapters::{Aes256CredentialCipher, MonobankClient},
     public::BankingFacade,
 };
-use crate::contexts::classification::public::CategoryCatalogFacade;
+use crate::contexts::classification::public::{
+    CategoryCatalogFacade, ClassificationAutomationFacade,
+};
 use crate::contexts::ledger::public::LedgerFacade;
 use crate::contexts::loans::public::LoansFacade;
 use crate::contexts::mail::public::MailFacade;
@@ -37,6 +42,9 @@ pub struct RuntimeSecrets {
     banking_key_id: String,
     banking_key: [u8; 32],
     webhook_digest_key: [u8; 32],
+    openai_api_key: String,
+    classification_model: String,
+    classification_auto_apply: bool,
 }
 
 impl std::fmt::Debug for RuntimeSecrets {
@@ -46,6 +54,9 @@ impl std::fmt::Debug for RuntimeSecrets {
             .field("banking_key_id", &self.banking_key_id)
             .field("banking_key", &"[REDACTED]")
             .field("webhook_digest_key", &"[REDACTED]")
+            .field("openai_api_key", &"[REDACTED]")
+            .field("classification_model", &self.classification_model)
+            .field("classification_auto_apply", &self.classification_auto_apply)
             .finish()
     }
 }
@@ -60,10 +71,30 @@ impl RuntimeSecrets {
                 && !banking_key_id.chars().any(char::is_control),
             "FINANCE_V2_ENCRYPTION_KEY_ID is invalid"
         );
+        let classification_model = std::env::var("CLASSIFICATION_MODEL").unwrap_or_else(|_| {
+            crate::contexts::classification::automation::DEFAULT_OPENAI_MODEL.to_owned()
+        });
+        anyhow::ensure!(
+            classification_model.trim() == classification_model
+                && !classification_model.is_empty()
+                && classification_model.len() <= 200
+                && !classification_model.chars().any(char::is_control),
+            "CLASSIFICATION_MODEL is invalid"
+        );
+        let classification_auto_apply = match std::env::var("CLASSIFICATION_AUTO_APPLY") {
+            Ok(value) if value.eq_ignore_ascii_case("true") => true,
+            Ok(value) if value.eq_ignore_ascii_case("false") => false,
+            Ok(_) => anyhow::bail!("CLASSIFICATION_AUTO_APPLY must be true or false"),
+            Err(std::env::VarError::NotPresent) => false,
+            Err(error) => return Err(error).context("read CLASSIFICATION_AUTO_APPLY"),
+        };
         Ok(Self {
             banking_key_id,
             banking_key: decode_key("FINANCE_V2_ENCRYPTION_KEY")?,
             webhook_digest_key: decode_key("FINANCE_V2_WEBHOOK_DIGEST_KEY")?,
+            openai_api_key: required_environment("OPENAI_API_KEY")?,
+            classification_model,
+            classification_auto_apply,
         })
     }
 
@@ -76,7 +107,23 @@ impl RuntimeSecrets {
             banking_key_id: "ephemeral-moneykeeper".to_owned(),
             banking_key,
             webhook_digest_key,
+            openai_api_key: "ephemeral-openai-key".to_owned(),
+            classification_model: crate::contexts::classification::automation::DEFAULT_OPENAI_MODEL
+                .to_owned(),
+            classification_auto_apply: false,
         }
+    }
+
+    pub(crate) fn openai_api_key(&self) -> &str {
+        &self.openai_api_key
+    }
+
+    pub(crate) fn classification_model(&self) -> &str {
+        &self.classification_model
+    }
+
+    pub(crate) const fn classification_auto_apply(&self) -> bool {
+        self.classification_auto_apply
     }
 }
 
@@ -227,6 +274,7 @@ mod webhook_base_url_tests {
 pub struct ContextFacades {
     pub currencies: CurrencyCatalogFacade,
     pub categories: CategoryCatalogFacade,
+    pub classification: ClassificationAutomationFacade,
     pub preferences: PreferencesFacade,
     pub ledger: LedgerFacade,
     pub banking: BankingFacade,
@@ -249,6 +297,7 @@ pub fn build_contexts_with_secrets(
     secrets: &RuntimeSecrets,
 ) -> ContextFacades {
     let categories = crate::contexts::classification::build(pool);
+    let classification = crate::contexts::classification::build_automation(pool);
     let currencies = crate::contexts::reference_data::build(pool);
     let ledger = crate::contexts::ledger::build_with_categories(pool, categories.clone());
     let banking = crate::contexts::banking::build_with_ledger(
@@ -265,6 +314,7 @@ pub fn build_contexts_with_secrets(
     ContextFacades {
         currencies,
         categories: categories.clone(),
+        classification,
         preferences: crate::contexts::preferences::build(pool),
         ledger,
         banking,
@@ -306,6 +356,18 @@ pub struct WorkerRunReport {
     pub replayed: u32,
     pub retry_scheduled: bool,
     pub fenced: bool,
+    pub dead_lettered: u32,
+}
+
+impl WorkerRunReport {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.claimed |= other.claimed;
+        self.records = self.records.saturating_add(other.records);
+        self.replayed = self.replayed.saturating_add(other.replayed);
+        self.retry_scheduled |= other.retry_scheduled;
+        self.fenced |= other.fenced;
+        self.dead_lettered = self.dead_lettered.saturating_add(other.dead_lettered);
+    }
 }
 
 impl ContextMaintenanceWorkers {
@@ -317,6 +379,7 @@ impl ContextMaintenanceWorkers {
             replayed: 0,
             retry_scheduled: report.retry_scheduled,
             fenced: report.fenced,
+            dead_lettered: 0,
         })
     }
 
@@ -328,6 +391,7 @@ impl ContextMaintenanceWorkers {
             replayed: report.replayed,
             retry_scheduled: report.retry_scheduled,
             fenced: report.fenced,
+            dead_lettered: 0,
         })
     }
 
@@ -339,6 +403,7 @@ impl ContextMaintenanceWorkers {
             replayed: 0,
             retry_scheduled: report.retry_scheduled,
             fenced: report.fenced,
+            dead_lettered: 0,
         })
     }
 }
@@ -428,6 +493,27 @@ pub fn event_consumers(pool: &VerifiedDatabase) -> EventConsumers {
     }
 }
 
+/// Classification intake, provider, application, and historical workers.
+pub(crate) fn classification_runtime(
+    pool: &VerifiedDatabase,
+    contexts: &ContextFacades,
+    secrets: &RuntimeSecrets,
+) -> anyhow::Result<crate::integration::classification::ClassificationRuntime> {
+    let classifier = crate::contexts::classification::automation::OpenAiResponsesClassifier::new(
+        secrets.openai_api_key().to_owned(),
+        Some(secrets.classification_model().to_owned()),
+    )?;
+    crate::integration::classification::ClassificationRuntime::new(
+        pool.pool().clone(),
+        contexts.ledger.clone(),
+        contexts.banking.clone(),
+        contexts.categories.clone(),
+        contexts.classification.clone(),
+        Arc::new(classifier),
+        secrets.classification_auto_apply(),
+    )
+}
+
 /// Loan accounting process managers coordinated through public contracts.
 pub struct LoanAccountingWorkers {
     opening: crate::integration::process_managers::loan_opening::LoanOpeningWorker,
@@ -445,6 +531,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
     pub async fn run_accounting_once(&self) -> anyhow::Result<WorkerRunReport> {
@@ -455,6 +542,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
     pub async fn run_reversal_once(&self) -> anyhow::Result<WorkerRunReport> {
@@ -465,6 +553,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
     pub async fn run_replacement_once(&self) -> anyhow::Result<WorkerRunReport> {
@@ -475,6 +564,7 @@ impl LoanAccountingWorkers {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
 }
@@ -520,6 +610,7 @@ impl PortfolioSettlementRunner {
             replayed: 0,
             retry_scheduled: r.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
 }
@@ -550,6 +641,7 @@ impl SharingWorkflowRunner {
             replayed: 0,
             retry_scheduled: report.retry_due,
             fenced: false,
+            dead_lettered: 0,
         })
     }
 }
@@ -691,6 +783,14 @@ pub async fn serve<F>(
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    let serving_started = Instant::now();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "http",
+        outcome = "starting",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
     let health = Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
@@ -699,7 +799,9 @@ where
         readiness.clone(),
         require_readiness,
     ));
-    let application = health.merge(business);
+    let application = health
+        .merge(business)
+        .layer(middleware::from_fn(crate::api::middleware::trace_request));
 
     let (stop_http, mut stop_http_rx) = tokio::sync::watch::channel(false);
     let http = tokio::spawn(async move {
@@ -715,10 +817,20 @@ where
     });
     tokio::task::yield_now().await;
 
+    let worker_barrier_started = Instant::now();
     let worker_runtime = match workers.start().await {
         Ok(runtime) => runtime,
         Err(error) => {
             readiness.mark_not_ready();
+            tracing::error!(
+                event.name = "app.lifecycle",
+                stage = "worker_barrier",
+                outcome = "failed",
+                error.category = "worker.startup",
+                error.message = "worker startup barrier failed",
+                duration_ms = elapsed_ms(worker_barrier_started.elapsed()),
+                "Application lifecycle transition"
+            );
             let _ = stop_http.send(true);
             http.await
                 .context("join not-ready Moneykeeper HTTP listener")??;
@@ -726,12 +838,61 @@ where
         }
     };
     readiness.mark_ready();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "readiness",
+        outcome = "ready",
+        duration_ms = elapsed_ms(serving_started.elapsed()),
+        "Application lifecycle transition"
+    );
 
     shutdown.await;
+    let shutdown_started = Instant::now();
     readiness.mark_not_ready();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "readiness",
+        outcome = "not_ready",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "http_draining",
+        outcome = "started",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
     let _ = stop_http.send(true);
     http.await.context("join Moneykeeper HTTP listener")??;
-    worker_runtime.shutdown().await
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "http_draining",
+        outcome = "completed",
+        duration_ms = elapsed_ms(shutdown_started.elapsed()),
+        "Application lifecycle transition"
+    );
+    let worker_shutdown_started = Instant::now();
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "worker_shutdown",
+        outcome = "started",
+        duration_ms = 0_u64,
+        "Application lifecycle transition"
+    );
+    worker_runtime.shutdown().await?;
+    tracing::info!(
+        event.name = "app.lifecycle",
+        stage = "worker_shutdown",
+        outcome = "completed",
+        duration_ms = elapsed_ms(worker_shutdown_started.elapsed()),
+        "Application lifecycle transition"
+    );
+    Ok(())
+}
+
+pub fn elapsed_ms(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 async fn live() -> impl IntoResponse {

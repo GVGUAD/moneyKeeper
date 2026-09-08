@@ -9,16 +9,18 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sqlx::{PgPool, Row};
+use tracing::Instrument as _;
 use uuid::Uuid;
 
 use crate::{
     contexts::{
         ledger::public::{
-            JOURNAL_POSTED_V1, JOURNAL_REPLACED_V1, JOURNAL_REVERSED_V1, JournalEntryId,
-            LedgerEventFactV1, LedgerEventMetadataV1, LedgerEventV1, LedgerFacade, LedgerMoneyV1,
-            RECONCILIATION_APPROVED_V1, RECONCILIATION_DISMISSED_V1,
-            RECONCILIATION_IGNORED_OLDER_V1, RECONCILIATION_MATCHED_V1, RECONCILIATION_OBSERVED_V1,
-            RECONCILIATION_STALE_V1, RECONCILIATION_SUPERSEDED_V1,
+            CATEGORY_ASSIGNMENT_CHANGED_V1, JOURNAL_POSTED_V1, JOURNAL_REPLACED_V1,
+            JOURNAL_REVERSED_V1, JournalEntryId, LedgerEventFactV1, LedgerEventMetadataV1,
+            LedgerEventV1, LedgerFacade, LedgerMoneyV1, RECONCILIATION_APPROVED_V1,
+            RECONCILIATION_DISMISSED_V1, RECONCILIATION_IGNORED_OLDER_V1,
+            RECONCILIATION_MATCHED_V1, RECONCILIATION_OBSERVED_V1, RECONCILIATION_STALE_V1,
+            RECONCILIATION_SUPERSEDED_V1,
         },
         loans::public::{
             ACCOUNTING_REQUESTED_V1, AGREEMENT_CLOSED_V1, AGREEMENT_OPENED_V1, MOVEMENT_FAILED_V1,
@@ -168,15 +170,21 @@ impl RecurringEventConsumer {
         let Some(event) = self.feed.next_event().await? else {
             return Ok(ConsumerRunReport::default());
         };
-        if event.schema_version != 1 && is_recurring_event(&event.event_type) {
-            return Err(ConsumerError::UnsupportedVersion);
+        let item_span = event_span("integration.recurring_consumer", &event);
+        log_claimed(&item_span);
+        async {
+            if event.schema_version != 1 && is_recurring_event(&event.event_type) {
+                return Err(ConsumerError::UnsupportedVersion);
+            }
+            let applied = self.consume(&event).await?;
+            self.feed.acknowledge(&event).await?;
+            Ok(ConsumerRunReport {
+                applied,
+                ignored: !applied,
+            })
         }
-        let applied = self.consume(&event).await?;
-        self.feed.acknowledge(&event).await?;
-        Ok(ConsumerRunReport {
-            applied,
-            ignored: !applied,
-        })
+        .instrument(item_span)
+        .await
     }
 
     async fn consume(&self, event: &PersistedEvent) -> Result<bool, ConsumerError> {
@@ -261,15 +269,21 @@ impl ReportingEventConsumer {
         let Some(event) = self.feed.next_event().await? else {
             return Ok(ConsumerRunReport::default());
         };
-        if event.schema_version != 1 && is_reporting_event(&event.event_type) {
-            return Err(ConsumerError::UnsupportedVersion);
+        let item_span = event_span("integration.reporting_consumer", &event);
+        log_claimed(&item_span);
+        async {
+            if event.schema_version != 1 && is_reporting_event(&event.event_type) {
+                return Err(ConsumerError::UnsupportedVersion);
+            }
+            let applied = self.consume(&event).await?;
+            self.feed.acknowledge(&event).await?;
+            Ok(ConsumerRunReport {
+                applied,
+                ignored: !applied,
+            })
         }
-        let applied = self.consume(&event).await?;
-        self.feed.acknowledge(&event).await?;
-        Ok(ConsumerRunReport {
-            applied,
-            ignored: !applied,
-        })
+        .instrument(item_span)
+        .await
     }
 
     async fn consume(&self, event: &PersistedEvent) -> Result<bool, ConsumerError> {
@@ -302,6 +316,18 @@ impl ReportingEventConsumer {
                     .map_err(|_| ConsumerError::Consumer)?;
                 self.reporting
                     .apply_journal_export(EventId::new(event.event_id), event.sequence, journal)
+                    .await
+                    .map_err(ConsumerError::Reporting)?;
+                Ok(true)
+            }
+            CATEGORY_ASSIGNMENT_CHANGED_V1 => {
+                let fact: LedgerEventFactV1 = serde_json::from_value(json_to_tagged_fact(
+                    "category_assignment_changed",
+                    &event.payload,
+                ))
+                .map_err(|_| ConsumerError::InvalidPayload)?;
+                self.reporting
+                    .apply_ledger_event(ledger_event(event, event.occurred_at, fact))
                     .await
                     .map_err(ConsumerError::Reporting)?;
                 Ok(true)
@@ -738,6 +764,7 @@ fn is_reporting_event(event_type: &str) -> bool {
             | JOURNAL_POSTED_V1
             | JOURNAL_REVERSED_V1
             | JOURNAL_REPLACED_V1
+            | CATEGORY_ASSIGNMENT_CHANGED_V1
             | RECONCILIATION_OBSERVED_V1
             | RECONCILIATION_MATCHED_V1
             | RECONCILIATION_SUPERSEDED_V1
@@ -766,4 +793,23 @@ struct PersistedEvent {
     correlation_id: Uuid,
     causation_id: Option<Uuid>,
     payload: serde_json::Value,
+}
+
+fn event_span(operation: &'static str, event: &PersistedEvent) -> tracing::Span {
+    tracing::info_span!(
+        "worker.item",
+        operation,
+        event_id = %event.event_id,
+        correlation_id = %event.correlation_id,
+    )
+}
+
+fn log_claimed(span: &tracing::Span) {
+    span.in_scope(|| {
+        tracing::info!(
+            event.name = "worker.item.claimed",
+            outcome = "claimed",
+            "Worker item claimed"
+        );
+    });
 }

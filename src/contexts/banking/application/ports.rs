@@ -16,13 +16,15 @@ use super::{
     AccountingProcessView, BalanceObservationDeliveryOutcome, BalanceObservationDeliveryWork,
     BalanceObservationView, BeginSyncPage, BindExistingResource, CompleteSyncPage, ConnectProvider,
     ConnectionResult, CreateAndMapResource, DeactivateResourceMapping, ExternalResourceView,
-    IntakeProviderEvent, ProviderAccountSummary, ProviderConnectionView, ProviderEventConflictView,
-    ProviderEventReceipt, ProviderEventView, ProviderImportOutcome, ProviderImportWork,
-    RecordBalanceObservation, ReplaceProviderCredential, RequestSyncJob, ResourceMappingResult,
-    RotateWebhookCredential, SyncJobView, SyncPageView, WebhookReceiptOutcome,
-    WebhookRotationResult,
+    IntakeProviderEvent, ProviderAccountSummary, ProviderClassificationEvidence,
+    ProviderConnectionView, ProviderEventConflictView, ProviderEventReceipt, ProviderEventView,
+    ProviderImportOutcome, ProviderImportWork, RecordBalanceObservation, ReplaceProviderCredential,
+    RequestSyncJob, ResourceMappingResult, RotateWebhookCredential, SyncJobView, SyncPageView,
+    WebhookReceiptOutcome, WebhookRotationResult,
 };
-use crate::contexts::ledger::public::{AccountKind, AccountNature, LedgerAccountId};
+use crate::contexts::ledger::public::{
+    AccountKind, AccountNature, JournalEntryId, LedgerAccountId,
+};
 use chrono::{DateTime, Utc};
 
 /// Provider-neutral account resource produced by an anti-corruption adapter.
@@ -56,6 +58,16 @@ impl fmt::Debug for NormalizedResource {
 pub struct NormalizedSnapshot {
     pub resources: Vec<NormalizedResource>,
 }
+
+/// Currency metadata used at a provider boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderCurrency {
+    pub code: CurrencyCode,
+    pub minor_unit: u8,
+    pub enabled: bool,
+}
+
+pub type ProviderCurrencyMap = BTreeMap<u16, ProviderCurrency>;
 
 /// Secret callback credential returned only at rotation time.
 pub struct WebhookCredential(String);
@@ -239,7 +251,7 @@ pub(crate) trait ResourceRepository: Send + Sync {
         connection_id: ProviderConnectionId,
         cipher: &dyn CredentialCipher,
         provider: &dyn ProviderClient,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedResource>, BankingError>;
     async fn list_resources(
         &self,
@@ -309,6 +321,16 @@ pub(crate) trait ProviderEventRepository: Send + Sync {
         user_id: UserId,
         id: uuid::Uuid,
     ) -> Result<AccountingProcessView, BankingError>;
+    async fn classification_evidence(
+        &self,
+        user_id: UserId,
+        id: ProviderEventId,
+    ) -> Result<ProviderClassificationEvidence, BankingError>;
+    async fn classification_evidence_for_journal(
+        &self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+    ) -> Result<Option<ProviderClassificationEvidence>, BankingError>;
     async fn intake_provider_event(
         &self,
         command: IntakeProviderEvent,
@@ -670,18 +692,18 @@ pub(crate) trait ProviderNormalizer: Send + Sync {
     fn client_info(
         &self,
         body: &str,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<NormalizedSnapshot, BankingError>;
     fn statement(
         &self,
         body: &str,
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedProviderEvent>, BankingError>;
     fn webhook(
         &self,
         body: &[u8],
         resource_currency: &CurrencyCode,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<(String, NormalizedProviderEvent), BankingError>;
 }

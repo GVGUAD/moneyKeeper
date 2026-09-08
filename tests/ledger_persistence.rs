@@ -1,17 +1,17 @@
 use chrono::{TimeZone, Utc};
 use moneykeeper::contexts::classification::public::{
-    CategoryCatalog, CategoryCommand, CategoryKind,
+    CategoryCatalog, CategoryKind, CategoryLifecycle, CreateCategoryNode, SetCategoryNodeLifecycle,
 };
 use moneykeeper::contexts::ledger::public::{
-    AccountKind, AccountLifecycle, AccountNature, AccountVersion, AnnotationChanges,
-    ApproveReconciliation, ArchiveAccount, BalanceVersion, BudgetVisibility,
-    CancelOrReverseCashControlSettlement, CashContribution, CashFlowDirection, ControlAccountRole,
-    ControlAmount, CorrectBalance, DismissReconciliation, EnsureTypedControlAccount,
-    InternalCommandMetadata, ManualTransactionKind, NormalizedTags, ObservationId,
-    ObserveProviderBalance, OpenAccount, ReconciliationStatus, ReconciliationVersion,
-    RecordCashControlSettlement, RecordExpenseAndControlBalances, RecordManualTransaction,
-    RenameAccount, ReplaceTransaction, RestoreAccount, ReverseTransaction, SourceReference,
-    TransferFee, TransferFunds, UpdateTransactionAnnotation,
+    AccountKind, AccountLifecycle, AccountNature, AccountVersion, ActivityCursor, ActivityFilter,
+    ActivityKind, AnnotationChanges, ApproveReconciliation, ArchiveAccount, BalanceVersion,
+    BudgetVisibility, CancelOrReverseCashControlSettlement, CashContribution, CashFlowDirection,
+    ControlAccountRole, ControlAmount, CorrectBalance, DismissReconciliation,
+    EnsureTypedControlAccount, InternalCommandMetadata, ManualTransactionKind, NormalizedTags,
+    ObservationId, ObserveProviderBalance, OpenAccount, ReconciliationStatus,
+    ReconciliationVersion, RecordCashControlSettlement, RecordExpenseAndControlBalances,
+    RecordManualTransaction, RenameAccount, ReplaceTransaction, RestoreAccount, ReverseTransaction,
+    SourceReference, TransferFee, TransferFunds, UpdateTransactionAnnotation,
 };
 use moneykeeper::shared_kernel::{CorrelationId, CurrencyCode, IdempotencyKey, Money, UserId};
 use rust_decimal::Decimal;
@@ -1045,16 +1045,24 @@ async fn manual_transaction_posts_income_and_expense_for_asset_and_liability() {
     let user = UserId::generate();
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Food".to_owned(),
                 kind: CategoryKind::Both,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let asset = ledger
         .open_account(open_command(
             user,
@@ -1190,28 +1198,44 @@ async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_repla
     let other = UserId::generate();
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Food".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let other_category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: other,
                 name: "Other".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let opened = ledger
         .open_account(open_command(
             user,
@@ -1273,7 +1297,16 @@ async fn manual_transaction_validates_category_tenant_lifecycle_amount_and_repla
 
     contexts
         .categories
-        .archive(user, category.id, category.version, Utc::now())
+        .archive_node(
+            SetCategoryNodeLifecycle {
+                user_id: user,
+                id: category.id,
+                expected_version: 2,
+                lifecycle: CategoryLifecycle::Archived,
+                idempotency_key: IdempotencyKey::new("archive-test-category").unwrap(),
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let archived_category = ledger
@@ -1738,16 +1771,24 @@ async fn immutable_correction_reversal_and_annotation_changes_preserve_history()
 
     let category = contexts
         .categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: user,
                 name: "Adjusted".to_owned(),
                 kind: CategoryKind::Expense,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             Utc::now(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .node
+        .category;
     let posting_count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM ledger.postings")
         .fetch_one(&pool)
         .await
@@ -1982,4 +2023,427 @@ async fn queries_are_tenant_scoped_stable_and_projection_is_rebuildable() {
     assert_eq!(mismatches[0].delta, Decimal::new(-700, 2));
     ledger.rebuild_projection().await.unwrap();
     assert!(ledger.verify_projection().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn journal_queries_batch_full_pages_without_losing_order_or_detail() {
+    let (verified, _pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
+    let ledger =
+        moneykeeper::contexts::ledger::build_with_categories(&verified, contexts.categories);
+    let user = UserId::generate();
+    let other_user = UserId::generate();
+    let account = ledger
+        .open_account(open_command(
+            user,
+            "batch-open",
+            "Batch cash",
+            "20.00",
+            AccountKind::Cash,
+            AccountNature::Asset,
+        ))
+        .await
+        .unwrap();
+    let other_account = ledger
+        .open_account(open_command(
+            user,
+            "batch-other-open",
+            "Other cash",
+            "5.00",
+            AccountKind::Cash,
+            AccountNature::Asset,
+        ))
+        .await
+        .unwrap();
+    ledger
+        .open_account(open_command(
+            other_user,
+            "batch-foreign-open",
+            "Foreign cash",
+            "10.00",
+            AccountKind::Cash,
+            AccountNature::Asset,
+        ))
+        .await
+        .unwrap();
+
+    let mut original = None;
+    for index in 0..196 {
+        let transaction = ledger
+            .record_manual_transaction(manual_command(
+                user,
+                account.account.id,
+                &format!("batch-expense-{index}"),
+                Decimal::ONE,
+                None,
+            ))
+            .await
+            .unwrap();
+        original.get_or_insert(transaction.journal_entry_id);
+    }
+
+    let current = ledger.get_account(user, account.account.id).await.unwrap();
+    ledger
+        .correct_balance(CorrectBalance {
+            user_id: user,
+            account_id: account.account.id,
+            target_display_balance: Money::new(Decimal::ZERO, CurrencyCode::new("UAH").unwrap(), 2)
+                .unwrap(),
+            expected_balance_version: current.balance_version,
+            reason: "Batch correction".to_owned(),
+            observed_at: Utc.with_ymd_and_hms(2026, 8, 5, 13, 0, 0).unwrap(),
+            idempotency_key: IdempotencyKey::new("batch-correction").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: Utc.with_ymd_and_hms(2026, 8, 5, 13, 0, 0).unwrap(),
+        })
+        .await
+        .unwrap();
+    let original = original.unwrap();
+    ledger
+        .replace_transaction(ReplaceTransaction {
+            user_id: user,
+            original_journal_entry_id: original,
+            account_id: account.account.id,
+            kind: ManualTransactionKind::Expense,
+            amount: Money::new(Decimal::new(200, 2), CurrencyCode::new("UAH").unwrap(), 2).unwrap(),
+            description: "Batch replacement".to_owned(),
+            category_id: None,
+            note: Some("Hydrated in a batch".to_owned()),
+            tags: NormalizedTags::new(["batch"]).unwrap(),
+            budget_visibility: BudgetVisibility::Excluded,
+            idempotency_key: IdempotencyKey::new("batch-replacement").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: Utc.with_ymd_and_hms(2026, 8, 5, 14, 0, 0).unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let first_page = ledger.list_journals(user, None, 200).await.unwrap();
+    assert_eq!(first_page.len(), 200);
+    assert!(first_page.windows(2).all(|pair| {
+        (pair[0].occurred_at, pair[0].ledger_sequence)
+            > (pair[1].occurred_at, pair[1].ledger_sequence)
+    }));
+    assert!(first_page.iter().all(|journal| {
+        journal.user_id == user
+            && journal.postings.len() == 2
+            && journal
+                .postings
+                .windows(2)
+                .all(|pair| pair[0].position < pair[1].position)
+    }));
+    assert!(first_page.iter().any(|journal| {
+        journal.annotation.as_ref().is_some_and(|annotation| {
+            annotation.description == "Batch replacement"
+                && annotation.note.as_deref() == Some("Hydrated in a batch")
+                && annotation.tags == ["batch"]
+                && annotation.budget_visibility == BudgetVisibility::Excluded
+        })
+    }));
+    assert!(
+        first_page
+            .iter()
+            .any(|journal| journal.correction.is_some())
+    );
+    assert!(
+        first_page
+            .iter()
+            .any(|journal| journal.relations.reverses() == Some(original))
+    );
+    assert!(
+        first_page
+            .iter()
+            .any(|journal| journal.relations.replaces() == Some(original))
+    );
+    assert!(first_page.iter().any(|journal| {
+        journal.id == original
+            && journal.reversed_by_journal_id.is_some()
+            && journal.replaced_by_journal_id.is_some()
+    }));
+
+    let last = first_page.last().unwrap();
+    let second_page = ledger
+        .list_journals(
+            user,
+            Some(ActivityCursor {
+                occurred_at: last.occurred_at,
+                ledger_sequence: last.ledger_sequence,
+            }),
+            200,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_page.len(), 1);
+    assert!(
+        !first_page
+            .iter()
+            .any(|journal| journal.id == second_page[0].id)
+    );
+
+    let activity = ledger
+        .account_activity(user, account.account.id, None, 200)
+        .await
+        .unwrap();
+    assert_eq!(activity.len(), 200);
+    assert!(activity.iter().all(|journal| {
+        journal
+            .postings
+            .iter()
+            .any(|posting| posting.account_id == account.account.id)
+    }));
+    assert!(!activity.iter().any(|journal| {
+        journal
+            .postings
+            .iter()
+            .any(|posting| posting.account_id == other_account.account.id)
+    }));
+}
+
+#[tokio::test]
+async fn filtered_activity_and_summary_share_exact_range_kind_and_tenant_semantics() {
+    let (verified, _pool) = test_support::fresh_runtime().await;
+    let contexts = moneykeeper::bootstrap::build_contexts(&verified);
+    let ledger = moneykeeper::contexts::ledger::build_with_categories(
+        &verified,
+        contexts.categories.clone(),
+    );
+    let user = UserId::generate();
+    let foreign_user = UserId::generate();
+    let category = contexts
+        .categories
+        .create_node(
+            CreateCategoryNode {
+                user_id: user,
+                name: "Activity category".to_owned(),
+                kind: CategoryKind::Both,
+                expected_version: 1,
+                idempotency_key: IdempotencyKey::new("create-test-category").unwrap(),
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap()
+        .node
+        .category;
+    let opened_at = Utc.with_ymd_and_hms(2026, 8, 4, 9, 0, 0).unwrap();
+    let open = |owner: UserId, key: &str, name: &str, currency: &str| {
+        let currency = CurrencyCode::new(currency).unwrap();
+        OpenAccount {
+            user_id: owner,
+            name: name.to_owned(),
+            currency: currency.clone(),
+            kind: AccountKind::Cash,
+            nature: AccountNature::Asset,
+            opening_balance: Money::new(Decimal::ZERO, currency, 2).unwrap(),
+            idempotency_key: IdempotencyKey::new(key).unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: opened_at,
+        }
+    };
+    let uah = ledger
+        .open_account(open(user, "activity-uah", "UAH cash", "UAH"))
+        .await
+        .unwrap();
+    let usd = ledger
+        .open_account(open(user, "activity-usd", "USD cash", "USD"))
+        .await
+        .unwrap();
+    let foreign = ledger
+        .open_account(open(
+            foreign_user,
+            "activity-foreign",
+            "Foreign cash",
+            "UAH",
+        ))
+        .await
+        .unwrap();
+
+    let from = Utc.with_ymd_and_hms(2026, 8, 5, 10, 0, 0).unwrap();
+    let before = Utc.with_ymd_and_hms(2026, 8, 5, 14, 0, 0).unwrap();
+    let transaction = |owner: UserId,
+                       account_id,
+                       key: &str,
+                       kind: ManualTransactionKind,
+                       amount: Decimal,
+                       currency: &str,
+                       occurred_at,
+                       category_id| RecordManualTransaction {
+        user_id: owner,
+        account_id,
+        kind,
+        amount: Money::new(amount, CurrencyCode::new(currency).unwrap(), 2).unwrap(),
+        description: key.to_owned(),
+        category_id,
+        note: None,
+        tags: NormalizedTags::empty(),
+        budget_visibility: BudgetVisibility::Included,
+        idempotency_key: IdempotencyKey::new(key).unwrap(),
+        correlation_id: CorrelationId::generate(),
+        causation_id: None,
+        occurred_at,
+    };
+    let expense = ledger
+        .record_manual_transaction(transaction(
+            user,
+            uah.account.id,
+            "activity-expense-uah",
+            ManualTransactionKind::Expense,
+            Decimal::new(1000, 2),
+            "UAH",
+            from,
+            Some(category.id),
+        ))
+        .await
+        .unwrap();
+    ledger
+        .record_manual_transaction(transaction(
+            user,
+            uah.account.id,
+            "activity-income-uah",
+            ManualTransactionKind::Income,
+            Decimal::new(3000, 2),
+            "UAH",
+            from + chrono::Duration::hours(1),
+            Some(category.id),
+        ))
+        .await
+        .unwrap();
+    ledger
+        .record_manual_transaction(transaction(
+            user,
+            usd.account.id,
+            "activity-expense-usd",
+            ManualTransactionKind::Expense,
+            Decimal::new(700, 2),
+            "USD",
+            from + chrono::Duration::hours(2),
+            Some(category.id),
+        ))
+        .await
+        .unwrap();
+    ledger
+        .reverse_transaction(ReverseTransaction {
+            user_id: user,
+            journal_entry_id: expense.journal_entry_id,
+            reason: "Activity reversal".to_owned(),
+            idempotency_key: IdempotencyKey::new("activity-reversal").unwrap(),
+            correlation_id: CorrelationId::generate(),
+            causation_id: None,
+            occurred_at: from + chrono::Duration::hours(3),
+        })
+        .await
+        .unwrap();
+    ledger
+        .record_manual_transaction(transaction(
+            user,
+            uah.account.id,
+            "activity-before-boundary",
+            ManualTransactionKind::Expense,
+            Decimal::ONE,
+            "UAH",
+            before,
+            None,
+        ))
+        .await
+        .unwrap();
+    ledger
+        .record_manual_transaction(transaction(
+            foreign_user,
+            foreign.account.id,
+            "activity-foreign-expense",
+            ManualTransactionKind::Expense,
+            Decimal::ONE,
+            "UAH",
+            from + chrono::Duration::minutes(30),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    let all_filter = ActivityFilter::new(from, before, ActivityKind::All).unwrap();
+    let first_page = ledger
+        .list_activity(user, all_filter.clone(), None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first_page.len(), 2);
+    let last = first_page.last().unwrap();
+    let second_page = ledger
+        .list_activity(
+            user,
+            all_filter.clone(),
+            Some(ActivityCursor {
+                occurred_at: last.occurred_at,
+                ledger_sequence: last.ledger_sequence,
+            }),
+            2,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second_page.len(), 2);
+    let ids = first_page
+        .iter()
+        .chain(&second_page)
+        .map(|journal| journal.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), 4);
+    let ordered = first_page.iter().chain(&second_page).collect::<Vec<_>>();
+    assert!(ordered.windows(2).all(|pair| {
+        (pair[0].occurred_at, pair[0].ledger_sequence)
+            > (pair[1].occurred_at, pair[1].ledger_sequence)
+    }));
+    assert!(first_page.iter().chain(&second_page).all(|journal| {
+        journal.user_id == user && journal.occurred_at >= from && journal.occurred_at < before
+    }));
+
+    let all = ledger.summarize_activity(user, all_filter).await.unwrap();
+    assert_eq!(all.transaction_count, 4);
+    assert_eq!(all.category_count, 1);
+    assert_eq!(
+        all.totals
+            .iter()
+            .map(|total| (total.currency.as_str(), total.amount))
+            .collect::<Vec<_>>(),
+        vec![
+            ("UAH", Decimal::new(3000, 2)),
+            ("USD", Decimal::new(-700, 2))
+        ]
+    );
+
+    let income_filter = ActivityFilter::new(from, before, ActivityKind::Income).unwrap();
+    let income = ledger
+        .list_activity(user, income_filter.clone(), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(income.len(), 2);
+    let income_summary = ledger
+        .summarize_activity(user, income_filter)
+        .await
+        .unwrap();
+    assert_eq!(income_summary.transaction_count, 2);
+    assert_eq!(income_summary.totals[0].amount, Decimal::new(4000, 2));
+
+    let expense_filter = ActivityFilter::new(from, before, ActivityKind::Expense).unwrap();
+    let expense_summary = ledger
+        .summarize_activity(user, expense_filter)
+        .await
+        .unwrap();
+    assert_eq!(expense_summary.transaction_count, 2);
+    assert_eq!(
+        expense_summary
+            .totals
+            .iter()
+            .map(|total| (total.currency.as_str(), total.amount))
+            .collect::<Vec<_>>(),
+        vec![
+            ("UAH", Decimal::new(-1000, 2)),
+            ("USD", Decimal::new(-700, 2))
+        ]
+    );
 }

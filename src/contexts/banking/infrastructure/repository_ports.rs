@@ -1,7 +1,5 @@
 //! Application repository ports implemented by the PostgreSQL adapter.
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -9,9 +7,9 @@ use super::PgBankingStore;
 use crate::{
     contexts::{
         banking::{application::*, domain::*},
-        ledger::public::LedgerAccountId,
+        ledger::public::{JournalEntryId, LedgerAccountId},
     },
-    shared_kernel::{CurrencyCode, UserId},
+    shared_kernel::UserId,
 };
 
 #[async_trait]
@@ -62,7 +60,7 @@ impl ResourceRepository for PgBankingStore {
         connection_id: ProviderConnectionId,
         cipher: &dyn CredentialCipher,
         provider: &dyn ProviderClient,
-        currencies: &BTreeMap<u16, (CurrencyCode, u8)>,
+        currencies: &ProviderCurrencyMap,
     ) -> Result<Vec<NormalizedResource>, BankingError> {
         PgBankingStore::validate_and_discover(
             self,
@@ -174,6 +172,20 @@ impl ProviderEventRepository for PgBankingStore {
         id: uuid::Uuid,
     ) -> Result<AccountingProcessView, BankingError> {
         PgBankingStore::get_accounting_process(self, user_id, id).await
+    }
+    async fn classification_evidence(
+        &self,
+        user_id: UserId,
+        id: ProviderEventId,
+    ) -> Result<ProviderClassificationEvidence, BankingError> {
+        PgBankingStore::classification_evidence(self, user_id, id).await
+    }
+    async fn classification_evidence_for_journal(
+        &self,
+        user_id: UserId,
+        journal_entry_id: JournalEntryId,
+    ) -> Result<Option<ProviderClassificationEvidence>, BankingError> {
+        PgBankingStore::classification_evidence_for_journal(self, user_id, journal_entry_id).await
     }
     async fn intake_provider_event(
         &self,

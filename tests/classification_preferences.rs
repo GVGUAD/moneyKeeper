@@ -1,10 +1,11 @@
 use chrono::{Duration, TimeZone, Utc};
 use moneykeeper::bootstrap::build_contexts;
 use moneykeeper::contexts::classification::public::{
-    CategoryCatalog, CategoryCommand, CategoryKind, CategoryLifecycle,
+    CategoryCatalog, CategoryKind, CategoryLifecycle, CreateCategoryNode, SetCategoryNodeLifecycle,
+    UpdateCategoryNode,
 };
 use moneykeeper::contexts::preferences::public::Preferences;
-use moneykeeper::shared_kernel::{CurrencyCode, UserId};
+use moneykeeper::shared_kernel::{CurrencyCode, IdempotencyKey, UserId};
 
 #[path = "test_support.rs"]
 mod test_support;
@@ -15,62 +16,115 @@ fn now() -> chrono::DateTime<Utc> {
         .unwrap()
 }
 
+fn key(value: &str) -> IdempotencyKey {
+    IdempotencyKey::new(value).unwrap()
+}
+
 #[tokio::test]
 async fn category_lifecycle_is_versioned_and_idempotent() {
     let database = test_support::fresh_database().await;
     let verified = database.initialize().await.unwrap();
     let categories = build_contexts(&verified).categories;
     let user_id = UserId::generate();
+    let initial = categories.taxonomy(user_id, now()).await.unwrap();
+    assert_eq!(initial.version, 1);
+    assert_eq!(initial.starter_template_version, Some(1));
+
     let created = categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id,
+                idempotency_key: key("category-create"),
+                expected_version: initial.version,
                 name: "  Groceries  ".to_owned(),
                 kind: CategoryKind::Expense,
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             now(),
         )
         .await
         .unwrap();
-    assert_eq!(created.name, "Groceries");
-    assert_eq!(created.version, 1);
-    assert_eq!(created.lifecycle, CategoryLifecycle::Active);
+    assert_eq!(created.taxonomy_version, 2);
+    assert_eq!(created.node.category.name, "Groceries");
+    assert_eq!(created.node.category.version, 1);
+    assert_eq!(created.node.category.lifecycle, CategoryLifecycle::Active);
 
     let renamed = categories
-        .rename(
-            user_id,
-            created.id,
-            "Food".to_owned(),
-            1,
+        .update_node(
+            UpdateCategoryNode {
+                user_id,
+                idempotency_key: key("category-rename"),
+                id: created.node.category.id,
+                expected_version: created.taxonomy_version,
+                name: Some("Food".to_owned()),
+                color: None,
+                icon: None,
+            },
             now() + Duration::seconds(1),
         )
         .await
         .unwrap();
-    assert_eq!(renamed.version, 2);
+    assert_eq!(renamed.taxonomy_version, 3);
+    assert_eq!(renamed.node.category.version, 2);
 
+    let archive_command = SetCategoryNodeLifecycle {
+        user_id,
+        idempotency_key: key("category-archive"),
+        id: created.node.category.id,
+        expected_version: renamed.taxonomy_version,
+        lifecycle: CategoryLifecycle::Archived,
+    };
     let archived = categories
-        .archive(user_id, created.id, 2, now() + Duration::seconds(2))
+        .archive_node(archive_command.clone(), now() + Duration::seconds(2))
         .await
         .unwrap();
-    assert_eq!(archived.lifecycle, CategoryLifecycle::Archived);
-    assert_eq!(archived.version, 3);
+    assert_eq!(
+        archived.node.category.lifecycle,
+        CategoryLifecycle::Archived
+    );
+    assert_eq!(archived.taxonomy_version, 4);
     let repeated = categories
-        .archive(user_id, created.id, 3, now() + Duration::seconds(3))
+        .archive_node(archive_command, now() + Duration::seconds(3))
         .await
         .unwrap();
-    assert_eq!(repeated.version, 3);
+    assert_eq!(repeated, archived);
 
+    let duplicate_transition = categories
+        .archive_node(
+            SetCategoryNodeLifecycle {
+                user_id,
+                idempotency_key: key("category-archive-again"),
+                id: created.node.category.id,
+                expected_version: archived.taxonomy_version,
+                lifecycle: CategoryLifecycle::Archived,
+            },
+            now() + Duration::seconds(4),
+        )
+        .await
+        .unwrap_err();
+    assert!(duplicate_transition.is_lifecycle_conflict());
+
+    let restore_command = SetCategoryNodeLifecycle {
+        user_id,
+        idempotency_key: key("category-restore"),
+        id: created.node.category.id,
+        expected_version: archived.taxonomy_version,
+        lifecycle: CategoryLifecycle::Active,
+    };
     let restored = categories
-        .restore(user_id, created.id, 3, now() + Duration::seconds(4))
+        .restore_node(restore_command.clone(), now() + Duration::seconds(5))
         .await
         .unwrap();
-    assert_eq!(restored.lifecycle, CategoryLifecycle::Active);
-    assert_eq!(restored.version, 4);
+    assert_eq!(restored.node.category.lifecycle, CategoryLifecycle::Active);
+    assert_eq!(restored.taxonomy_version, 5);
     let repeated = categories
-        .restore(user_id, created.id, 4, now() + Duration::seconds(5))
+        .restore_node(restore_command, now() + Duration::seconds(6))
         .await
         .unwrap();
-    assert_eq!(repeated.version, 4);
+    assert_eq!(repeated, restored);
 }
 
 #[tokio::test]
@@ -80,12 +134,19 @@ async fn category_conflicts_and_tenant_boundary_are_explicit() {
     let categories = build_contexts(&verified).categories;
     let owner = UserId::generate();
     let other_user = UserId::generate();
+    let initial = categories.taxonomy(owner, now()).await.unwrap();
     let category = categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: owner,
+                idempotency_key: key("owner-food"),
+                expected_version: initial.version,
                 name: "Food".to_owned(),
                 kind: CategoryKind::Both,
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             now(),
         )
@@ -93,11 +154,17 @@ async fn category_conflicts_and_tenant_boundary_are_explicit() {
         .unwrap();
 
     let duplicate = categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id: owner,
+                idempotency_key: key("owner-food-duplicate"),
+                expected_version: category.taxonomy_version,
                 name: "fOoD".to_owned(),
                 kind: CategoryKind::Expense,
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             now(),
         )
@@ -106,14 +173,36 @@ async fn category_conflicts_and_tenant_boundary_are_explicit() {
     assert!(duplicate.is_duplicate_name());
 
     let stale = categories
-        .rename(owner, category.id, "Dining".to_owned(), 99, now())
+        .update_node(
+            UpdateCategoryNode {
+                user_id: owner,
+                idempotency_key: key("owner-food-stale"),
+                id: category.node.category.id,
+                expected_version: 99,
+                name: Some("Dining".to_owned()),
+                color: None,
+                icon: None,
+            },
+            now(),
+        )
         .await
         .unwrap_err();
     assert!(stale.is_version_conflict());
 
-    let invisible = categories.get(other_user, category.id).await.unwrap_err();
+    let invisible = categories
+        .get_node(other_user, category.node.category.id, now())
+        .await
+        .unwrap_err();
     assert!(invisible.is_not_found());
-    assert!(categories.list(other_user).await.unwrap().is_empty());
+    let other_taxonomy = categories.taxonomy(other_user, now()).await.unwrap();
+    assert_eq!(other_taxonomy.starter_template_version, Some(1));
+    assert!(!other_taxonomy.roots.is_empty());
+    assert!(
+        other_taxonomy
+            .roots
+            .iter()
+            .all(|root| root.category.id != category.node.category.id)
+    );
 }
 
 #[tokio::test]
@@ -122,41 +211,51 @@ async fn idempotent_category_command_is_fenced_by_the_stored_version() {
     let verified = database.initialize().await.unwrap();
     let categories = build_contexts(&verified).categories;
     let user_id = UserId::generate();
+    let initial = categories.taxonomy(user_id, now()).await.unwrap();
     let category = categories
-        .create(
-            CategoryCommand {
+        .create_node(
+            CreateCategoryNode {
                 user_id,
+                idempotency_key: key("concurrency-create"),
+                expected_version: initial.version,
                 name: "Concurrency".to_owned(),
                 kind: CategoryKind::Expense,
+                parent_id: None,
+                position: None,
+                color: None,
+                icon: None,
             },
             now(),
         )
         .await
         .unwrap();
-    categories
-        .archive(user_id, category.id, 1, now() + Duration::seconds(1))
-        .await
-        .unwrap();
 
-    // Hold the row lock after the no-op command has read version 2. Its CAS
-    // update will block, allowing this competing writer to advance the stored
-    // version before the no-op resumes.
+    // Hold the aggregate row after the command has read version 2. Its CAS save
+    // blocks, allowing this competing writer to advance the taxonomy first.
     let mut competing_writer = verified.begin().await.unwrap();
     sqlx::query(
-        "SELECT id FROM classification.categories \
-         WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        "SELECT user_id FROM classification.category_taxonomies \
+         WHERE user_id = $1 FOR UPDATE",
     )
-    .bind(category.id.into_uuid())
     .bind(user_id.into_uuid())
     .fetch_one(&mut *competing_writer)
     .await
     .unwrap();
 
     let no_op_categories = categories.clone();
-    let category_id = category.id;
-    let no_op = tokio::spawn(async move {
+    let category_id = category.node.category.id;
+    let archive = tokio::spawn(async move {
         no_op_categories
-            .archive(user_id, category_id, 2, now() + Duration::seconds(2))
+            .archive_node(
+                SetCategoryNodeLifecycle {
+                    user_id,
+                    idempotency_key: key("concurrency-archive"),
+                    id: category_id,
+                    expected_version: 2,
+                    lifecycle: CategoryLifecycle::Archived,
+                },
+                now() + Duration::seconds(1),
+            )
             .await
     });
 
@@ -170,7 +269,7 @@ async fn idempotent_category_command_is_fenced_by_the_stored_version() {
                       AND datname = current_database()
                       AND state = 'active'
                       AND wait_event_type = 'Lock'
-                      AND query LIKE '%UPDATE classification.categories%'
+                      AND query LIKE '%UPDATE classification.category_taxonomies%'
                  )",
             )
             .fetch_one(&mut *observer)
@@ -183,15 +282,14 @@ async fn idempotent_category_command_is_fenced_by_the_stored_version() {
         }
     })
     .await
-    .expect("idempotent command should reach the row-level CAS");
+    .expect("category command should reach the taxonomy CAS");
 
     let changed = sqlx::query(
-        "UPDATE classification.categories
-         SET lifecycle = 'active', version = 3, updated_at = $1
-         WHERE id = $2 AND user_id = $3 AND version = 2",
+        "UPDATE classification.category_taxonomies
+         SET version = 3, updated_at = $1
+         WHERE user_id = $2 AND version = 2",
     )
-    .bind(now() + Duration::seconds(3))
-    .bind(category.id.into_uuid())
+    .bind(now() + Duration::seconds(2))
     .bind(user_id.into_uuid())
     .execute(&mut *competing_writer)
     .await
@@ -199,11 +297,14 @@ async fn idempotent_category_command_is_fenced_by_the_stored_version() {
     assert_eq!(changed.rows_affected(), 1);
     competing_writer.commit().await.unwrap();
 
-    let error = no_op.await.unwrap().unwrap_err();
+    let error = archive.await.unwrap().unwrap_err();
     assert!(error.is_version_conflict());
-    let current = categories.get(user_id, category.id).await.unwrap();
-    assert_eq!(current.lifecycle, CategoryLifecycle::Active);
-    assert_eq!(current.version, 3);
+    let current = categories
+        .get_node(user_id, category.node.category.id, now())
+        .await
+        .unwrap();
+    assert_eq!(current.node.category.lifecycle, CategoryLifecycle::Active);
+    assert_eq!(current.taxonomy_version, 3);
 }
 
 #[tokio::test]

@@ -3,8 +3,8 @@
 use super::super::{
     domain::{JournalEntryId, LedgerAccountId, LedgerError},
     public::{
-        AccountView, ActivityCursor, JournalView, ProjectionMismatch,
-        ProviderAccountBindingRejection, ProviderAccountBindingResult,
+        AccountView, ActivityCursor, ActivityFilter, ActivitySummary, JournalView,
+        ProjectionMismatch, ProviderAccountBindingRejection, ProviderAccountBindingResult,
         ValidateProviderAccountBinding,
     },
 };
@@ -83,6 +83,28 @@ impl<U, Q: LedgerQueryPort, P: ProjectionRebuildPort> LedgerApplication<U, Q, P>
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError> {
         self.queries.list_journals(user_id, after, limit).await
+    }
+
+    /// Lists Activity journals matching one fixed range and cash-flow filter.
+    pub async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError> {
+        self.queries
+            .list_activity(user_id, filter, after, limit)
+            .await
+    }
+
+    /// Summarizes the complete matching Activity range independently of pagination.
+    pub async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError> {
+        self.queries.summarize_activity(user_id, filter).await
     }
 
     /// Gets one fully detailed immutable journal.

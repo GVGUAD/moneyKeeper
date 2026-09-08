@@ -16,7 +16,8 @@ use super::super::domain::{
     SystemAccountRole, TransactionAnnotation,
 };
 use super::super::public::{
-    AccountView, ActivityCursor, JournalView, ProjectionMismatch, ReconciliationView,
+    AccountView, ActivityCursor, ActivityFilter, ActivitySummary, JournalView, ProjectionMismatch,
+    ReconciliationView,
 };
 
 /// Read-only accounting facts required by Ledger query use cases.
@@ -41,6 +42,18 @@ pub(crate) trait LedgerQueryPort: Send + Sync {
         after: Option<ActivityCursor>,
         limit: u32,
     ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn list_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+        after: Option<ActivityCursor>,
+        limit: u32,
+    ) -> Result<Vec<JournalView>, LedgerError>;
+    async fn summarize_activity(
+        &self,
+        user_id: UserId,
+        filter: ActivityFilter,
+    ) -> Result<ActivitySummary, LedgerError>;
     async fn get_journal(
         &self,
         user_id: UserId,

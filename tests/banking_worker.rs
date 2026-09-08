@@ -57,7 +57,7 @@ impl ProviderClient for WorkerProvider {
             .unwrap()
             .push(account.to_owned());
         Ok(format!(
-            r#"[{{"id":"worker-event-{account}","time":{},"description":"Worker purchase","mcc":5411,"hold":true,"amount":-1000,"operationAmount":-1000,"currencyCode":980,"balance":9000}}]"#,
+            r#"[{{"id":"worker-event-{account}","time":{},"description":"Worker purchase","mcc":5411,"hold":true,"amount":-1000,"operationAmount":-2500,"currencyCode":643,"balance":9000}}]"#,
             from.timestamp(),
         ))
     }
@@ -192,6 +192,15 @@ async fn pending_connection_activates_registers_and_fetches_a_snapshot_window() 
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].state, "waiting_for_events");
     assert_eq!(pages[0].expected_events, 1);
+    let original_currency: Option<String> = sqlx::query_scalar(
+        "SELECT original_currency FROM banking.provider_events \
+         WHERE external_event_id='worker-event-card-worker' AND user_id=$1",
+    )
+    .bind(user_id.into_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(original_currency.as_deref(), Some("RUB"));
     let windows: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM banking.sync_job_resources WHERE sync_job_id=$1 AND user_id=$2",
     )
