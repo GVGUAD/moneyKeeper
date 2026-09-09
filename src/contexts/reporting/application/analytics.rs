@@ -321,7 +321,7 @@ impl ReportingAnalyticsFacade {
                     .then(a.label.cmp(&b.label))
                     .then(a.key.cmp(&b.key))
             });
-            return Ok(Some(AnalyticsResponse {
+            Ok(Some(AnalyticsResponse {
                 metadata: AggregateMetadata {
                     selection: metadata(s, version, as_of),
                     comparison_from: request.comparison_from,
@@ -336,7 +336,7 @@ impl ReportingAnalyticsFacade {
                 breakdown,
                 series: calendar.series,
                 trend: calendar.trend,
-            }));
+            }))
         })
         .await
     }
@@ -400,7 +400,7 @@ impl ReportingAnalyticsFacade {
             if version != taxonomy.version {
                 return Ok(None);
             }
-            return Ok(Some(AnalyticsListResponse {
+            Ok(Some(AnalyticsListResponse {
                 metadata: ListMetadata {
                     selection: metadata(s, version, as_of),
                     kind: request.kind,
@@ -408,7 +408,7 @@ impl ReportingAnalyticsFacade {
                 summary: page.summary,
                 items: page.items,
                 next_cursor: page.next_cursor,
-            }));
+            }))
         })
         .await
     }
