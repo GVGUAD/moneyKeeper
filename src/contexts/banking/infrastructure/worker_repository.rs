@@ -982,6 +982,7 @@ impl BankingWorkerRepository for PgBankingStore {
         .execute(&mut *tx)
         .await
         .map_err(database)?;
+        // No remaining resource is normal completion, not a missing required row.
         let next_cursor: Option<String> = sqlx::query_scalar(
             "SELECT external_resource_id::text || ':' || extract(epoch FROM next_from)::bigint::text
              FROM banking.sync_job_resources
@@ -990,7 +991,7 @@ impl BankingWorkerRepository for PgBankingStore {
         )
         .bind(page.get::<uuid::Uuid, _>("sync_job_id"))
         .bind(page.get::<uuid::Uuid, _>("user_id"))
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(database)?;
         sqlx::query(

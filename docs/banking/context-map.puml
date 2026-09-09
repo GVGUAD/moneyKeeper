@@ -1,0 +1,43 @@
+@startuml banking-context-map
+title Moneykeeper — Banking Context Map
+
+skinparam rectangle {
+  BackgroundColor<<core>> LightYellow
+  BackgroundColor<<supporting>> White
+  BackgroundColor<<generic>> WhiteSmoke
+  BorderColor<<core>> GoldenRod
+  BorderThickness<<core>> 2
+}
+skinparam shadowing false
+
+rectangle "Monobank API" as Monobank <<generic>>
+rectangle "Banking" as Banking <<supporting>>
+rectangle "Ledger\n(Core)" as Ledger <<core>>
+rectangle "Reference Data" as ReferenceData <<supporting>>
+rectangle "Classification" as Classification <<supporting>>
+rectangle "Integration Runtime" as Integration <<generic>>
+rectangle "Reporting" as Reporting <<supporting>>
+
+Monobank "U" -[#crimson,dashed]-> "D (ACL)" Banking : client info / statements / webhooks
+ReferenceData "U" --> "D" Banking : currency catalog (Customer-Supplier)
+Banking --> Ledger : account validation / provider-account creation
+Banking "U (OHS+PL)" --> "D" Integration : public work claims / published facts
+Integration --> Ledger : import / reversal / balance observation
+Integration --> Banking : fenced completion
+Banking "U (OHS+PL)" --> "D" Classification : imported-transaction fact / evidence reads
+Ledger "U (OHS+PL)" --> "D" Reporting : accounting facts
+
+note bottom of Integration
+  Banking work is also claimed directly by supervised workers.
+  Import and observation policies use public context contracts.
+  Arrows show capability calls or fact flow as labeled.
+end note
+
+legend right
+  U = upstream; D = downstream
+  OHS+PL = Open Host Service + Published Language
+  dashed crimson = Anticorruption Layer
+  Ledger owns accounting and reconciliation decisions.
+endlegend
+
+@enduml

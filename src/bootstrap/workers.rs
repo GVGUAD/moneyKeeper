@@ -230,6 +230,7 @@ fn spawn_worker(
         );
         let mut ticker = tokio::time::interval(definition.interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut consecutive_failures = 0_u32;
         loop {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -243,16 +244,21 @@ fn spawn_worker(
                         "worker.iteration",
                         worker = %definition.name,
                     );
-                    if let Err(_error) = (definition.run_once)().instrument(span).await {
-                        tracing::warn!(
-                            event.name = "worker.iteration.completed",
-                            worker = %definition.name,
-                            outcome = "error",
-                            duration_ms = elapsed_ms(started.elapsed()),
-                            error.category = "worker.iteration",
-                            error.message = "worker iteration failed",
-                            "Worker iteration completed"
-                        );
+                    match (definition.run_once)().instrument(span).await {
+                        Err(error) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            let retry_after = failure_backoff(consecutive_failures)
+                                .max(definition.interval);
+                            ticker.reset_after(retry_after);
+                            log_failure(&definition.name, &error, started.elapsed(),
+                                consecutive_failures, retry_after);
+                        }
+                        Ok(()) => {
+                            if consecutive_failures > 0 {
+                                ticker.reset_after(definition.interval);
+                            }
+                            consecutive_failures = 0;
+                        }
                     }
                 }
             }
@@ -266,6 +272,44 @@ fn spawn_worker(
             "Application lifecycle transition"
         );
     })
+}
+
+/// Static context is safe to log even when an underlying error contains secrets.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(super) struct WorkerOperation(pub &'static str);
+
+fn failure_backoff(consecutive_failures: u32) -> Duration {
+    Duration::from_secs((5_u64 << consecutive_failures.saturating_sub(1).min(6)).min(300))
+}
+
+fn log_failure(
+    worker: &str,
+    error: &anyhow::Error,
+    elapsed: Duration,
+    consecutive_failures: u32,
+    retry_after: Duration,
+) {
+    // Never format arbitrary anyhow chains: provider errors can include URLs or bodies.
+    let operation = error
+        .downcast_ref::<WorkerOperation>()
+        .map(|context| context.0);
+    let banking_error = error.downcast_ref::<crate::contexts::banking::public::BankingError>();
+    let message = banking_error
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "worker iteration failed".to_owned());
+    tracing::warn!(
+        event.name = "worker.iteration.completed",
+        worker,
+        operation,
+        outcome = "error",
+        duration_ms = elapsed_ms(elapsed),
+        consecutive_failures,
+        retry_after_ms = elapsed_ms(retry_after),
+        error.category = if banking_error.is_some() { "banking" } else { "worker.iteration" },
+        error.message = %message,
+        "Worker iteration completed"
+    );
 }
 
 fn log_report(worker: &'static str, report: WorkerRunReport, elapsed: Duration) {
@@ -573,6 +617,107 @@ mod logging_tests {
     }
 
     use std::time::Duration;
+
+    #[test]
+    fn failures_log_safe_banking_details_without_arbitrary_error_chains() {
+        let output = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_writer(output.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let error = anyhow::Error::new(
+                crate::contexts::banking::public::BankingError::MappingNotActive,
+            )
+            .context("secret-provider-token")
+            .context(super::WorkerOperation("banking.import"));
+            super::log_failure(
+                "banking-sync",
+                &error,
+                Duration::ZERO,
+                2,
+                Duration::from_secs(10),
+            );
+            let unknown = anyhow::anyhow!("secret-database-url");
+            super::log_failure(
+                "other-worker",
+                &unknown,
+                Duration::ZERO,
+                1,
+                Duration::from_secs(5),
+            );
+        });
+        let logs = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+        assert!(!logs.contains("secret-"));
+        let entries: Vec<serde_json::Value> = logs
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(entries[0]["operation"], "banking.import");
+        assert_eq!(
+            entries[0]["error.message"],
+            "resource has no active mapping"
+        );
+        assert_eq!(entries[0]["consecutive_failures"], 2);
+        assert_eq!(entries[0]["retry_after_ms"], 10_000);
+        assert_eq!(entries[1]["error.message"], "worker iteration failed");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failures_back_off_and_success_restores_interval() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let worker = super::WorkerDefinition::new("test", Duration::from_secs(1), move || {
+            let call = count.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if call < 2 {
+                    anyhow::bail!("failure");
+                }
+                Ok(())
+            }
+        });
+        let runtime = super::WorkerRegistry::new(vec![worker])
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        for (seconds, expected) in [(4, 1), (1, 2), (9, 2), (1, 3), (1, 4)] {
+            tokio::time::advance(Duration::from_secs(seconds)).await;
+            tokio::task::yield_now().await;
+            assert_eq!(calls.load(Ordering::SeqCst), expected);
+        }
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_interrupts_failure_backoff() {
+        let worker = super::WorkerDefinition::new("test", Duration::from_secs(1), || async {
+            anyhow::bail!("failure")
+        });
+        let runtime = super::WorkerRegistry::new(vec![worker])
+            .unwrap()
+            .start()
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        let started = tokio::time::Instant::now();
+        runtime.shutdown().await.unwrap();
+        assert_eq!(started.elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn backoff_is_bounded_even_after_counter_saturation() {
+        for (failures, seconds) in [(1, 5), (2, 10), (6, 160), (7, 300), (u32::MAX, 300)] {
+            assert_eq!(
+                super::failure_backoff(failures),
+                Duration::from_secs(seconds)
+            );
+        }
+    }
 
     #[test]
     fn idle_iterations_are_suppressed_at_info() {
