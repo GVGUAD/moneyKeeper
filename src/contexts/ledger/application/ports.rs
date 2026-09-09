@@ -2,6 +2,10 @@
 
 #![allow(async_fn_in_trait)]
 
+use crate::contexts::ledger::public::{
+    AnalyticsCalendar, AnalyticsCalendarRequest, AnalyticsFact, AnalyticsFilter, AnalyticsInterval,
+    AnalyticsPage, AnalyticsTransactionsQuery,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -23,6 +27,24 @@ use super::super::public::{
 /// Read-only accounting facts required by Ledger query use cases.
 #[async_trait]
 pub(crate) trait LedgerQueryPort: Send + Sync {
+    async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError>;
+
+    async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError>;
+
+    async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError>;
+
     async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError>;
     async fn get_account(
         &self,

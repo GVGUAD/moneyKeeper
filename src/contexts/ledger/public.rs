@@ -1,5 +1,6 @@
 //! Stable Ledger contracts exposed to HTTP adapters and collaborating contexts.
 
+pub use super::analytics::*;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,32 @@ pub struct LedgerFacade {
 }
 
 impl LedgerFacade {
+    pub async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError> {
+        self.queries.analytics_calendar(request).await
+    }
+
+    pub async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError> {
+        self.queries
+            .analytics_aggregate(user_id, filter, intervals)
+            .await
+    }
+
+    pub async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError> {
+        self.queries.analytics_transactions(user_id, query).await
+    }
+
     pub(crate) fn new<T>(application: Arc<T>) -> Self
     where
         T: LedgerCommandCapability

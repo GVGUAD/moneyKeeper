@@ -1,5 +1,6 @@
 //! PostgreSQL Ledger adapters.
 
+mod analytics;
 mod pg_queries;
 mod pg_repositories;
 mod pg_unit_of_work;

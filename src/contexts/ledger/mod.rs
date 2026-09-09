@@ -5,6 +5,7 @@ mod application;
 mod domain;
 mod infrastructure;
 
+mod analytics;
 pub mod public;
 
 use crate::infrastructure::database::VerifiedDatabase;

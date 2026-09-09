@@ -24,11 +24,15 @@ use super::super::{
     },
 };
 use super::rows::AccountRow;
+use crate::contexts::ledger::public::{
+    AnalyticsCalendar, AnalyticsCalendarRequest, AnalyticsFact, AnalyticsFilter, AnalyticsInterval,
+    AnalyticsPage, AnalyticsTransactionsQuery,
+};
 
 /// SELECT-only accounting-fact queries.
 #[derive(Clone)]
 pub(crate) struct PgLedgerQueries {
-    pool: PgPool,
+    pub(super) pool: PgPool,
 }
 
 #[derive(FromRow)]
@@ -609,6 +613,30 @@ impl JournalRow {
 
 #[async_trait]
 impl LedgerQueryPort for PgLedgerQueries {
+    async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError> {
+        super::analytics::analytics_calendar(&self.pool, request).await
+    }
+
+    async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError> {
+        super::analytics::analytics_aggregate(&self.pool, user_id, filter, intervals).await
+    }
+
+    async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError> {
+        super::analytics::analytics_transactions(&self.pool, user_id, query).await
+    }
+
     async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError> {
         PgLedgerQueries::list_accounts(self, user_id).await
     }

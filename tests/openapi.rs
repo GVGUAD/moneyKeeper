@@ -94,6 +94,8 @@ fn openapi_is_unversioned_and_has_exact_finance_routes() {
         "/subscription-charges/{charge_evidence_id}/rejections",
         "/subscription-charges/{charge_evidence_id}/matches/{match_id}/unmatches",
         "/fx-rates",
+        "/reports/analytics",
+        "/reports/analytics/transactions",
         "/reports/balance-history",
         "/reports/cashflow",
         "/reports/spending",
@@ -169,7 +171,7 @@ fn every_finance_operation_is_authenticated_and_uniquely_named() {
             );
         }
     }
-    assert_eq!(operation_count, 119);
+    assert_eq!(operation_count, 121);
 }
 
 #[test]
