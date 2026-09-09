@@ -1,6 +1,6 @@
 # Stats backend implementation and Android handoff
 
-Implemented on `feature/stats-backend-analytics`, based on `cc2ae44`. The commit containing this document records the implementation; it has not been deployed. The source implementation plan is `/Users/volodymyr/AndroidStudioProjects/MoneyKeeper/docs/product/2026-09-08-stats-backend-plan.md`.
+Implemented on `feature/stats-backend-analytics`, based on `cc2ae44`. Release revision `b42a0bb` was deployed to Fly on 2026-09-09. The source implementation plan is `/Users/volodymyr/AndroidStudioProjects/MoneyKeeper/docs/product/2026-09-08-stats-backend-plan.md`.
 
 ## Contract and fixtures
 
@@ -59,11 +59,22 @@ The taxonomy retry state machine is unit-tested deterministically; missing-assig
 
 ## Deployment status
 
-Not deployed. The implementation request did not select a deployment environment, and unrelated banking/runtime changes were already present in the worktree. Do not accidentally include those changes in an analytics-only release.
+Deployed to `https://moneykeeper.fly.dev` on 2026-09-09 after explicit user authorization. The release includes the analytics implementation and the banking/runtime/documentation changes the user subsequently requested to commit together.
 
-The repository's configured production URL is `https://moneykeeper.fly.dev`; it is not yet a verified analytics integration environment. After selecting the release target and producing a committed release revision:
+Release evidence:
 
-1. Deploy the reviewed backend revision and record its revision/environment here.
+- Source revision: `b42a0bb` (includes the Clippy cleanup following `41bbe4b`).
+- Image: `registry.fly.io/moneykeeper@sha256:4fb37855ffd33f8a6da95107d29a91bb600f48d25cedb2f4368d9c374aded608`.
+- Fly machine: `683d526f391238`, version 32, started in Frankfurt.
+- Full `cargo test --all-targets`, Clippy with warnings denied, formatting, and retired-SQL guards passed before rollout.
+- Fly rolling deployment, machine smoke checks, and DNS verification passed.
+- Public `/health/live` and `/health/ready` returned 200 with `live` and `ready` respectively.
+- Both analytics routes returned the expected JSON 401 envelope without authentication.
+- Authenticated production report reads were not performed because no user access token was supplied. Native-currency data checks remain required before Android release.
+
+Remaining Android release checks:
+
+1. Use deployed revision `b42a0bb` and the base URL above for integration.
 2. With an authorized test user, smoke-test both analytics endpoints in UAH and another registered currency, plus known empty ranges, invalid requests and unauthenticated requests.
 3. Verify `/transactions/summary` category-subtree behavior independently; Activity semantics remain distinct from Stats.
 4. Record route latency, sanitized error rate and query diagnostics through existing observability. Do not log descriptions, amounts, tokens or complete query strings.
