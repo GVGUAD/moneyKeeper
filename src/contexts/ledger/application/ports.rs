@@ -127,6 +127,7 @@ pub(crate) struct AuditRecord {
 #[async_trait]
 pub(crate) trait LedgerUnitOfWork {
     type Tx<'a>: LedgerAccountStore
+        + ConversionStore
         + JournalStore
         + ReclassificationStore
         + AnnotationStore
@@ -387,4 +388,88 @@ pub(crate) trait LedgerOutboxStore {
 pub(crate) trait TransactionControl: Sized {
     async fn commit(self) -> Result<(), LedgerError>;
     async fn rollback(self) -> Result<(), LedgerError>;
+}
+
+/// Conversion persistence and serialization shared with competing financial commands.
+#[async_trait]
+pub(crate) trait ConversionStore {
+    async fn conversion_notifications(
+        &mut self,
+        user: UserId,
+    ) -> Result<Vec<super::super::public::TransferConversion>, LedgerError>;
+    async fn require_conversion_available(
+        &mut self,
+        user: UserId,
+        id: JournalEntryId,
+    ) -> Result<(), LedgerError>;
+    async fn hold_conversion_import(
+        &mut self,
+        user: UserId,
+        review: super::super::public::ConversionImportReview,
+    ) -> Result<Option<super::super::public::ConversionImportReview>, LedgerError>;
+    async fn conversion_reviews(
+        &mut self,
+        user: UserId,
+        id: Option<uuid::Uuid>,
+    ) -> Result<Vec<super::super::public::ConversionImportReview>, LedgerError>;
+    async fn save_conversion_review(
+        &mut self,
+        user: UserId,
+        review: &super::super::public::ConversionImportReview,
+    ) -> Result<(), LedgerError>;
+    async fn resolve_conversion_reference(
+        &mut self,
+        user: UserId,
+        journal: JournalEntryId,
+    ) -> Result<JournalEntryId, LedgerError>;
+    async fn managed_conversion(
+        &mut self,
+        user: UserId,
+        journal: JournalEntryId,
+    ) -> Result<Option<uuid::Uuid>, LedgerError>;
+
+    async fn lock_conversion_scope(&mut self, user_id: UserId) -> Result<(), LedgerError>;
+    async fn conversion_source(
+        &mut self,
+        user_id: UserId,
+        id: JournalEntryId,
+    ) -> Result<super::super::public::ConversionSource, LedgerError>;
+    async fn require_unclaimed(
+        &mut self,
+        user_id: UserId,
+        id: JournalEntryId,
+    ) -> Result<(), LedgerError>;
+    async fn conversion_candidates(
+        &mut self,
+        user_id: UserId,
+        id: JournalEntryId,
+        query: &super::super::public::ConversionCandidatesQuery,
+    ) -> Result<Vec<super::super::public::ConversionCandidate>, LedgerError>;
+    async fn find_conversion(
+        &mut self,
+        user_id: UserId,
+        id: uuid::Uuid,
+    ) -> Result<super::super::public::TransferConversion, LedgerError>;
+    async fn save_conversion(
+        &mut self,
+        user_id: UserId,
+        conversion: &super::super::public::TransferConversion,
+    ) -> Result<(), LedgerError>;
+    async fn claim_conversion_journal(
+        &mut self,
+        user_id: UserId,
+        conversion: uuid::Uuid,
+        journal: JournalEntryId,
+        role: &str,
+    ) -> Result<(), LedgerError>;
+    async fn restore_conversion_annotation(
+        &mut self,
+        user_id: UserId,
+        source: JournalEntryId,
+        restored: JournalEntryId,
+    ) -> Result<(), LedgerError>;
+    async fn conversion_currency_scale(
+        &mut self,
+        currency: &CurrencyCode,
+    ) -> Result<u32, LedgerError>;
 }

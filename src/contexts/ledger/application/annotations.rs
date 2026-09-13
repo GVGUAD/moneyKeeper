@@ -1,5 +1,6 @@
 //! Versioned transaction annotation commands.
 
+use super::ports::ConversionStore;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -107,6 +108,7 @@ async fn update_annotation<U: LedgerUnitOfWork, C: CategoryCatalog>(
     )
     .into();
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(receipt) = tx
         .find_receipt(
             command.user_id,
@@ -125,6 +127,8 @@ async fn update_annotation<U: LedgerUnitOfWork, C: CategoryCatalog>(
         result.replayed = true;
         return Ok(result);
     }
+    tx.require_unclaimed(command.user_id, command.journal_entry_id)
+        .await?;
     let mut annotation = tx
         .find_annotation(command.user_id, command.journal_entry_id, true)
         .await?
@@ -283,6 +287,7 @@ async fn apply_category_assignment<U: LedgerUnitOfWork, C: CategoryCatalog>(
     });
     let hash = request_hash(&request)?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(mut result) = replay_assignment(
         &mut tx,
         command.user_id,
@@ -296,6 +301,8 @@ async fn apply_category_assignment<U: LedgerUnitOfWork, C: CategoryCatalog>(
         result.replayed = true;
         return Ok(result);
     }
+    tx.require_unclaimed(command.user_id, command.journal_entry_id)
+        .await?;
     let mut annotation = tx
         .find_annotation(command.user_id, command.journal_entry_id, true)
         .await?
@@ -366,6 +373,7 @@ async fn restore_category_assignment<U: LedgerUnitOfWork>(
     });
     let hash = request_hash(&request)?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(mut result) = replay_assignment(
         &mut tx,
         command.user_id,
@@ -379,6 +387,8 @@ async fn restore_category_assignment<U: LedgerUnitOfWork>(
         result.replayed = true;
         return Ok(result);
     }
+    tx.require_unclaimed(command.user_id, command.journal_entry_id)
+        .await?;
     let mut annotation = tx
         .find_annotation(command.user_id, command.journal_entry_id, true)
         .await?
@@ -434,6 +444,7 @@ async fn enable_automatic_classification<U: LedgerUnitOfWork>(
     });
     let hash = request_hash(&request)?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(mut result) = replay_assignment(
         &mut tx,
         command.user_id,
@@ -447,6 +458,8 @@ async fn enable_automatic_classification<U: LedgerUnitOfWork>(
         result.replayed = true;
         return Ok(result);
     }
+    tx.require_unclaimed(command.user_id, command.journal_entry_id)
+        .await?;
     let mut annotation = tx
         .find_annotation(command.user_id, command.journal_entry_id, true)
         .await?

@@ -127,6 +127,7 @@ pub(crate) struct BalanceCorrectionRequest {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ActivityQuery {
+    pub(crate) grouped_transfers: Option<bool>,
     pub(crate) after_occurred_at: Option<DateTime<Utc>>,
     pub(crate) after_sequence: Option<i64>,
     pub(crate) limit: Option<u32>,
@@ -135,6 +136,7 @@ pub(crate) struct ActivityQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TransactionActivityQuery {
+    pub(crate) grouped_transfers: Option<bool>,
     pub(crate) after_occurred_at: Option<DateTime<Utc>>,
     pub(crate) after_sequence: Option<i64>,
     pub(crate) limit: Option<u32>,
@@ -148,6 +150,7 @@ pub(crate) struct TransactionActivityQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ActivitySummaryQuery {
+    pub(crate) grouped_transfers: Option<bool>,
     pub(crate) from_occurred_at: Option<DateTime<Utc>>,
     pub(crate) before_occurred_at: Option<DateTime<Utc>>,
     pub(crate) kind: Option<ActivityKind>,

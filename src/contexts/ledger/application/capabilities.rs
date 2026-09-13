@@ -12,6 +12,11 @@ use crate::contexts::ledger::public::*;
 
 #[async_trait]
 pub(crate) trait LedgerCommandCapability: Send + Sync {
+    async fn transfer_conversion(
+        &self,
+        user_id: UserId,
+        action: ConversionAction,
+    ) -> Result<ConversionResponse, LedgerError>;
     async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError>;
     async fn open_provider_observed_account(
         &self,
@@ -215,6 +220,13 @@ where
     Q: LedgerQueryPort + Send + Sync,
     P: Send + Sync,
 {
+    async fn transfer_conversion(
+        &self,
+        user_id: UserId,
+        action: ConversionAction,
+    ) -> Result<ConversionResponse, LedgerError> {
+        LedgerApplication::transfer_conversion(self, user_id, action).await
+    }
     async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError> {
         LedgerApplication::open_account(self, command).await
     }

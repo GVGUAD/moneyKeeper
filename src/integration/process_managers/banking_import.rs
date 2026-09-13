@@ -24,7 +24,7 @@ pub async fn import_provider_revision(
     user_id: crate::shared_kernel::UserId,
     event_id: ProviderEventId,
 ) -> Result<ProviderImportOutcome, BankingError> {
-    let Some(work) = banking.claim_provider_import(user_id, event_id).await? else {
+    let Some(mut work) = banking.claim_provider_import(user_id, event_id).await? else {
         return Ok(ProviderImportOutcome {
             provider_event_id: event_id,
             state: "waiting_or_complete".to_owned(),
@@ -40,6 +40,28 @@ pub async fn import_provider_revision(
         format!("{}:{}", work.external_event_id, work.revision),
     )
     .map_err(|_| BankingError::InvalidValue("invalid provider source reference"))?;
+
+    let changed = work.state == BankingTransactionState::Reversed
+        || work
+            .previous_money
+            .as_ref()
+            .is_some_and(|m| m != &work.operation_money);
+    let resolved = ledger
+        .transfer_conversion(
+            work.user_id,
+            crate::contexts::ledger::public::ConversionAction::ResolveProvider {
+                previous: work.previous_journal_id,
+                stream: source.stream_id().into(),
+                item: source.item_id().into(),
+                changed,
+            },
+        )
+        .await
+        .map_err(|_| BankingError::InvalidState)?;
+    if let crate::contexts::ledger::public::ConversionResponse::Reference { journal_id } = resolved
+    {
+        work.previous_journal_id = journal_id;
+    }
     let correlation_id = CorrelationId::new(work.provider_event_id.into_uuid());
     let metadata = |operation: &str| -> Result<InternalCommandMetadata, BankingError> {
         Ok(InternalCommandMetadata {
@@ -61,10 +83,7 @@ pub async fn import_provider_revision(
         None => None,
     };
     let no_change = work.previous_money.as_ref() == Some(&work.operation_money)
-        && work.state == BankingTransactionState::Settled
-        && previous_journal
-            .as_ref()
-            .is_some_and(|journal| journal.description == work.description);
+        && work.state == BankingTransactionState::Settled;
     let inherited_annotation = if !no_change && work.state != BankingTransactionState::Reversed {
         previous_journal.and_then(|journal| journal.annotation)
     } else {
@@ -73,7 +92,18 @@ pub async fn import_provider_revision(
     let journal_id = if no_change {
         work.previous_journal_id
     } else if work.state == BankingTransactionState::Reversed {
-        let previous = work.previous_journal_id.ok_or(BankingError::InvalidState)?;
+        let Some(previous) = work.previous_journal_id else {
+            return banking
+                .complete_provider_import(ProviderImportOutcome {
+                    provider_event_id: event_id,
+                    state: "no_financial_change".into(),
+                    ledger_journal_entry_id: None,
+                    replayed: false,
+                    lease_holder: Some(work.lease_holder),
+                    fencing_token: Some(work.fencing_token),
+                })
+                .await;
+        };
         ledger
             .reverse_provider_transaction(ReverseProviderTransaction {
                 metadata: metadata("reverse")?,
@@ -88,8 +118,8 @@ pub async fn import_provider_revision(
             .previous_money
             .as_ref()
             .is_some_and(|money| money != &work.operation_money)
+            && let Some(previous) = work.previous_journal_id
         {
-            let previous = work.previous_journal_id.ok_or(BankingError::InvalidState)?;
             ledger
                 .reverse_provider_transaction(ReverseProviderTransaction {
                     metadata: metadata("correct-reverse")?,
@@ -109,9 +139,18 @@ pub async fn import_provider_revision(
             })
             .await
             .map_err(|_| BankingError::InvalidState)?;
-        let imported_journal_id = imported
-            .journal_entry_id
-            .ok_or(BankingError::InvalidState)?;
+        let Some(imported_journal_id) = imported.journal_entry_id else {
+            return banking
+                .complete_provider_import(ProviderImportOutcome {
+                    provider_event_id: event_id,
+                    state: "no_financial_change".into(),
+                    ledger_journal_entry_id: None,
+                    replayed: false,
+                    lease_holder: Some(work.lease_holder),
+                    fencing_token: Some(work.fencing_token),
+                })
+                .await;
+        };
         if let Some(previous) = inherited_annotation {
             inherit_provider_correction_annotation(ledger, &work, imported_journal_id, previous)
                 .await?;

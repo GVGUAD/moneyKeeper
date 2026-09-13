@@ -1278,3 +1278,50 @@ async fn category_summary_tracks_manual_and_automatic_assignment_changes() {
         assert_eq!(remaining[0].id.into_uuid(), manual);
     }
 }
+
+#[tokio::test]
+async fn conversion_http_preview_commit_grouped_history_and_undo() {
+    let server = app(Uuid::new_v4()).await;
+    let a = summary_account(&server, "UAH").await;
+    let b = summary_account(&server, "UAH").await;
+    let journal = summary_transaction(
+        &server,
+        a,
+        None,
+        "expense",
+        "100",
+        "UAH",
+        "2026-09-01T12:00:00Z",
+    )
+    .await;
+    let input = json!({"other_account_id":b,"missing_side":{"amount":"100","currency":"UAH"},"title":"Transfer"});
+    let preview = server
+        .post(&format!(
+            "/transactions/{journal}/transfer-conversion-preview"
+        ))
+        .json(&input)
+        .await;
+    preview.assert_status_ok();
+    let mut commit = input;
+    commit["version_token"] = preview.json::<Value>()["version_token"].clone();
+    let converted = server
+        .post(&format!("/transactions/{journal}/transfer-conversions"))
+        .add_header("Idempotency-Key", "convert-http")
+        .json(&commit)
+        .await;
+    converted.assert_status_ok();
+    let c = converted.json::<Value>();
+    let id = c["id"].as_str().unwrap();
+    let grouped=server.get("/transactions?grouped_transfers=true&from_occurred_at=2026-09-01T00:00:00Z&before_occurred_at=2026-09-02T00:00:00Z&limit=1").await;
+    grouped.assert_status_ok();
+    assert_eq!(grouped.json::<Vec<Value>>().len(), 1);
+    let summary=server.get("/transactions/summary?grouped_transfers=true&from_occurred_at=2026-09-01T00:00:00Z&before_occurred_at=2026-09-02T00:00:00Z").await;
+    summary.assert_status_ok();
+    assert_eq!(summary.json::<Value>()["transaction_count"], 1);
+    server
+        .post(&format!("/transfer-conversions/{id}/undo"))
+        .add_header("Idempotency-Key", "undo-http")
+        .json(&json!({"expected_version":1}))
+        .await
+        .assert_status_ok();
+}

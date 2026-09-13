@@ -19,8 +19,8 @@ use super::{
     accounts::LedgerApplication,
     commit::commit_journal,
     ports::{
-        CommandReceiptStore, LedgerAccountStore, LedgerUnitOfWork, ProjectionStore,
-        TransactionControl,
+        CommandReceiptStore, ConversionStore, LedgerAccountStore, LedgerUnitOfWork,
+        ProjectionStore, TransactionControl,
     },
 };
 
@@ -53,6 +53,7 @@ async fn transfer<U: LedgerUnitOfWork>(
     )
     .into();
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(result) = replay(
         &mut tx,
         command.user_id,
@@ -91,110 +92,7 @@ async fn transfer<U: LedgerUnitOfWork>(
             return Err(LedgerError::currency_mismatch());
         }
 
-        let mut postings = Vec::new();
-        let same_currency = source.currency() == target.currency();
-        if same_currency {
-            if command.source_amount.amount() != command.target_amount.amount()
-                || command.implied_rate.is_some()
-            {
-                return Err(LedgerError::invalid_money(
-                    "same-currency transfer amounts must be equal and have no FX rate",
-                ));
-            }
-            postings.push(Posting::for_account(
-                PostingId::generate(),
-                source,
-                -command.source_amount.amount(),
-                PostingPurpose::Ordinary,
-            )?);
-            postings.push(Posting::for_account(
-                PostingId::generate(),
-                target,
-                command.target_amount.amount(),
-                PostingPurpose::Ordinary,
-            )?);
-        } else {
-            let rate = command.implied_rate.ok_or_else(|| {
-                LedgerError::invalid_money("cross-currency transfer requires an implied rate")
-            })?;
-            if rate <= Decimal::ZERO {
-                return Err(LedgerError::invalid_money(
-                    "implied FX rate must be positive",
-                ));
-            }
-            let source_clearing = ensure_system(
-                &mut tx,
-                command.user_id,
-                source,
-                SystemAccountRole::FxClearing,
-                clock,
-            )
-            .await?;
-            let target_clearing = ensure_system(
-                &mut tx,
-                command.user_id,
-                target,
-                SystemAccountRole::FxClearing,
-                clock,
-            )
-            .await?;
-            postings.extend([
-                Posting::for_account(
-                    PostingId::generate(),
-                    source,
-                    -command.source_amount.amount(),
-                    PostingPurpose::Ordinary,
-                )?,
-                Posting::for_account(
-                    PostingId::generate(),
-                    &source_clearing,
-                    command.source_amount.amount(),
-                    PostingPurpose::Ordinary,
-                )?,
-                Posting::for_account(
-                    PostingId::generate(),
-                    &target_clearing,
-                    -command.target_amount.amount(),
-                    PostingPurpose::Ordinary,
-                )?,
-                Posting::for_account(
-                    PostingId::generate(),
-                    target,
-                    command.target_amount.amount(),
-                    PostingPurpose::Ordinary,
-                )?,
-            ]);
-        }
-
-        if let Some(fee) = &command.fee {
-            let fee_account = if fee.amount.currency() == source.currency() {
-                source
-            } else if fee.amount.currency() == target.currency() {
-                target
-            } else {
-                return Err(LedgerError::currency_mismatch());
-            };
-            let expense = ensure_system(
-                &mut tx,
-                command.user_id,
-                fee_account,
-                SystemAccountRole::UncategorizedExpense,
-                clock,
-            )
-            .await?;
-            postings.push(Posting::for_account(
-                PostingId::generate(),
-                fee_account,
-                -fee.amount.amount(),
-                PostingPurpose::Ordinary,
-            )?);
-            postings.push(Posting::for_account(
-                PostingId::generate(),
-                &expense,
-                fee.amount.amount(),
-                PostingPurpose::Ordinary,
-            )?);
-        }
+        let postings = build_postings(&mut tx, clock, &command, source, target).await?;
 
         let mut journal = JournalEntry::post(
             JournalEntryId::generate(),
@@ -360,6 +258,7 @@ async fn replay_after_failure<U: LedgerUnitOfWork>(
     original: LedgerError,
 ) -> Result<TransferResult, LedgerError> {
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     let replayed = replay(
         &mut tx,
         command.user_id,
@@ -369,4 +268,120 @@ async fn replay_after_failure<U: LedgerUnitOfWork>(
     .await;
     tx.rollback().await?;
     replayed?.ok_or(original)
+}
+
+/// Shared exact posting rules for new transfers and conversions.
+pub(super) async fn build_postings<T: LedgerAccountStore>(
+    tx: &mut T,
+    clock: &dyn Clock,
+    command: &TransferFunds,
+    source: &LedgerAccount,
+    target: &LedgerAccount,
+) -> Result<Vec<Posting>, LedgerError> {
+    let mut postings = Vec::new();
+    let same_currency = source.currency() == target.currency();
+    if same_currency {
+        if command.source_amount.amount() != command.target_amount.amount()
+            || command.implied_rate.is_some()
+        {
+            return Err(LedgerError::invalid_money(
+                "same-currency transfer amounts must be equal and have no FX rate",
+            ));
+        }
+        postings.push(Posting::for_account(
+            PostingId::generate(),
+            source,
+            -command.source_amount.amount(),
+            PostingPurpose::Ordinary,
+        )?);
+        postings.push(Posting::for_account(
+            PostingId::generate(),
+            target,
+            command.target_amount.amount(),
+            PostingPurpose::Ordinary,
+        )?);
+    } else {
+        let rate = command.implied_rate.ok_or_else(|| {
+            LedgerError::invalid_money("cross-currency transfer requires an implied rate")
+        })?;
+        if rate <= Decimal::ZERO {
+            return Err(LedgerError::invalid_money(
+                "implied FX rate must be positive",
+            ));
+        }
+        let source_clearing = ensure_system(
+            tx,
+            command.user_id,
+            source,
+            SystemAccountRole::FxClearing,
+            clock,
+        )
+        .await?;
+        let target_clearing = ensure_system(
+            tx,
+            command.user_id,
+            target,
+            SystemAccountRole::FxClearing,
+            clock,
+        )
+        .await?;
+        postings.extend([
+            Posting::for_account(
+                PostingId::generate(),
+                source,
+                -command.source_amount.amount(),
+                PostingPurpose::Ordinary,
+            )?,
+            Posting::for_account(
+                PostingId::generate(),
+                &source_clearing,
+                command.source_amount.amount(),
+                PostingPurpose::Ordinary,
+            )?,
+            Posting::for_account(
+                PostingId::generate(),
+                &target_clearing,
+                -command.target_amount.amount(),
+                PostingPurpose::Ordinary,
+            )?,
+            Posting::for_account(
+                PostingId::generate(),
+                target,
+                command.target_amount.amount(),
+                PostingPurpose::Ordinary,
+            )?,
+        ]);
+    }
+
+    if let Some(fee) = &command.fee {
+        let fee_account = if fee.amount.currency() == source.currency() {
+            source
+        } else if fee.amount.currency() == target.currency() {
+            target
+        } else {
+            return Err(LedgerError::currency_mismatch());
+        };
+        let expense = ensure_system(
+            tx,
+            command.user_id,
+            fee_account,
+            SystemAccountRole::UncategorizedExpense,
+            clock,
+        )
+        .await?;
+        postings.push(Posting::for_account(
+            PostingId::generate(),
+            fee_account,
+            -fee.amount.amount(),
+            PostingPurpose::Ordinary,
+        )?);
+        postings.push(Posting::for_account(
+            PostingId::generate(),
+            &expense,
+            fee.amount.amount(),
+            PostingPurpose::Ordinary,
+        )?);
+    }
+
+    Ok(postings)
 }

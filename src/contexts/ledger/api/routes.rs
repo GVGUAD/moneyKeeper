@@ -8,6 +8,50 @@ use super::handlers;
 pub(crate) fn router(state: LedgerApiState) -> Router {
     Router::new()
         .route(
+            "/transfer-conversions/{id}/attachment-candidates",
+            get(super::conversions::attachment_candidates),
+        )
+        .route(
+            "/transfer-conversion-notifications",
+            get(super::conversions::notifications),
+        )
+        .route(
+            "/transfer-conversion-reviews",
+            get(super::conversions::reviews),
+        )
+        .route(
+            "/transfer-conversion-reviews/{id}",
+            get(super::conversions::review),
+        )
+        .route(
+            "/transfer-conversion-reviews/{id}/resolve",
+            post(super::conversions::resolve_review),
+        )
+        .route(
+            "/transfer-conversions/{id}/attachments",
+            post(super::conversions::attach),
+        )
+        .route(
+            "/transactions/{id}/transfer-candidates",
+            get(super::conversions::candidates),
+        )
+        .route(
+            "/transactions/{id}/transfer-conversion-preview",
+            post(super::conversions::preview),
+        )
+        .route(
+            "/transactions/{id}/transfer-conversions",
+            post(super::conversions::convert),
+        )
+        .route(
+            "/transfer-conversions/{id}",
+            get(super::conversions::get).patch(super::conversions::edit),
+        )
+        .route(
+            "/transfer-conversions/{id}/undo",
+            post(super::conversions::undo),
+        )
+        .route(
             "/accounts",
             post(handlers::open_account).get(handlers::list_accounts),
         )

@@ -1,0 +1,45 @@
+@startuml
+package Ledger {
+  class TransferConversion <<Aggregate Root>> {
+    id: UUID
+    version: i64
+    sources: ConversionSource[]
+    generated_journal_ids: JournalEntryId[]
+    restorations: JournalEntryId pairs[]
+    preview: ConversionPreview
+    lifecycle: ConversionLifecycle[]
+    convert(input: ConversionInput, token: String)
+    undo(expected_version: i64)
+    attach(journal_id: JournalEntryId, expected_version: i64)
+  }
+  class ConversionSource <<Value Object>> {
+    journal_id: JournalEntryId
+    occurred_at: DateTime
+    description: String
+    annotation: JSON
+  }
+  class ConversionInput <<Value Object>>
+  class ConversionPreview <<Value Object>>
+  class ConversionLifecycle <<Domain Event>>
+  class ConversionImportReview <<Entity>>
+  class JournalEntry <<Aggregate Root>>
+  class ConversionStore <<Repository>>
+  TransferConversion *-- ConversionSource
+  TransferConversion *-- ConversionPreview
+  TransferConversion *-- ConversionLifecycle
+  TransferConversion --> JournalEntry : references by identity
+  ConversionStore --> TransferConversion
+  ConversionImportReview --> TransferConversion : candidate identities
+}
+package Banking {
+  class ProviderEvent <<Aggregate Root>>
+}
+ConversionImportReview --> ProviderEvent : provider-neutral reference
+note bottom of TransferConversion
+  Exact movements are preserved.
+  Principal never contributes income or expense.
+  Undo restores ordinary journals, including original dates.
+  Journal writes, claims, projections, receipts and outbox
+  share one Ledger transaction.
+end note
+@enduml
