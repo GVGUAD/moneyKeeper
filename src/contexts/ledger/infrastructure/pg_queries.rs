@@ -24,15 +24,20 @@ use super::super::{
     },
 };
 use super::rows::AccountRow;
+use crate::contexts::ledger::public::{
+    AnalyticsCalendar, AnalyticsCalendarRequest, AnalyticsFact, AnalyticsFilter, AnalyticsInterval,
+    AnalyticsPage, AnalyticsTransactionsQuery,
+};
 
 /// SELECT-only accounting-fact queries.
 #[derive(Clone)]
 pub(crate) struct PgLedgerQueries {
-    pool: PgPool,
+    pub(super) pool: PgPool,
 }
 
 #[derive(FromRow)]
 struct JournalRow {
+    transfer_conversion_id: Option<Uuid>,
     id: Uuid,
     user_id: Uuid,
     ledger_sequence: i64,
@@ -208,7 +213,10 @@ impl PgLedgerQueries {
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT j.id FROM ledger.journal_entries j \
              WHERE j.user_id = $1 \
-               AND j.occurred_at >= $2 AND j.occurred_at < $3 \
+               AND (NOT $12 OR (j.purpose <> 'reversal' AND j.reverses_transaction_id IS NULL \
+                   AND NOT EXISTS (SELECT 1 FROM ledger.journal_entries reversed \
+                       WHERE reversed.user_id = j.user_id AND reversed.reverses_transaction_id = j.id))) \
+               AND (NOT $10 OR NOT EXISTS(SELECT 1 FROM ledger.transfer_conversion_journals cj JOIN ledger.transfer_conversions cv ON cv.user_id=cj.user_id AND cv.id=cj.conversion_id WHERE cj.user_id=j.user_id AND cj.journal_id=j.id AND (cj.role IN ('source','reversal') OR (cj.role='transfer' AND NOT cv.active)))) AND ($11::uuid IS NULL OR EXISTS(SELECT 1 FROM ledger.postings ap WHERE ap.user_id=j.user_id AND ap.journal_entry_id=j.id AND ap.account_id=$11)) AND j.occurred_at >= $2 AND j.occurred_at < $3 \
                AND ($4 = 'all' OR EXISTS ( \
                    SELECT 1 FROM ledger.postings flow \
                    WHERE flow.user_id = j.user_id AND flow.journal_entry_id = j.id \
@@ -239,6 +247,9 @@ impl PgLedgerQueries {
         .bind(after.map(|cursor| cursor.occurred_at))
         .bind(after.map(|cursor| cursor.ledger_sequence))
         .bind(i64::from(limit))
+        .bind(filter.grouped_transfers())
+        .bind(filter.account_id().map(|i| i.into_uuid()))
+        .bind(filter.hide_reversed())
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
@@ -259,7 +270,10 @@ impl PgLedgerQueries {
             "WITH matching_journals AS ( \
                  SELECT j.id FROM ledger.journal_entries j \
                  WHERE j.user_id = $1 \
-                   AND j.occurred_at >= $2 AND j.occurred_at < $3 \
+                   AND (NOT $9 OR (j.purpose <> 'reversal' AND j.reverses_transaction_id IS NULL \
+                       AND NOT EXISTS (SELECT 1 FROM ledger.journal_entries reversed \
+                           WHERE reversed.user_id = j.user_id AND reversed.reverses_transaction_id = j.id))) \
+                   AND (NOT $7 OR NOT EXISTS(SELECT 1 FROM ledger.transfer_conversion_journals cj JOIN ledger.transfer_conversions cv ON cv.user_id=cj.user_id AND cv.id=cj.conversion_id WHERE cj.user_id=j.user_id AND cj.journal_id=j.id AND (cj.role IN ('source','reversal') OR (cj.role='transfer' AND NOT cv.active)))) AND ($8::uuid IS NULL OR EXISTS(SELECT 1 FROM ledger.postings ap WHERE ap.user_id=j.user_id AND ap.journal_entry_id=j.id AND ap.account_id=$8)) AND j.occurred_at >= $2 AND j.occurred_at < $3 \
                    AND ($4 = 'all' OR EXISTS ( \
                        SELECT 1 FROM ledger.postings flow \
                        WHERE flow.user_id = j.user_id AND flow.journal_entry_id = j.id \
@@ -301,6 +315,9 @@ impl PgLedgerQueries {
         .bind(filter.kind().as_str())
         .bind(&category_ids)
         .bind(filter.uncategorized())
+        .bind(filter.grouped_transfers())
+        .bind(filter.account_id().map(|i| i.into_uuid()))
+        .bind(filter.hide_reversed())
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
@@ -348,7 +365,7 @@ impl PgLedgerQueries {
         }
 
         let rows = sqlx::query_as::<_, JournalRow>(
-            "SELECT j.id, j.user_id, j.ledger_sequence, j.source, j.purpose, j.description, j.actor_kind, j.actor_reference, j.occurred_at, \
+            "SELECT (SELECT cj.conversion_id FROM ledger.transfer_conversion_journals cj WHERE cj.user_id=j.user_id AND cj.journal_id=j.id AND cj.role<>'restoration' LIMIT 1) AS transfer_conversion_id, j.id, j.user_id, j.ledger_sequence, j.source, j.purpose, COALESCE((SELECT cv.document->>'title' FROM ledger.transfer_conversions cv JOIN ledger.transfer_conversion_journals cj ON cj.user_id=cv.user_id AND cj.conversion_id=cv.id WHERE cj.user_id=j.user_id AND cj.journal_id=j.id AND cj.role='transfer'),j.description) AS description, j.actor_kind, j.actor_reference, j.occurred_at, \
                     j.recorded_at, j.correlation_id, j.reverses_transaction_id, \
                     j.corrects_transaction_id, j.replaces_transaction_id, a.version AS annotation_version, \
                     a.description AS annotation_description, a.category_id, a.assignment_origin, \
@@ -477,6 +494,7 @@ impl JournalRow {
             JournalRelations::none()
         };
         Ok(JournalView {
+            transfer_conversion_id: self.transfer_conversion_id,
             id: JournalEntryId::new(self.id),
             user_id: UserId::new(self.user_id),
             ledger_sequence: self.ledger_sequence,
@@ -609,6 +627,30 @@ impl JournalRow {
 
 #[async_trait]
 impl LedgerQueryPort for PgLedgerQueries {
+    async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError> {
+        super::analytics::analytics_calendar(&self.pool, request).await
+    }
+
+    async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError> {
+        super::analytics::analytics_aggregate(&self.pool, user_id, filter, intervals).await
+    }
+
+    async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError> {
+        super::analytics::analytics_transactions(&self.pool, user_id, query).await
+    }
+
     async fn list_accounts(&self, user_id: UserId) -> Result<Vec<AccountView>, LedgerError> {
         PgLedgerQueries::list_accounts(self, user_id).await
     }

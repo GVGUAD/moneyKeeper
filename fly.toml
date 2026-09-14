@@ -15,7 +15,7 @@ primary_region = 'fra'
   BIND_ADDR    = "0.0.0.0:8080"
   RUST_LOG     = "moneykeeper=debug"
   LOG_FORMAT   = "json"
-  CLASSIFICATION_AUTO_APPLY = "false"
+  CLASSIFICATION_AUTO_APPLY = "true"
   CLASSIFICATION_MODEL = "gpt-5.4-mini-2026-03-17"
 
 # DATABASE_URL, FINANCE_V2_ENCRYPTION_KEY_ID, FINANCE_V2_ENCRYPTION_KEY,

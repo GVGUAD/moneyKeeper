@@ -1,5 +1,6 @@
 //! Visible balance correction and exact reversal commands.
 
+use super::ports::ConversionStore;
 use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
@@ -80,6 +81,7 @@ async fn correct_balance<U: LedgerUnitOfWork>(
     });
     let request_hash = hash(&request)?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(result) = replay::<_, FinancialChangeResult>(
         &mut tx,
         command.user_id,
@@ -212,6 +214,7 @@ async fn reverse_transaction<U: LedgerUnitOfWork>(
     let request = json!({"journal_entry_id": command.journal_entry_id, "reason": command.reason, "occurred_at": command.occurred_at});
     let request_hash = hash(&request)?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(result) = replay::<_, FinancialChangeResult>(
         &mut tx,
         command.user_id,
@@ -225,6 +228,8 @@ async fn reverse_transaction<U: LedgerUnitOfWork>(
         return Ok(result);
     }
     let outcome = async {
+        tx.require_unclaimed(command.user_id, command.journal_entry_id)
+            .await?;
         let original = tx
             .find_journal(command.user_id, command.journal_entry_id, true)
             .await?
@@ -339,6 +344,7 @@ async fn replace_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
     });
     let request_hash = hash(&request)?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     if let Some(mut result) = replay::<_, ReplacementResult>(
         &mut tx,
         command.user_id,
@@ -374,6 +380,8 @@ async fn replace_transaction<U: LedgerUnitOfWork, C: CategoryCatalog>(
         None => None,
     };
     let outcome = async {
+        tx.require_unclaimed(command.user_id, command.original_journal_entry_id)
+            .await?;
         let original = tx
             .find_journal(command.user_id, command.original_journal_entry_id, true)
             .await?
@@ -537,6 +545,7 @@ async fn replay_replacement_after<U: LedgerUnitOfWork>(
     original: LedgerError,
 ) -> Result<ReplacementResult, LedgerError> {
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(command.user_id).await?;
     let result = replay(
         &mut tx,
         command.user_id,
@@ -663,6 +672,7 @@ async fn replay_after<U: LedgerUnitOfWork>(
     original: LedgerError,
 ) -> Result<FinancialChangeResult, LedgerError> {
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(user_id).await?;
     let result = replay(&mut tx, user_id, scope, key, hash).await;
     tx.rollback().await?;
     result?.ok_or(original)

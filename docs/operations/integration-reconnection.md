@@ -8,6 +8,9 @@ are healthy.
 
 ## Monobank
 
+For the current Banking model and ongoing connection, mapping, synchronization,
+and recovery procedures, see the [Banking operations guide](../banking/operations.md).
+
 Configure the public callback base before starting the service. It is a base
 URL, not the secret callback itself:
 

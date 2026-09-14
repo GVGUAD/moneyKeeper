@@ -10,9 +10,39 @@ use super::super::{
 };
 use super::accounts::LedgerApplication;
 use super::ports::{LedgerQueryPort, ProjectionRebuildPort};
+use crate::contexts::ledger::public::{
+    AnalyticsCalendar, AnalyticsCalendarRequest, AnalyticsFact, AnalyticsFilter, AnalyticsInterval,
+    AnalyticsPage, AnalyticsTransactionsQuery,
+};
 use crate::shared_kernel::UserId;
 
 impl<U, Q: LedgerQueryPort, P: ProjectionRebuildPort> LedgerApplication<U, Q, P> {
+    pub async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError> {
+        self.queries.analytics_calendar(request).await
+    }
+
+    pub async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError> {
+        self.queries
+            .analytics_aggregate(user_id, filter, intervals)
+            .await
+    }
+
+    pub async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError> {
+        self.queries.analytics_transactions(user_id, query).await
+    }
+
     /// Validates a provider mapping without revealing a cross-tenant account.
     pub async fn validate_provider_account_binding(
         &self,

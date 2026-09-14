@@ -23,7 +23,15 @@ pub fn router(contexts: ContextFacades, jwks: Arc<JwkSet>) -> Router {
     let categories = contexts.categories.clone();
     let classification = contexts.classification.clone();
     let ledger = contexts.ledger.clone();
+    let analytics = crate::contexts::reporting::public::ReportingAnalyticsFacade::new(
+        ledger.clone(),
+        categories.clone(),
+        contexts.currencies.clone(),
+    );
     let authenticated = Router::new()
+        .merge(crate::contexts::reporting::api::analytics::router(
+            analytics,
+        ))
         .merge(crate::contexts::portfolio::api::routes::router(
             contexts.portfolio,
         ))
@@ -172,6 +180,18 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
     ("POST", "/transactions/{id}/classification/retry"),
     ("POST", "/transactions/{id}/reversals"),
     ("POST", "/transactions/{id}/replacements"),
+    ("GET", "/transactions/{id}/transfer-candidates"),
+    ("POST", "/transactions/{id}/transfer-conversion-preview"),
+    ("POST", "/transactions/{id}/transfer-conversions"),
+    ("GET", "/transfer-conversions/{id}"),
+    ("PATCH", "/transfer-conversions/{id}"),
+    ("POST", "/transfer-conversions/{id}/undo"),
+    ("POST", "/transfer-conversions/{id}/attachments"),
+    ("GET", "/transfer-conversion-reviews"),
+    ("GET", "/transfer-conversion-reviews/{id}"),
+    ("POST", "/transfer-conversion-reviews/{id}/resolve"),
+    ("GET", "/transfer-conversion-notifications"),
+    ("GET", "/transfer-conversions/{id}/attachment-candidates"),
     ("POST", "/transfers"),
     ("POST", "/accounts/{id}/balance-corrections"),
     ("GET", "/classification/review-queue"),
@@ -226,6 +246,8 @@ pub const ROUTE_MANIFEST: &[(&str, &str)] = &[
         "/subscription-charges/{charge_evidence_id}/matches/{match_id}/unmatches",
     ),
     ("GET", "/fx-rates"),
+    ("GET", "/reports/analytics"),
+    ("GET", "/reports/analytics/transactions"),
     ("GET", "/reports/balance-history"),
     ("GET", "/reports/cashflow"),
     ("GET", "/reports/spending"),

@@ -177,6 +177,29 @@ pub(crate) async fn account_activity(
     Query(query): Query<ActivityQuery>,
 ) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
     let after = cursor(&query)?;
+    if query.grouped_transfers == Some(true) || query.hide_reversed == Some(true) {
+        state
+            .ledger
+            .get_account(user_id, LedgerAccountId::new(id))
+            .await
+            .map_err(map_ledger_error)?;
+        let filter = ActivityFilter::new(
+            DateTime::from_timestamp(-62_135_596_800, 0).unwrap(),
+            DateTime::from_timestamp(253_402_300_799, 0).unwrap(),
+            ActivityKind::All,
+        )
+        .map_err(map_ledger_error)?
+        .with_grouped_transfers(query.grouped_transfers.unwrap_or(false))
+        .with_hide_reversed(query.hide_reversed.unwrap_or(false))
+        .for_account(LedgerAccountId::new(id));
+        return state
+            .ledger
+            .list_activity(user_id, filter, after, query.limit.unwrap_or(50))
+            .await
+            .map(Json)
+            .map_err(map_ledger_error);
+    }
+
     state
         .ledger
         .account_activity(
@@ -247,7 +270,9 @@ pub(crate) async fn list_transactions(
             "kind filtering requires an activity date range",
         ));
     }
-    let filtered = query.from_occurred_at.is_some()
+    let filtered = query.grouped_transfers == Some(true)
+        || query.hide_reversed == Some(true)
+        || query.from_occurred_at.is_some()
         || query.kind.is_some()
         || query.category_id.is_some()
         || query.uncategorized == Some(true);
@@ -278,7 +303,14 @@ pub(crate) async fn list_transactions(
         }
         state
             .ledger
-            .list_activity(user_id, filter, after, query.limit.unwrap_or(50))
+            .list_activity(
+                user_id,
+                filter
+                    .with_grouped_transfers(query.grouped_transfers.unwrap_or(false))
+                    .with_hide_reversed(query.hide_reversed.unwrap_or(false)),
+                after,
+                query.limit.unwrap_or(50),
+            )
             .await
     } else {
         state
@@ -320,7 +352,12 @@ pub(crate) async fn summarize_transactions(
     }
     state
         .ledger
-        .summarize_activity(user_id, filter)
+        .summarize_activity(
+            user_id,
+            filter
+                .with_grouped_transfers(query.grouped_transfers.unwrap_or(false))
+                .with_hide_reversed(query.hide_reversed.unwrap_or(false)),
+        )
         .await
         .map(Json)
         .map_err(map_ledger_error)
@@ -650,7 +687,7 @@ pub(crate) async fn dismiss_reconciliation(
         .map_err(map_ledger_error)
 }
 
-fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, ApiError> {
+pub(super) fn idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, ApiError> {
     let value = headers
         .get("Idempotency-Key")
         .ok_or_else(|| ApiError::bad_request("missing Idempotency-Key header"))?
@@ -668,7 +705,7 @@ async fn money(state: &LedgerApiState, request: &MoneyRequest) -> Result<Money, 
     money_for(state, request.amount.clone(), code).await
 }
 
-async fn money_for(
+pub(super) async fn money_for(
     state: &LedgerApiState,
     amount: String,
     code: CurrencyCode,
@@ -724,7 +761,7 @@ fn map_currency_error(error: CurrencyError) -> ApiError {
     }
 }
 
-fn map_ledger_error(error: LedgerError) -> ApiError {
+pub(super) fn map_ledger_error(error: LedgerError) -> ApiError {
     if error.is_not_found() || error.is_tenant_mismatch() {
         ApiError::not_found("ledger resource was not found")
     } else if error.is_version_conflict()

@@ -30,6 +30,7 @@ sha2 = "0.10"
 zeroize = "1"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 axum-test = "17"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "migrate", "uuid", "chrono", "rust_decimal"] }
 testcontainers = "0.23"

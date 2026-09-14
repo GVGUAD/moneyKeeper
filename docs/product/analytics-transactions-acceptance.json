@@ -1,0 +1,66 @@
+{
+  "metadata": {
+    "as_of": "2026-09-09T00:00:00Z",
+    "currency": "UAH",
+    "timezone": "UTC",
+    "from": "2026-08-01T00:00:00Z",
+    "to": "2026-09-01T00:00:00Z",
+    "category_id": null,
+    "category_scope": null,
+    "uncategorized": false,
+    "taxonomy_version": 4,
+    "coverage": "recorded_transactions",
+    "kind": "expense"
+  },
+  "summary": {
+    "transaction_count": 4,
+    "contribution": "-145"
+  },
+  "items": [
+    {
+      "journal_entry_id": "00000000-0000-0000-0000-000000000008",
+      "ledger_sequence": 8,
+      "occurred_at": "2026-08-10T12:00:00Z",
+      "description": "Replacement restaurant expense",
+      "category_id": "00000000-0000-0000-0000-000000000012",
+      "income": "0",
+      "expenses": "60",
+      "net": "-60",
+      "contribution": "-60"
+    },
+    {
+      "journal_entry_id": "00000000-0000-0000-0000-000000000004",
+      "ledger_sequence": 4,
+      "occurred_at": "2026-08-10T12:00:00Z",
+      "description": "Expense credit",
+      "category_id": "00000000-0000-0000-0000-000000000011",
+      "income": "0",
+      "expenses": "-20",
+      "net": "20",
+      "contribution": "20"
+    },
+    {
+      "journal_entry_id": "00000000-0000-0000-0000-000000000003",
+      "ledger_sequence": 3,
+      "occurred_at": "2026-08-10T12:00:00Z",
+      "description": "Transfer fee",
+      "category_id": null,
+      "income": "0",
+      "expenses": "5",
+      "net": "-5",
+      "contribution": "-5"
+    },
+    {
+      "journal_entry_id": "00000000-0000-0000-0000-000000000002",
+      "ledger_sequence": 2,
+      "occurred_at": "2026-08-10T12:00:00Z",
+      "description": "Groceries",
+      "category_id": "00000000-0000-0000-0000-000000000011",
+      "income": "0",
+      "expenses": "100",
+      "net": "-100",
+      "contribution": "-100"
+    }
+  ],
+  "next_cursor": null
+}

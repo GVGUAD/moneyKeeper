@@ -238,3 +238,9 @@ pub struct PortfolioSummary {
     pub incomplete: bool,
     pub source_sequence: u64,
 }
+
+pub use super::application::analytics::{
+    AggregateMetadata, AnalyticsBreakdown, AnalyticsError, AnalyticsListRequest,
+    AnalyticsListResponse, AnalyticsMetadata, AnalyticsRequest, AnalyticsResponse,
+    AnalyticsSelection, CategoryScope, ListMetadata, ReportingAnalyticsFacade,
+};

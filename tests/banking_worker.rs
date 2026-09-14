@@ -210,4 +210,54 @@ async fn pending_connection_activates_registers_and_fetches_a_snapshot_window() 
     .await
     .unwrap();
     assert_eq!(windows, 1);
+
+    // An unfinished event must hold the page open.
+    assert!(
+        !banking
+            .finalize_sync_page_once(now + Duration::seconds(4))
+            .await
+            .unwrap()
+            .claimed
+    );
+    for (index, expected_state) in [(0, "requested"), (1, "completed")] {
+        if index == 1 {
+            let statement = banking
+                .run_statement_once("worker-statement", now + Duration::seconds(65))
+                .await
+                .unwrap();
+            assert!(statement.claimed);
+        }
+        // Model terminal intake outcomes without involving the Ledger import worker.
+        sqlx::query(
+            "UPDATE banking.provider_event_processes SET state='quarantined' WHERE user_id=$1",
+        )
+        .bind(user_id.into_uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let finalized = banking
+            .finalize_sync_page_once(now + Duration::seconds(66 + index))
+            .await
+            .unwrap();
+        assert!(finalized.claimed);
+        let (state, cursor): (String, Option<String>) =
+            sqlx::query_as("SELECT state,cursor FROM banking.sync_jobs WHERE id=$1 AND user_id=$2")
+                .bind(job.id.into_uuid())
+                .bind(user_id.into_uuid())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, expected_state);
+        assert_eq!(cursor.is_some(), index == 0);
+        let pages = banking.list_sync_pages(user_id, job.id).await.unwrap();
+        assert_eq!(pages.len(), (index + 1) as usize);
+        assert!(pages.iter().all(|page| page.state == "completed"));
+    }
+    assert!(
+        !banking
+            .finalize_sync_page_once(now + Duration::seconds(68))
+            .await
+            .unwrap()
+            .claimed
+    );
 }

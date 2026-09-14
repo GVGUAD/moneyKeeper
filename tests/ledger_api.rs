@@ -716,6 +716,26 @@ async fn complete_visible_money_lifecycle_and_tamper_recovery() {
             .any(|entry| entry["source"] == "manual")
     );
 
+    let visible_activity = server
+        .get(&format!(
+            "/accounts/{card_id}/activity?limit=50&hide_reversed=true"
+        ))
+        .await;
+    visible_activity.assert_status_ok();
+    let expected: Vec<Value> = activity
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|j| {
+            j["reversed_by_journal_id"].is_null()
+                && j["purpose"] != "reversal"
+                && j["relations"]["reverses_transaction_id"].is_null()
+        })
+        .cloned()
+        .collect();
+    assert_eq!(visible_activity.json::<Vec<Value>>(), expected);
+    assert!(expected.iter().any(|j| !j["correction"].is_null()));
+
     sqlx::query("UPDATE ledger.account_balances SET signed_balance = signed_balance + 1 WHERE account_id = $1 AND user_id = $2")
         .bind(card_account.into_uuid()).bind(user.into_uuid()).execute(&pool).await.unwrap();
     assert_eq!(contexts.ledger.verify_projection().await.unwrap().len(), 1);
@@ -1277,4 +1297,280 @@ async fn category_summary_tracks_manual_and_automatic_assignment_changes() {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id.into_uuid(), manual);
     }
+}
+
+#[tokio::test]
+async fn conversion_http_preview_commit_grouped_history_and_undo() {
+    let server = app(Uuid::new_v4()).await;
+    let a = summary_account(&server, "UAH").await;
+    let b = summary_account(&server, "UAH").await;
+    let journal = summary_transaction(
+        &server,
+        a,
+        None,
+        "expense",
+        "100",
+        "UAH",
+        "2026-09-01T12:00:00Z",
+    )
+    .await;
+    let input = json!({"other_account_id":b,"missing_side":{"amount":"100","currency":"UAH"},"title":"Transfer"});
+    let preview = server
+        .post(&format!(
+            "/transactions/{journal}/transfer-conversion-preview"
+        ))
+        .json(&input)
+        .await;
+    preview.assert_status_ok();
+    let mut commit = input;
+    commit["version_token"] = preview.json::<Value>()["version_token"].clone();
+    let converted = server
+        .post(&format!("/transactions/{journal}/transfer-conversions"))
+        .add_header("Idempotency-Key", "convert-http")
+        .json(&commit)
+        .await;
+    converted.assert_status_ok();
+    let c = converted.json::<Value>();
+    let id = c["id"].as_str().unwrap();
+    let grouped=server.get("/transactions?grouped_transfers=true&from_occurred_at=2026-09-01T00:00:00Z&before_occurred_at=2026-09-02T00:00:00Z&limit=1").await;
+    grouped.assert_status_ok();
+    assert_eq!(grouped.json::<Vec<Value>>().len(), 1);
+    let summary=server.get("/transactions/summary?grouped_transfers=true&from_occurred_at=2026-09-01T00:00:00Z&before_occurred_at=2026-09-02T00:00:00Z").await;
+    summary.assert_status_ok();
+    assert_eq!(summary.json::<Value>()["transaction_count"], 1);
+    server
+        .post(&format!("/transfer-conversions/{id}/undo"))
+        .add_header("Idempotency-Key", "undo-http")
+        .json(&json!({"expected_version":1}))
+        .await
+        .assert_status_ok();
+}
+
+async fn reverse_for_visibility(server: &TestServer, original: Uuid, at: &str) -> Uuid {
+    let response = server
+        .post(&format!("/transactions/{original}/reversals"))
+        .add_header("Idempotency-Key", Uuid::new_v4().to_string())
+        .json(&json!({"reason":"Visibility regression", "occurred_at":at}))
+        .await;
+    response.assert_status(StatusCode::CREATED);
+    response.json::<Value>()["journal_entry_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn hide_reversed_filters_before_pagination_and_preserves_history_and_balances() {
+    let user = Uuid::new_v4();
+    let (server, contexts) = app_with_contexts(user).await;
+    let account = summary_account(&server, "UAH").await;
+    let at = "2026-09-15T12:00:00Z";
+    let mut visible = Vec::new();
+    let mut hidden = Vec::new();
+    // All originals share an occurrence timestamp: cursor ties must use sequence.
+    // More than one raw page of hidden entries precedes and separates survivors.
+    for index in 0..9 {
+        let original =
+            summary_transaction(&server, account, None, "expense", "10", "UAH", at).await;
+        if index % 3 == 0 {
+            visible.push(original.to_string());
+        } else {
+            let reversal = reverse_for_visibility(
+                &server,
+                original,
+                if index == 8 {
+                    "2026-10-15T12:00:00Z"
+                } else {
+                    at
+                },
+            )
+            .await;
+            hidden.push((original, reversal));
+        }
+    }
+    visible.reverse();
+    let balance_before_reads = server
+        .get(&format!("/accounts/{account}"))
+        .await
+        .json::<Value>();
+    assert!(
+        contexts
+            .ledger
+            .verify_projection()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    for path in [
+        "/transactions".to_owned(),
+        format!("/accounts/{account}/activity"),
+    ] {
+        let raw = server.get(&format!("{path}?limit=200")).await;
+        raw.assert_status_ok();
+        let raw = raw.json::<Vec<Value>>();
+        let explicit_false = server
+            .get(&format!("{path}?limit=200&hide_reversed=false"))
+            .await;
+        explicit_false.assert_status_ok();
+        assert_eq!(raw, explicit_false.json::<Vec<Value>>());
+        for (original, reversal) in &hidden {
+            assert!(raw.iter().any(|j| j["id"] == original.to_string()));
+            assert!(raw.iter().any(|j| j["id"] == reversal.to_string()));
+        }
+
+        for grouped in [false, true] {
+            let base = format!("{path}?limit=2&hide_reversed=true&grouped_transfers={grouped}");
+            let first = server.get(&base).await;
+            first.assert_status_ok();
+            let first = first.json::<Vec<Value>>();
+            assert_eq!(
+                first.len(),
+                2,
+                "hidden journals must not consume the page limit"
+            );
+            assert_eq!(first[0]["id"], visible[0]);
+            assert_eq!(first[1]["id"], visible[1]);
+            let last = first.last().unwrap();
+            let second = server
+                .get(&format!(
+                    "{base}&after_occurred_at={}&after_sequence={}",
+                    last["occurred_at"].as_str().unwrap(),
+                    last["ledger_sequence"]
+                ))
+                .await;
+            second.assert_status_ok();
+            let second = second.json::<Vec<Value>>();
+            assert_eq!(second.len(), 1);
+            assert_eq!(second[0]["id"], visible[2]);
+            let last = &second[0];
+            let end = server
+                .get(&format!(
+                    "{base}&after_occurred_at={}&after_sequence={}",
+                    last["occurred_at"].as_str().unwrap(),
+                    last["ledger_sequence"]
+                ))
+                .await;
+            end.assert_status_ok();
+            assert!(end.json::<Vec<Value>>().is_empty());
+        }
+        server
+            .get(&format!("{path}?hide_reversed=invalid"))
+            .await
+            .assert_status_bad_request();
+    }
+
+    let (page, summary) =
+        assert_summary_parity(&server, &format!("{SUMMARY_RANGE}&hide_reversed=true"), 2).await;
+    assert_eq!(
+        page.iter().map(|j| j.id.to_string()).collect::<Vec<_>>(),
+        visible
+    );
+    assert_eq!(summary.transaction_count, 3);
+    assert_eq!(summary.totals[0].amount, Decimal::from(-30));
+    for (original, reversal) in hidden {
+        let original_detail = server.get(&format!("/transactions/{original}")).await;
+        original_detail.assert_status_ok();
+        assert_eq!(
+            original_detail.json::<Value>()["reversed_by_journal_id"],
+            reversal.to_string()
+        );
+        let reversal_detail = server.get(&format!("/transactions/{reversal}")).await;
+        reversal_detail.assert_status_ok();
+        let reversal_detail = reversal_detail.json::<Value>();
+        assert_eq!(reversal_detail["purpose"], "reversal");
+        assert_eq!(
+            reversal_detail["relations"]["reverses_transaction_id"],
+            original.to_string()
+        );
+    }
+    assert_eq!(
+        balance_before_reads,
+        server
+            .get(&format!("/accounts/{account}"))
+            .await
+            .json::<Value>()
+    );
+    assert!(
+        contexts
+            .ledger
+            .verify_projection()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let foreign = server
+        .get("/transactions?hide_reversed=true")
+        .clear_headers()
+        .add_header(AUTHORIZATION, format!("Bearer {}", jwt(Uuid::new_v4())))
+        .await;
+    foreign.assert_status_ok();
+    assert!(foreign.json::<Vec<Value>>().is_empty());
+}
+
+#[tokio::test]
+async fn hide_reversed_summary_matches_category_kind_and_out_of_range_reversals() {
+    let server = app(Uuid::new_v4()).await;
+    let account = summary_account(&server, "UAH").await;
+    let category = summary_category(&server, "Visible summary", None).await;
+    let hidden_category = summary_category(&server, "Only reversed", None).await;
+    let at = "2026-09-15T12:00:00Z";
+    let original =
+        summary_transaction(&server, account, Some(category), "expense", "99", "UAH", at).await;
+    reverse_for_visibility(&server, original, "2026-10-15T12:00:00Z").await;
+    summary_transaction(&server, account, Some(category), "income", "7", "UAH", at).await;
+    summary_transaction(&server, account, None, "expense", "3", "UAH", at).await;
+    let hidden_account = summary_account(&server, "UAH").await;
+    let hidden = summary_transaction(
+        &server,
+        hidden_account,
+        Some(hidden_category),
+        "expense",
+        "8",
+        "UAH",
+        at,
+    )
+    .await;
+    reverse_for_visibility(&server, hidden, at).await;
+
+    for (filter, expected) in [
+        (format!("category_id={category}&kind=all"), 1),
+        (format!("category_id={category}&kind=income"), 1),
+        (format!("category_id={category}&kind=expense"), 0),
+        ("uncategorized=true&kind=expense".to_owned(), 1),
+        (format!("category_id={hidden_category}"), 0),
+    ] {
+        let query = format!("{SUMMARY_RANGE}&hide_reversed=true&{filter}");
+        let (_, summary) = assert_summary_parity(&server, &query, 1).await;
+        assert_eq!(summary.transaction_count, expected);
+        if expected == 0 {
+            assert_eq!(summary.category_count, 0);
+            assert!(summary.totals.is_empty());
+        }
+    }
+    let only_hidden = server
+        .get(&format!(
+            "/accounts/{hidden_account}/activity?hide_reversed=true&limit=1"
+        ))
+        .await;
+    only_hidden.assert_status_ok();
+    assert!(only_hidden.json::<Vec<Value>>().is_empty());
+    let unfiltered_query = format!("{SUMMARY_RANGE}&category_id={category}");
+    let (_, raw_summary) = assert_summary_parity(&server, &unfiltered_query, 1).await;
+    let (_, explicit_false) = assert_summary_parity(
+        &server,
+        &format!("{unfiltered_query}&hide_reversed=false"),
+        1,
+    )
+    .await;
+    assert_eq!(raw_summary, explicit_false);
+    assert_eq!(raw_summary.transaction_count, 2);
+    server
+        .get(&format!(
+            "/transactions/summary?{SUMMARY_RANGE}&hide_reversed=invalid"
+        ))
+        .await
+        .assert_status_bad_request();
 }

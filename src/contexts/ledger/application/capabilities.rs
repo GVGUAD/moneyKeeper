@@ -12,6 +12,11 @@ use crate::contexts::ledger::public::*;
 
 #[async_trait]
 pub(crate) trait LedgerCommandCapability: Send + Sync {
+    async fn transfer_conversion(
+        &self,
+        user_id: UserId,
+        action: ConversionAction,
+    ) -> Result<ConversionResponse, LedgerError>;
     async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError>;
     async fn open_provider_observed_account(
         &self,
@@ -57,6 +62,24 @@ pub(crate) trait LedgerCommandCapability: Send + Sync {
 
 #[async_trait]
 pub(crate) trait LedgerQueryCapability: Send + Sync {
+    async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError>;
+
+    async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError>;
+
+    async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError>;
+
     async fn validate_provider_account_binding(
         &self,
         command: ValidateProviderAccountBinding,
@@ -197,6 +220,13 @@ where
     Q: LedgerQueryPort + Send + Sync,
     P: Send + Sync,
 {
+    async fn transfer_conversion(
+        &self,
+        user_id: UserId,
+        action: ConversionAction,
+    ) -> Result<ConversionResponse, LedgerError> {
+        LedgerApplication::transfer_conversion(self, user_id, action).await
+    }
     async fn open_account(&self, command: OpenAccount) -> Result<AccountResult, LedgerError> {
         LedgerApplication::open_account(self, command).await
     }
@@ -275,6 +305,30 @@ where
     Q: LedgerQueryPort + Send + Sync,
     P: ProjectionRebuildPort + Send + Sync,
 {
+    async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError> {
+        LedgerApplication::analytics_calendar(self, request).await
+    }
+
+    async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError> {
+        LedgerApplication::analytics_aggregate(self, user_id, filter, intervals).await
+    }
+
+    async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError> {
+        LedgerApplication::analytics_transactions(self, user_id, query).await
+    }
+
     async fn validate_provider_account_binding(
         &self,
         command: ValidateProviderAccountBinding,

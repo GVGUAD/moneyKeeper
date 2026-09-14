@@ -1,0 +1,146 @@
+@startuml banking-tactical-model
+title Banking — Tactical Model and Durable Coordination
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+
+package "Connection Aggregate" <<Aggregate>> {
+  class ProviderConnection <<(A,orchid) Aggregate Root>> {
+    -id: ProviderConnectionId
+    -user_id: UserId
+    -state: ConnectionState
+    -version: ConnectionVersion
+    -credential_generation: i64
+    +request()
+    +activate()
+    +request_credential_replacement()
+    +activate_candidate()
+    +reject_candidate()
+    +disconnect()
+  }
+  class CredentialEnvelope <<(V,lightgreen) Value Object>>
+  class ConnectionVersion <<(V,lightgreen) Value Object>>
+  ProviderConnection *-- "0..2" CredentialEnvelope : active / pending
+  ProviderConnection *-- ConnectionVersion
+}
+
+package "Resource Aggregate" <<Aggregate>> {
+  class ExternalResource <<(A,orchid) Aggregate Root>> {
+    -id: ExternalResourceId
+    -connection_id: ProviderConnectionId
+    -kind: ResourceKind
+    -funding_model: FundingModel
+    -currency: CurrencyCode
+    -version: i64
+    +mapping_decision()
+    +map()
+    +deactivate_mapping()
+    +change_currency()
+  }
+  class ResourceMapping <<(E,skyblue) Entity>> {
+    -id: ResourceMappingId
+    -ledger_account_id: LedgerAccountId
+    -active: bool
+    -effective_at: DateTime<Utc>
+    -ended_at: Option<DateTime<Utc>>
+    -end_reason: Option<String>
+  }
+  ExternalResource *-- "0..*" ResourceMapping : mapping history
+}
+
+class ProviderEvent <<Immutable Fact>> {
+  -id: ProviderEventId
+  -state: ProviderTransactionState
+  -operation_money: Money
+  -content_digest: [u8; 32]
+  +record()
+  +next_revision()
+}
+class ProviderEventIdentity <<(V,lightgreen) Value Object>> {
+  -connection_id: ProviderConnectionId
+  -resource_id: ExternalResourceId
+  -external_event_id: String
+  -revision: i64
+}
+ProviderEvent *-- ProviderEventIdentity
+
+class SyncJob <<Domain Model>> {
+  -id: SyncJobId
+  -resource_id: ExternalResourceId
+  -state: SyncJobState
+  +request()
+  +claim()
+  +begin_page()
+  +complete_page()
+}
+class SyncLease <<(V,lightgreen) Value Object>>
+SyncJob ..> SyncLease : issues / validates
+
+class BalanceObservation <<Immutable Fact With Delivery State>> {
+  -id: BalanceObservationId
+  -resource_id: ExternalResourceId
+  -source_sequence: i64
+  -basis: BalanceBasis
+  -provider_money: Money
+  -comparability: BalanceComparability
+  +record()
+  +mark_delivered()
+}
+
+package "Application / Persistence Coordination" {
+  class BankingFacade <<Public Facade>>
+  interface ConnectionRepository <<Private Port>>
+  interface ResourceRepository <<Private Port>>
+  interface ProviderEventRepository <<Private Port>>
+  interface SyncJobRepository <<Private Port>>
+  interface ObservationRepository <<Private Port>>
+  interface WebhookRepository <<Private Port>>
+  interface BankingWorkerRepository <<Private Port>>
+  interface ProviderClient <<Port>>
+  interface ProviderNormalizer <<Private Port>>
+  interface CredentialCipher <<Port>>
+  class "Provider import process" as ImportProcess <<Durable Coordination>>
+  class "Sync page and event links" as SyncPage <<Durable Coordination>>
+  class "Observation delivery" as Delivery <<Durable Coordination>>
+}
+
+BankingFacade ..> ConnectionRepository
+BankingFacade ..> ResourceRepository
+BankingFacade ..> ProviderEventRepository
+BankingFacade ..> SyncJobRepository
+BankingFacade ..> ObservationRepository
+BankingFacade ..> WebhookRepository
+BankingFacade ..> BankingWorkerRepository
+BankingFacade ..> ProviderClient
+BankingFacade ..> ProviderNormalizer
+BankingFacade ..> CredentialCipher
+ConnectionRepository ..> ProviderConnection
+ResourceRepository ..> ExternalResource
+ProviderEventRepository ..> ProviderEvent
+SyncJobRepository ..> SyncJob
+ObservationRepository ..> BalanceObservation
+ImportProcess ..> ProviderEvent : identity / processing progress
+SyncPage ..> SyncJob : job identity
+SyncPage ..> ProviderEvent : completion links
+Delivery ..> BalanceObservation : observation identity
+
+note right of ExternalResource
+  At most one active mapping.
+  Account identity references Ledger through its public contract.
+  Resources reference connections by ID, not aggregate containment.
+end note
+
+note bottom of ImportProcess
+  Runtime policies call Ledger with stable command identities.
+  A separate fenced completion records the resulting journal link.
+  These boxes describe persisted coordination, not new Rust classes.
+end note
+
+legend bottom
+  Selected implemented types and methods; signatures abbreviated.
+  Persistence views contain additional workflow fields.
+  Fact content is immutable; processing/delivery progress is stored separately.
+  See bounded-context-banking.md for runtime invariants and limitations.
+endlegend
+
+@enduml

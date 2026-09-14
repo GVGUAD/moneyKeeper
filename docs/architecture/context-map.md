@@ -27,6 +27,9 @@ API version.
 | Portfolio | `portfolio`, `contexts/portfolio` | Account/instrument, transaction/lot, valuation, and cash-settlement persistence plus Ledger settlement capability; publishes transaction, position, valuation, and cash-settlement facts. |
 | Reporting | `reporting`, `contexts/reporting` | Projection writer, report query, and projection-rebuild capabilities over published facts. |
 
+For Banking's domain model, integration contracts, and operational workflows,
+see the [Banking documentation](../banking/domain-context.md).
+
 ## Dependency rule
 
 ```text

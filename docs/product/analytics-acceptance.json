@@ -1,0 +1,700 @@
+{
+  "metadata": {
+    "as_of": "2026-09-09T00:00:00Z",
+    "currency": "UAH",
+    "timezone": "UTC",
+    "from": "2026-08-01T00:00:00Z",
+    "to": "2026-09-01T00:00:00Z",
+    "category_id": null,
+    "category_scope": null,
+    "uncategorized": false,
+    "taxonomy_version": 4,
+    "coverage": "recorded_transactions",
+    "comparison_from": "2026-07-01T00:00:00Z",
+    "comparison_to": "2026-08-01T00:00:00Z",
+    "series_granularity": "day",
+    "trend_from": "2026-03-01T00:00:00Z",
+    "trend_to": "2026-09-01T00:00:00Z",
+    "trend_months": 6
+  },
+  "current": {
+    "income": "1200",
+    "expenses": "145",
+    "net": "1055",
+    "purchases": "165",
+    "expense_credits": "20",
+    "income_count": 1,
+    "expense_count": 4,
+    "transaction_count": 5
+  },
+  "comparison": {
+    "income": "0",
+    "expenses": "100",
+    "net": "-100",
+    "purchases": "100",
+    "expense_credits": "0",
+    "income_count": 0,
+    "expense_count": 1,
+    "transaction_count": 1
+  },
+  "breakdown": [
+    {
+      "key": "subtree:00000000-0000-0000-0000-000000000010",
+      "category_id": "00000000-0000-0000-0000-000000000010",
+      "scope": "subtree",
+      "label": "Food",
+      "path": [
+        "Food"
+      ],
+      "color": "#FF8800",
+      "icon": "utensils",
+      "has_children": true,
+      "current": {
+        "income": "0",
+        "expenses": "140",
+        "net": "-140",
+        "purchases": "160",
+        "expense_credits": "20",
+        "income_count": 0,
+        "expense_count": 3,
+        "transaction_count": 3
+      },
+      "comparison": {
+        "income": "0",
+        "expenses": "100",
+        "net": "-100",
+        "purchases": "100",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 1,
+        "transaction_count": 1
+      }
+    },
+    {
+      "key": "uncategorized",
+      "category_id": null,
+      "scope": "uncategorized",
+      "label": "Uncategorized",
+      "path": [],
+      "color": "#808080",
+      "icon": "tag",
+      "has_children": false,
+      "current": {
+        "income": "0",
+        "expenses": "5",
+        "net": "-5",
+        "purchases": "5",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 1,
+        "transaction_count": 1
+      },
+      "comparison": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    }
+  ],
+  "series": [
+    {
+      "from": "2026-08-01T00:00:00Z",
+      "to": "2026-08-02T00:00:00Z",
+      "label_date": "2026-08-01",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-02T00:00:00Z",
+      "to": "2026-08-03T00:00:00Z",
+      "label_date": "2026-08-02",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-03T00:00:00Z",
+      "to": "2026-08-04T00:00:00Z",
+      "label_date": "2026-08-03",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-04T00:00:00Z",
+      "to": "2026-08-05T00:00:00Z",
+      "label_date": "2026-08-04",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-05T00:00:00Z",
+      "to": "2026-08-06T00:00:00Z",
+      "label_date": "2026-08-05",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-06T00:00:00Z",
+      "to": "2026-08-07T00:00:00Z",
+      "label_date": "2026-08-06",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-07T00:00:00Z",
+      "to": "2026-08-08T00:00:00Z",
+      "label_date": "2026-08-07",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-08T00:00:00Z",
+      "to": "2026-08-09T00:00:00Z",
+      "label_date": "2026-08-08",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-09T00:00:00Z",
+      "to": "2026-08-10T00:00:00Z",
+      "label_date": "2026-08-09",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-10T00:00:00Z",
+      "to": "2026-08-11T00:00:00Z",
+      "label_date": "2026-08-10",
+      "partial": false,
+      "totals": {
+        "income": "1200",
+        "expenses": "145",
+        "net": "1055",
+        "purchases": "165",
+        "expense_credits": "20",
+        "income_count": 1,
+        "expense_count": 4,
+        "transaction_count": 5
+      }
+    },
+    {
+      "from": "2026-08-11T00:00:00Z",
+      "to": "2026-08-12T00:00:00Z",
+      "label_date": "2026-08-11",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-12T00:00:00Z",
+      "to": "2026-08-13T00:00:00Z",
+      "label_date": "2026-08-12",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-13T00:00:00Z",
+      "to": "2026-08-14T00:00:00Z",
+      "label_date": "2026-08-13",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-14T00:00:00Z",
+      "to": "2026-08-15T00:00:00Z",
+      "label_date": "2026-08-14",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-15T00:00:00Z",
+      "to": "2026-08-16T00:00:00Z",
+      "label_date": "2026-08-15",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-16T00:00:00Z",
+      "to": "2026-08-17T00:00:00Z",
+      "label_date": "2026-08-16",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-17T00:00:00Z",
+      "to": "2026-08-18T00:00:00Z",
+      "label_date": "2026-08-17",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-18T00:00:00Z",
+      "to": "2026-08-19T00:00:00Z",
+      "label_date": "2026-08-18",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-19T00:00:00Z",
+      "to": "2026-08-20T00:00:00Z",
+      "label_date": "2026-08-19",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-20T00:00:00Z",
+      "to": "2026-08-21T00:00:00Z",
+      "label_date": "2026-08-20",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-21T00:00:00Z",
+      "to": "2026-08-22T00:00:00Z",
+      "label_date": "2026-08-21",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-22T00:00:00Z",
+      "to": "2026-08-23T00:00:00Z",
+      "label_date": "2026-08-22",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-23T00:00:00Z",
+      "to": "2026-08-24T00:00:00Z",
+      "label_date": "2026-08-23",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-24T00:00:00Z",
+      "to": "2026-08-25T00:00:00Z",
+      "label_date": "2026-08-24",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-25T00:00:00Z",
+      "to": "2026-08-26T00:00:00Z",
+      "label_date": "2026-08-25",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-26T00:00:00Z",
+      "to": "2026-08-27T00:00:00Z",
+      "label_date": "2026-08-26",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-27T00:00:00Z",
+      "to": "2026-08-28T00:00:00Z",
+      "label_date": "2026-08-27",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-28T00:00:00Z",
+      "to": "2026-08-29T00:00:00Z",
+      "label_date": "2026-08-28",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-29T00:00:00Z",
+      "to": "2026-08-30T00:00:00Z",
+      "label_date": "2026-08-29",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-30T00:00:00Z",
+      "to": "2026-08-31T00:00:00Z",
+      "label_date": "2026-08-30",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-08-31T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "label_date": "2026-08-31",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    }
+  ],
+  "trend": [
+    {
+      "from": "2026-03-01T00:00:00Z",
+      "to": "2026-04-01T00:00:00Z",
+      "label_date": "2026-03-01",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-04-01T00:00:00Z",
+      "to": "2026-05-01T00:00:00Z",
+      "label_date": "2026-04-01",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-05-01T00:00:00Z",
+      "to": "2026-06-01T00:00:00Z",
+      "label_date": "2026-05-01",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-06-01T00:00:00Z",
+      "to": "2026-07-01T00:00:00Z",
+      "label_date": "2026-06-01",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "0",
+        "net": "0",
+        "purchases": "0",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 0,
+        "transaction_count": 0
+      }
+    },
+    {
+      "from": "2026-07-01T00:00:00Z",
+      "to": "2026-08-01T00:00:00Z",
+      "label_date": "2026-07-01",
+      "partial": false,
+      "totals": {
+        "income": "0",
+        "expenses": "100",
+        "net": "-100",
+        "purchases": "100",
+        "expense_credits": "0",
+        "income_count": 0,
+        "expense_count": 1,
+        "transaction_count": 1
+      }
+    },
+    {
+      "from": "2026-08-01T00:00:00Z",
+      "to": "2026-09-01T00:00:00Z",
+      "label_date": "2026-08-01",
+      "partial": false,
+      "totals": {
+        "income": "1200",
+        "expenses": "145",
+        "net": "1055",
+        "purchases": "165",
+        "expense_credits": "20",
+        "income_count": 1,
+        "expense_count": 4,
+        "transaction_count": 5
+      }
+    }
+  ]
+}

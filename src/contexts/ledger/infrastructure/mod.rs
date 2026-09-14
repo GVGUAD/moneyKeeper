@@ -1,5 +1,6 @@
 //! PostgreSQL Ledger adapters.
 
+mod analytics;
 mod pg_queries;
 mod pg_repositories;
 mod pg_unit_of_work;
@@ -9,3 +10,5 @@ mod rows;
 pub(crate) use pg_queries::PgLedgerQueries;
 pub(crate) use pg_unit_of_work::PgLedgerUnitOfWork;
 pub(crate) use projection::PgLedgerProjection;
+
+mod pg_conversions;

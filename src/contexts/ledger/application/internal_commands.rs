@@ -1,5 +1,6 @@
 //! Closed accounting recipes for later-context process managers.
 
+use super::ports::ConversionStore;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rust_decimal::Decimal;
@@ -85,10 +86,27 @@ impl<U: LedgerUnitOfWork, Q, P> LedgerApplication<U, Q, P> {
         &self,
         command: ReverseProviderTransaction,
     ) -> Result<InternalAccountingResult, LedgerError> {
+        let resolved = self
+            .transfer_conversion(
+                command.metadata.user_id,
+                super::super::public::ConversionAction::ResolveProvider {
+                    previous: Some(command.imported_journal_entry_id),
+                    stream: command.metadata.source.stream_id().to_owned(),
+                    item: command.metadata.source.item_id().to_owned(),
+                    changed: true,
+                },
+            )
+            .await?;
+        let super::super::public::ConversionResponse::Reference {
+            journal_id: Some(journal_id),
+        } = resolved
+        else {
+            return Err(LedgerError::not_found());
+        };
         let result = self
             .reverse_transaction(ReverseTransaction {
                 user_id: command.metadata.user_id,
-                journal_entry_id: command.imported_journal_entry_id,
+                journal_entry_id: journal_id,
                 reason: command.reason,
                 idempotency_key: command.metadata.idempotency_key,
                 correlation_id: command.metadata.correlation_id,
@@ -892,6 +910,7 @@ async fn reclassify_selected_transaction<U: LedgerUnitOfWork>(
         "occurred_at": metadata.occurred_at,
     }))?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(metadata.user_id).await?;
     if let Some(mut result) = replay::<_, InternalAccountingResult>(
         &mut tx,
         metadata.user_id,
@@ -906,6 +925,8 @@ async fn reclassify_selected_transaction<U: LedgerUnitOfWork>(
         return Ok(result);
     }
 
+    tx.require_unclaimed(metadata.user_id, source_journal_id)
+        .await?;
     let source = tx
         .find_journal(metadata.user_id, source_journal_id, true)
         .await?
@@ -1201,6 +1222,7 @@ async fn post_with_system<U: LedgerUnitOfWork>(
         "role":role,"amount":amount,"description":description,"occurred_at":metadata.occurred_at}),
     )?;
     let mut tx = uow.begin().await?;
+    tx.lock_conversion_scope(metadata.user_id).await?;
     if let Some(mut result) = replay::<_, InternalAccountingResult>(
         &mut tx,
         metadata.user_id,
@@ -1213,6 +1235,32 @@ async fn post_with_system<U: LedgerUnitOfWork>(
         result.replayed = true;
         tx.rollback().await?;
         return Ok(result);
+    }
+
+    if journal_source == JournalSource::Import {
+        let review = super::super::public::ConversionImportReview {
+            id: metadata.correlation_id.into_uuid(),
+            version: 1,
+            state: "pending_review".into(),
+            stream: metadata.source.stream_id().into(),
+            item: metadata.source.item_id().into(),
+            account_id,
+            money: super::super::public::ConversionMoney {
+                amount: amount.amount() * Decimal::from(account_sign),
+                currency: amount.currency().clone(),
+            },
+            description: description.into(),
+            occurred_at: metadata.occurred_at,
+            candidates: vec![],
+            journal_id: None,
+            conversion_id: None,
+        };
+        if let Some(review) = tx.hold_conversion_import(metadata.user_id, review).await? {
+            let mut result = empty_result(metadata.correlation_id);
+            result.journal_entry_id = review.journal_id;
+            tx.commit().await?;
+            return Ok(result);
+        }
     }
     let account = tx
         .find_account(metadata.user_id, account_id, true)

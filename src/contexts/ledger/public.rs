@@ -1,5 +1,6 @@
 //! Stable Ledger contracts exposed to HTTP adapters and collaborating contexts.
 
+pub use super::analytics::*;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,39 @@ pub struct LedgerFacade {
 }
 
 impl LedgerFacade {
+    pub async fn transfer_conversion(
+        &self,
+        user_id: UserId,
+        action: ConversionAction,
+    ) -> Result<ConversionResponse, LedgerError> {
+        self.commands.transfer_conversion(user_id, action).await
+    }
+    pub async fn analytics_calendar(
+        &self,
+        request: AnalyticsCalendarRequest,
+    ) -> Result<AnalyticsCalendar, LedgerError> {
+        self.queries.analytics_calendar(request).await
+    }
+
+    pub async fn analytics_aggregate(
+        &self,
+        user_id: UserId,
+        filter: AnalyticsFilter,
+        intervals: Vec<AnalyticsInterval>,
+    ) -> Result<Vec<AnalyticsFact>, LedgerError> {
+        self.queries
+            .analytics_aggregate(user_id, filter, intervals)
+            .await
+    }
+
+    pub async fn analytics_transactions(
+        &self,
+        user_id: UserId,
+        query: AnalyticsTransactionsQuery,
+    ) -> Result<AnalyticsPage, LedgerError> {
+        self.queries.analytics_transactions(user_id, query).await
+    }
+
     pub(crate) fn new<T>(application: Arc<T>) -> Self
     where
         T: LedgerCommandCapability
@@ -750,6 +784,9 @@ impl ActivityKind {
 /// Validated half-open Activity range and optional cash-flow classification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivityFilter {
+    grouped_transfers: bool,
+    hide_reversed: bool,
+    account_id: Option<LedgerAccountId>,
     from_occurred_at: DateTime<Utc>,
     before_occurred_at: DateTime<Utc>,
     kind: ActivityKind,
@@ -758,6 +795,29 @@ pub struct ActivityFilter {
 }
 
 impl ActivityFilter {
+    /// Hide reversal journals and their originals from presentation reads only.
+    pub fn with_hide_reversed(mut self, hide: bool) -> Self {
+        self.hide_reversed = hide;
+        self
+    }
+    pub fn hide_reversed(&self) -> bool {
+        self.hide_reversed
+    }
+    pub fn with_grouped_transfers(mut self, grouped: bool) -> Self {
+        self.grouped_transfers = grouped;
+        self
+    }
+    pub fn for_account(mut self, account_id: LedgerAccountId) -> Self {
+        self.account_id = Some(account_id);
+        self
+    }
+    pub fn grouped_transfers(&self) -> bool {
+        self.grouped_transfers
+    }
+    pub fn account_id(&self) -> Option<LedgerAccountId> {
+        self.account_id
+    }
+
     pub fn new(
         from_occurred_at: DateTime<Utc>,
         before_occurred_at: DateTime<Utc>,
@@ -769,6 +829,9 @@ impl ActivityFilter {
             ));
         }
         Ok(Self {
+            grouped_transfers: false,
+            hide_reversed: false,
+            account_id: None,
             from_occurred_at,
             before_occurred_at,
             kind,
@@ -871,6 +934,8 @@ pub struct JournalAnnotationView {
 /// Auditable journal-entry read model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_conversion_id: Option<uuid::Uuid>,
     pub id: JournalEntryId,
     pub user_id: UserId,
     pub ledger_sequence: i64,
@@ -1313,3 +1378,5 @@ pub struct LedgerEventV1 {
     pub metadata: LedgerEventMetadataV1,
     pub fact: LedgerEventFactV1,
 }
+
+pub use super::conversion::*;

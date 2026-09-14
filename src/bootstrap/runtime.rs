@@ -665,32 +665,43 @@ pub struct BankingWorkers {
 
 impl BankingWorkers {
     pub async fn run_once(&self) -> anyhow::Result<WorkerRunReport> {
+        use super::workers::WorkerOperation;
+
         let now = chrono::Utc::now();
         let mut report = WorkerRunReport::default();
         for step in [
             self.banking
                 .run_validation_once("finance-v2-banking-validation", now)
-                .await?,
+                .await
+                .context(WorkerOperation("banking.validation"))?,
             self.banking
                 .run_webhook_registration_once(
                     "finance-v2-banking-webhook-registration",
                     self.callback_base.as_str(),
                     now,
                 )
-                .await?,
+                .await
+                .context(WorkerOperation("banking.webhook_registration"))?,
             self.banking
                 .run_webhook_receipt_once("finance-v2-banking-webhook-receipt", now)
-                .await?,
+                .await
+                .context(WorkerOperation("banking.webhook_receipt"))?,
             self.banking
                 .run_statement_once("finance-v2-banking-statement", now)
-                .await?,
+                .await
+                .context(WorkerOperation("banking.statement"))?,
         ] {
             report.claimed |= step.claimed;
             report.records = report.records.saturating_add(step.records);
             report.retry_scheduled |= step.retry_scheduled;
             report.fenced |= step.fenced;
         }
-        if let Some((user_id, event_id)) = self.banking.next_provider_import_candidate().await? {
+        if let Some((user_id, event_id)) = self
+            .banking
+            .next_provider_import_candidate()
+            .await
+            .context(WorkerOperation("banking.import_candidate"))?
+        {
             let outcome =
                 crate::integration::process_managers::banking_import::import_provider_revision(
                     &self.banking,
@@ -698,12 +709,16 @@ impl BankingWorkers {
                     user_id,
                     event_id,
                 )
-                .await?;
+                .await
+                .context(WorkerOperation("banking.import"))?;
             report.claimed = true;
             report.records = report.records.saturating_add(u32::from(!outcome.replayed));
         }
-        if let Some((user_id, observation_id)) =
-            self.banking.next_balance_observation_candidate().await?
+        if let Some((user_id, observation_id)) = self
+            .banking
+            .next_balance_observation_candidate()
+            .await
+            .context(WorkerOperation("banking.balance_candidate"))?
         {
             let outcome = crate::integration::process_managers::banking_observation::deliver_balance_observation(
                 &self.banking,
@@ -711,11 +726,15 @@ impl BankingWorkers {
                 user_id,
                 observation_id,
             )
-            .await?;
+            .await.context(WorkerOperation("banking.balance_delivery"))?;
             report.claimed = true;
             report.records = report.records.saturating_add(u32::from(!outcome.replayed));
         }
-        let finalized = self.banking.finalize_sync_page_once(now).await?;
+        let finalized = self
+            .banking
+            .finalize_sync_page_once(now)
+            .await
+            .context(WorkerOperation("banking.finalize_sync_page"))?;
         report.claimed |= finalized.claimed;
         report.records = report.records.saturating_add(finalized.records);
         report.fenced |= finalized.fenced;
