@@ -213,6 +213,9 @@ impl PgLedgerQueries {
         let ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT j.id FROM ledger.journal_entries j \
              WHERE j.user_id = $1 \
+               AND (NOT $12 OR (j.purpose <> 'reversal' AND j.reverses_transaction_id IS NULL \
+                   AND NOT EXISTS (SELECT 1 FROM ledger.journal_entries reversed \
+                       WHERE reversed.user_id = j.user_id AND reversed.reverses_transaction_id = j.id))) \
                AND (NOT $10 OR NOT EXISTS(SELECT 1 FROM ledger.transfer_conversion_journals cj JOIN ledger.transfer_conversions cv ON cv.user_id=cj.user_id AND cv.id=cj.conversion_id WHERE cj.user_id=j.user_id AND cj.journal_id=j.id AND (cj.role IN ('source','reversal') OR (cj.role='transfer' AND NOT cv.active)))) AND ($11::uuid IS NULL OR EXISTS(SELECT 1 FROM ledger.postings ap WHERE ap.user_id=j.user_id AND ap.journal_entry_id=j.id AND ap.account_id=$11)) AND j.occurred_at >= $2 AND j.occurred_at < $3 \
                AND ($4 = 'all' OR EXISTS ( \
                    SELECT 1 FROM ledger.postings flow \
@@ -246,6 +249,7 @@ impl PgLedgerQueries {
         .bind(i64::from(limit))
         .bind(filter.grouped_transfers())
         .bind(filter.account_id().map(|i| i.into_uuid()))
+        .bind(filter.hide_reversed())
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;
@@ -266,6 +270,9 @@ impl PgLedgerQueries {
             "WITH matching_journals AS ( \
                  SELECT j.id FROM ledger.journal_entries j \
                  WHERE j.user_id = $1 \
+                   AND (NOT $9 OR (j.purpose <> 'reversal' AND j.reverses_transaction_id IS NULL \
+                       AND NOT EXISTS (SELECT 1 FROM ledger.journal_entries reversed \
+                           WHERE reversed.user_id = j.user_id AND reversed.reverses_transaction_id = j.id))) \
                    AND (NOT $7 OR NOT EXISTS(SELECT 1 FROM ledger.transfer_conversion_journals cj JOIN ledger.transfer_conversions cv ON cv.user_id=cj.user_id AND cv.id=cj.conversion_id WHERE cj.user_id=j.user_id AND cj.journal_id=j.id AND (cj.role IN ('source','reversal') OR (cj.role='transfer' AND NOT cv.active)))) AND ($8::uuid IS NULL OR EXISTS(SELECT 1 FROM ledger.postings ap WHERE ap.user_id=j.user_id AND ap.journal_entry_id=j.id AND ap.account_id=$8)) AND j.occurred_at >= $2 AND j.occurred_at < $3 \
                    AND ($4 = 'all' OR EXISTS ( \
                        SELECT 1 FROM ledger.postings flow \
@@ -310,6 +317,7 @@ impl PgLedgerQueries {
         .bind(filter.uncategorized())
         .bind(filter.grouped_transfers())
         .bind(filter.account_id().map(|i| i.into_uuid()))
+        .bind(filter.hide_reversed())
         .fetch_all(&self.pool)
         .await
         .map_err(LedgerError::storage)?;

@@ -1,6 +1,7 @@
 //! Live report composition over public Ledger and Classification contracts.
 use crate::contexts::classification::public::{
-    CategoryCatalog, CategoryCatalogFacade, CategoryId, CategoryNodeView, CategoryView,
+    CategoryCatalog, CategoryCatalogFacade, CategoryId, CategoryKind, CategoryNodeView,
+    CategoryView,
 };
 use crate::contexts::ledger::public::*;
 use crate::contexts::reference_data::public::{CurrencyCatalog, CurrencyCatalogFacade};
@@ -432,10 +433,20 @@ fn breakdown_row(
             comparison: AnalyticsTotals::default(),
         };
     };
-    let direct = Some(id) == s.category_id;
+    // Only the conventional Expenses root is transparent at All categories.
+    // Keep custom roots and explicit category selections at their existing depth.
+    let expense_container = |id: CategoryId| {
+        let category = &categories[&id];
+        category.parent_id.is_none()
+            && category.kind == CategoryKind::Expense
+            && category.name.eq_ignore_ascii_case("Expenses")
+            && categories.values().any(|child| child.parent_id == Some(id))
+    };
+    let all = s.category_id.is_none() && !s.uncategorized;
+    let direct = Some(id) == s.category_id || (all && expense_container(id));
     if !direct {
         while let Some(parent) = categories[&id].parent_id {
-            if Some(parent) == s.category_id {
+            if Some(parent) == s.category_id || (all && expense_container(parent)) {
                 break;
             }
             id = parent;

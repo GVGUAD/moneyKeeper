@@ -785,6 +785,7 @@ impl ActivityKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivityFilter {
     grouped_transfers: bool,
+    hide_reversed: bool,
     account_id: Option<LedgerAccountId>,
     from_occurred_at: DateTime<Utc>,
     before_occurred_at: DateTime<Utc>,
@@ -794,6 +795,14 @@ pub struct ActivityFilter {
 }
 
 impl ActivityFilter {
+    /// Hide reversal journals and their originals from presentation reads only.
+    pub fn with_hide_reversed(mut self, hide: bool) -> Self {
+        self.hide_reversed = hide;
+        self
+    }
+    pub fn hide_reversed(&self) -> bool {
+        self.hide_reversed
+    }
     pub fn with_grouped_transfers(mut self, grouped: bool) -> Self {
         self.grouped_transfers = grouped;
         self
@@ -821,6 +830,7 @@ impl ActivityFilter {
         }
         Ok(Self {
             grouped_transfers: false,
+            hide_reversed: false,
             account_id: None,
             from_occurred_at,
             before_occurred_at,

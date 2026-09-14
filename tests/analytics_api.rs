@@ -292,3 +292,198 @@ async fn spending_breakdown_contains_only_expense_bearing_journals() {
     assert_eq!(body["breakdown"][0]["current"]["expense_count"], 2);
     assert_eq!(body["breakdown"][0]["current"]["transaction_count"], 2);
 }
+
+#[tokio::test]
+async fn starter_expenses_exposes_children_and_preserves_partition_and_drilldowns() {
+    use rust_decimal::Decimal;
+    let f = Fixture::new().await;
+    let s = server(&f).await;
+    let tree = f
+        .contexts
+        .categories
+        .taxonomy(f.user, chrono::Utc::now())
+        .await
+        .unwrap();
+    let expenses = tree
+        .roots
+        .iter()
+        .find(|n| n.category.name == "Expenses")
+        .unwrap();
+    let food = expenses
+        .children
+        .iter()
+        .find(|n| n.category.name == "Food")
+        .unwrap();
+    let groceries = food
+        .children
+        .iter()
+        .find(|n| n.category.name == "Groceries")
+        .unwrap();
+    let housing = expenses
+        .children
+        .iter()
+        .find(|n| n.category.name == "Housing")
+        .unwrap();
+    let rent = &housing.children[0];
+    let salary = &tree
+        .roots
+        .iter()
+        .find(|n| n.category.name == "Income")
+        .unwrap()
+        .children[0];
+    let custom = category(&f, "Custom expense", None).await;
+    let expense_id = expenses.category.id;
+    let food_id = food.category.id;
+    let housing_id = housing.category.id;
+    for (income, amount, month, category_id) in [
+        ("0", "100", "08", Some(groceries.category.id)),
+        ("0", "-20", "08", Some(groceries.category.id)),
+        ("0", "5", "08", None),
+        ("0", "7", "08", Some(expense_id)),
+        ("0", "9", "08", Some(custom)),
+        ("1000", "0", "08", Some(salary.category.id)),
+        ("0", "30", "07", Some(groceries.category.id)),
+        ("0", "40", "07", Some(rent.category.id)),
+    ] {
+        let journal = f
+            .journal(
+                income,
+                amount,
+                "UAH",
+                &format!("2026-{month}-10T12:00:00Z"),
+                None,
+            )
+            .await;
+        if let Some(id) = category_id {
+            assign(&f, journal, id).await;
+        }
+    }
+    // Historical archived leaves still contribute to reports.
+    sqlx::query("UPDATE classification.categories SET lifecycle='archived' WHERE id=$1")
+        .bind(groceries.category.id.into_uuid())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let body = s.get(AGG).await.json::<Value>();
+    let rows = body["breakdown"].as_array().unwrap();
+    assert_eq!(rows.len(), 5);
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r["label"] == "Expenses" || r["label"] == "Income")
+    );
+    let food_row = rows
+        .iter()
+        .find(|r| r["category_id"] == food_id.to_string())
+        .unwrap();
+    assert_eq!(food_row["scope"], "subtree");
+    assert_eq!(food_row["has_children"], true);
+    assert_eq!(food_row["path"], serde_json::json!(["Expenses", "Food"]));
+    assert_eq!(food_row["current"]["expenses"], "80");
+    assert_eq!(food_row["current"]["purchases"], "100");
+    assert_eq!(food_row["current"]["expense_credits"], "20");
+    assert_eq!(food_row["comparison"]["expenses"], "30");
+    let housing_row = rows
+        .iter()
+        .find(|r| r["category_id"] == housing_id.to_string())
+        .unwrap();
+    assert_eq!(housing_row["current"]["expense_count"], 0);
+    assert_eq!(housing_row["comparison"]["expenses"], "40");
+    let direct = rows
+        .iter()
+        .find(|r| r["category_id"] == expense_id.to_string())
+        .unwrap();
+    assert_eq!(direct["scope"], "direct");
+    assert_eq!(direct["label"], "Directly in Expenses");
+    for period in ["current", "comparison"] {
+        for measure in ["expenses", "purchases", "expense_credits"] {
+            let sum: Decimal = rows
+                .iter()
+                .map(|r| {
+                    r[period][measure]
+                        .as_str()
+                        .unwrap()
+                        .parse::<Decimal>()
+                        .unwrap()
+                })
+                .sum();
+            assert_eq!(
+                sum,
+                body[period][measure]
+                    .as_str()
+                    .unwrap()
+                    .parse::<Decimal>()
+                    .unwrap()
+            );
+        }
+        assert_eq!(
+            rows.iter()
+                .map(|r| r[period]["expense_count"].as_u64().unwrap())
+                .sum::<u64>(),
+            body[period]["expense_count"]
+        );
+    }
+    for row in rows {
+        let selection = if row["scope"] == "uncategorized" {
+            "&uncategorized=true".to_owned()
+        } else {
+            format!(
+                "&category_id={}&category_scope={}",
+                row["category_id"].as_str().unwrap(),
+                row["scope"].as_str().unwrap()
+            )
+        };
+        let list = s
+            .get(&format!("{LIST}&kind=expense{selection}"))
+            .await
+            .json::<Value>();
+        assert_eq!(
+            list["summary"]["contribution"]
+                .as_str()
+                .unwrap()
+                .parse::<Decimal>()
+                .unwrap(),
+            -row["current"]["expenses"]
+                .as_str()
+                .unwrap()
+                .parse::<Decimal>()
+                .unwrap()
+        );
+    }
+    let selected = s
+        .get(&format!("{AGG}&category_id={food_id}"))
+        .await
+        .json::<Value>();
+    assert_eq!(
+        selected["breakdown"][0]["category_id"],
+        groceries.category.id.to_string()
+    );
+
+    // Case changes still match; renamed roots resume ordinary grouping.
+    sqlx::query("UPDATE classification.categories SET name='eXpEnSeS' WHERE id=$1")
+        .bind(expense_id.into_uuid())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let mixed_case = s.get(AGG).await.json::<Value>();
+    assert!(
+        mixed_case["breakdown"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["category_id"] == food_id.to_string())
+    );
+    sqlx::query("UPDATE classification.categories SET name='Household' WHERE id=$1")
+        .bind(expense_id.into_uuid())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let renamed = s.get(AGG).await.json::<Value>();
+    let renamed_rows = renamed["breakdown"].as_array().unwrap();
+    assert_eq!(renamed_rows.len(), 3);
+    assert!(
+        renamed_rows
+            .iter()
+            .any(|r| r["category_id"] == expense_id.to_string() && r["scope"] == "subtree")
+    );
+}

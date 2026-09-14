@@ -177,7 +177,7 @@ pub(crate) async fn account_activity(
     Query(query): Query<ActivityQuery>,
 ) -> Result<Json<Vec<crate::contexts::ledger::public::JournalView>>, ApiError> {
     let after = cursor(&query)?;
-    if query.grouped_transfers == Some(true) {
+    if query.grouped_transfers == Some(true) || query.hide_reversed == Some(true) {
         state
             .ledger
             .get_account(user_id, LedgerAccountId::new(id))
@@ -189,7 +189,8 @@ pub(crate) async fn account_activity(
             ActivityKind::All,
         )
         .map_err(map_ledger_error)?
-        .with_grouped_transfers(true)
+        .with_grouped_transfers(query.grouped_transfers.unwrap_or(false))
+        .with_hide_reversed(query.hide_reversed.unwrap_or(false))
         .for_account(LedgerAccountId::new(id));
         return state
             .ledger
@@ -270,6 +271,7 @@ pub(crate) async fn list_transactions(
         ));
     }
     let filtered = query.grouped_transfers == Some(true)
+        || query.hide_reversed == Some(true)
         || query.from_occurred_at.is_some()
         || query.kind.is_some()
         || query.category_id.is_some()
@@ -303,7 +305,9 @@ pub(crate) async fn list_transactions(
             .ledger
             .list_activity(
                 user_id,
-                filter.with_grouped_transfers(query.grouped_transfers.unwrap_or(false)),
+                filter
+                    .with_grouped_transfers(query.grouped_transfers.unwrap_or(false))
+                    .with_hide_reversed(query.hide_reversed.unwrap_or(false)),
                 after,
                 query.limit.unwrap_or(50),
             )
@@ -350,7 +354,9 @@ pub(crate) async fn summarize_transactions(
         .ledger
         .summarize_activity(
             user_id,
-            filter.with_grouped_transfers(query.grouped_transfers.unwrap_or(false)),
+            filter
+                .with_grouped_transfers(query.grouped_transfers.unwrap_or(false))
+                .with_hide_reversed(query.hide_reversed.unwrap_or(false)),
         )
         .await
         .map(Json)

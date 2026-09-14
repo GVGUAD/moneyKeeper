@@ -79,3 +79,18 @@ Remaining Android release checks:
 3. Verify `/transactions/summary` category-subtree behavior independently; Activity semantics remain distinct from Stats.
 4. Record route latency, sanitized error rate and query diagnostics through existing observability. Do not log descriptions, amounts, tokens or complete query strings.
 5. Give Android the deployed revision, base URL and this contract/fixtures. Enable the Android release only after those smoke tests pass. Missing endpoints after rollback must surface as analytics unavailable.
+
+
+## September 13 category grouping update (local implementation)
+
+At All categories, a top-level expense-kind node named Expenses (case-insensitive)
+with children is transparent: its immediate children appear as subtree breakdown
+rows. Historical assignments directly to that root use `direct` scope and the label
+`Directly in Expenses`. Uncategorized, custom roots, archived activity, comparison-only
+rows, and exact expense totals/counts remain included. Explicit category selections
+retain their existing grouping. Renamed or moved roots use ordinary hierarchy rules.
+
+There are no query, response-shape, or database changes. Android can consume these
+rows through its existing Spending renderer and drill-down navigation. This source
+update does not establish deployment; the deployment evidence above describes the
+September 9 release.

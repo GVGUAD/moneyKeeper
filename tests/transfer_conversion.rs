@@ -144,7 +144,21 @@ async fn linked_fee_conversion_is_atomic_idempotent_and_restores_ordinary_histor
     )
     .unwrap()
     .with_grouped_transfers(true);
+    let visible_filter = filter.clone().with_hide_reversed(true);
     let rows = l.list_activity(u, filter.clone(), None, 50).await.unwrap();
+    assert_eq!(
+        l.list_activity(u, visible_filter.clone(), None, 1)
+            .await
+            .unwrap(),
+        rows
+    );
+    assert_eq!(
+        l.summarize_activity(u, visible_filter.clone())
+            .await
+            .unwrap()
+            .transaction_count,
+        1
+    );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].transfer_conversion_id, Some(c.id));
     assert_eq!(
@@ -185,7 +199,21 @@ async fn linked_fee_conversion_is_atomic_idempotent_and_restores_ordinary_histor
         assert_eq!(old.occurred_at, new.occurred_at);
         assert_eq!(old.annotation.unwrap().note, new.annotation.unwrap().note);
     }
-    assert_eq!(l.list_activity(u, filter, None, 50).await.unwrap().len(), 2);
+    let restored = l.list_activity(u, filter, None, 50).await.unwrap();
+    assert_eq!(restored.len(), 2);
+    assert_eq!(
+        l.list_activity(u, visible_filter.clone(), None, 50)
+            .await
+            .unwrap(),
+        restored
+    );
+    assert_eq!(
+        l.summarize_activity(u, visible_filter)
+            .await
+            .unwrap()
+            .transaction_count,
+        2
+    );
     assert_eq!(
         l.get_account(u, a).await.unwrap().signed_balance,
         before_a.signed_balance
